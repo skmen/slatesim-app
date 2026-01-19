@@ -42,8 +42,17 @@ const SAFE_DEFAULT_URL = (() => {
   return CANONICAL_APP_URL;
 })();
 
-// HARDCODED KEY
-const PUBLISHABLE_KEY = "pk_test_bG92ZWQtY291Z2FyLTYuY2xlcmsuYWNjb3VudHMuZGV2JA";
+// PUBLISHABLE KEY - Sourced from env, with a fallback for AI Studio
+const ENV_KEY =
+  (import.meta as any)?.env?.VITE_CLERK_PUBLISHABLE_KEY ||
+  (globalThis as any)?.VITE_CLERK_PUBLISHABLE_KEY ||
+  "";
+
+const PUBLISHABLE_KEY = ENV_KEY || "pk_test_bG92ZWQtY291Z2FyLTYuY2xlcmsuYWNjb3VudHMuZGV2JA";
+
+if (!PUBLISHABLE_KEY || PUBLISHABLE_KEY.includes('REPLACE_ME')) {
+  throw new Error("Missing Clerk Publishable Key. Set VITE_CLERK_PUBLISHABLE_KEY in your environment or provide a valid fallback.");
+}
 
 // --- SHIMS START ---
 
