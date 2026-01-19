@@ -8,52 +8,43 @@ if (!rootElement) {
   throw new Error("Could not find root element to mount to");
 }
 
-/**
- * Retrieves the Clerk Publishable Key.
- * In this environment, we rely on process.env for injected variables.
- */
 const getPublishableKey = (): string => {
   const key = process.env.VITE_CLERK_PUBLISHABLE_KEY || 
               process.env.CLERK_PUBLISHABLE_KEY || 
               "pk_test_bG92ZWQtY291Z2FyLTYuY2xlcmsuYWNjb3VudHMuZGV2JA";
-
-  if (!key) {
-    console.warn("Clerk Publishable Key is missing. Authentication features may not work.");
-  }
-  
   return key;
 };
 
 const PUBLISHABLE_KEY = getPublishableKey();
 
+/**
+ * Normalizes navigation to prevent Clerk from breaking out of current context.
+ */
+const safeNavigate = (to: string, replace = false) => {
+  if (to.includes('CLERK-ROUTER')) return;
+  
+  try {
+    const target = new URL(to, window.location.href).href;
+    if (replace) {
+      window.location.replace(target);
+    } else {
+      window.location.href = target;
+    }
+  } catch (e) {
+    window.location.reload();
+  }
+};
+
 const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    {/* 
-      We provide custom router handlers to the ClerkProvider. 
-      This is crucial for preventing Clerk's internal "virtual router" from attempting 
-      to construct URLs using internal virtual paths (like /CLERK-ROUTER/VIRTUAL/...), 
-      which can fail in environments where the URL constructor requires absolute paths.
-    */}
     <ClerkProvider 
       publishableKey={PUBLISHABLE_KEY}
-      routerPush={(to) => {
-        // Ignore internal virtual routing paths to prevent URL constructor crashes
-        if (to.startsWith('/CLERK-ROUTER/')) return;
-        
-        // Only handle real external navigations
-        if (to.startsWith('http')) {
-          window.location.href = to;
-        }
-      }}
-      routerReplace={(to) => {
-        // Ignore internal virtual routing paths
-        if (to.startsWith('/CLERK-ROUTER/')) return;
-
-        if (to.startsWith('http')) {
-          window.location.replace(to);
-        }
-      }}
+      routerPush={(to) => safeNavigate(to, false)}
+      routerReplace={(to) => safeNavigate(to, true)}
+      signInForceRedirectUrl="/"
+      signUpForceRedirectUrl="/"
+      afterSignOutUrl="/"
     >
       <App />
     </ClerkProvider>

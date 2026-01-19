@@ -4,6 +4,49 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SlateSim | Field Test Your Lineup</title>
+    <!-- 
+      CRITICAL FIX: Robust URL Constructor Shim
+      Intercepts URL construction to prevent "Invalid URL" TypeErrors in restricted environments.
+      This is required because Clerk's internal routing logic sometimes constructs 
+      relative URLs like '/CLERK-ROUTER/...' without an absolute base, which throws
+      in browsers where window.location.origin is 'null' or unreliable.
+    -->
+    <script>
+      (function() {
+        const OriginalURL = window.URL;
+        function ShimmedURL(url, base) {
+          if (typeof url === 'string' && (url.startsWith('/') || url.includes('CLERK-ROUTER'))) {
+            // Determine a safe fallback base
+            let safeBase = base;
+            if (!base || (typeof base === 'string' && base.startsWith('/'))) {
+              let fallback = 'http://localhost';
+              try {
+                if (window.location.origin && window.location.origin !== "null") {
+                  fallback = window.location.origin;
+                } else if (window.location.href && window.location.href !== 'about:srcdoc') {
+                  fallback = window.location.href;
+                }
+              } catch (e) {}
+              safeBase = fallback;
+            }
+            return new OriginalURL(url, safeBase);
+          }
+          return new OriginalURL(url, base);
+        }
+        ShimmedURL.prototype = OriginalURL.prototype;
+        Object.getOwnPropertyNames(OriginalURL).forEach(prop => {
+          if (prop !== 'prototype' && prop !== 'name' && prop !== 'length') {
+            try {
+              const descriptor = Object.getOwnPropertyDescriptor(OriginalURL, prop);
+              if (descriptor) {
+                Object.defineProperty(ShimmedURL, prop, descriptor);
+              }
+            } catch (e) {}
+          }
+        });
+        window.URL = ShimmedURL;
+      })();
+    </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
       tailwind.config = {
@@ -61,14 +104,15 @@
 {
   "imports": {
     "react": "https://esm.sh/react@19.2.3",
+    "react/": "https://esm.sh/react@19.2.3/",
+    "react/jsx-runtime": "https://esm.sh/react@19.2.3/jsx-runtime",
     "react-dom": "https://esm.sh/react-dom@19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@19.2.3/",
     "react-dom/client": "https://esm.sh/react-dom@19.2.3/client",
     "lucide-react": "https://esm.sh/lucide-react@0.461.0?external=react",
     "papaparse": "https://esm.sh/papaparse@5.5.3",
     "react-dropzone": "https://esm.sh/react-dropzone@14.3.8?external=react",
     "@clerk/clerk-react": "https://esm.sh/@clerk/clerk-react@5.59.4?external=react,react-dom",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "react/": "https://esm.sh/react@^19.2.3/",
     "vitest/": "https://esm.sh/vitest@^4.0.17/",
     "vitest": "https://esm.sh/vitest@^4.0.17"
   }
