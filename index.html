@@ -1,9 +1,11 @@
+
 <!DOCTYPE html>
 <html lang="en">
   <head>
+    <script type="module" src="/src/main.jsx"></script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SlateSavvy</title>
+    <title>SlateSim | Physics-Based Lineup Engineering</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
       tailwind.config = {
@@ -12,20 +14,20 @@
           extend: {
             colors: {
               brand: {
-                DEFAULT: '#4C6EF5', // Slate Blue
-                hover: '#3b5bdb',   // Darker shade for hovers
-                light: '#eef2ff',   // Very light tint for backgrounds
+                DEFAULT: '#00E5FF', // Neon Cyan
+                hover: '#00B8D4',
+                light: '#E0F7FA',
               },
               charcoal: {
-                DEFAULT: '#1F2933', // Soft Charcoal (Dark Background)
-                card: '#2a3844',    // Slightly lighter for cards
-                text: '#F5F7FA',    // Text color in dark mode (Warm Cloud Gray)
-                muted: '#9aa5b1',   // Muted text
+                DEFAULT: '#0F172A', // Deep Midnight Blue/Black
+                card: '#1E293B',    // Slate blue gray
+                text: '#F1F5F9',
+                muted: '#64748B',
               },
               cloud: {
-                DEFAULT: '#F5F7FA', // Warm Cloud Gray (Light Background)
-                text: '#1F2933',    // Text color in light mode (Soft Charcoal)
-                darker: '#e4e7eb',  // Borders/Separators
+                DEFAULT: '#F8FAFC',
+                text: '#0F172A',
+                darker: '#CBD5E1',
               }
             }
           }
@@ -33,19 +35,21 @@
       }
     </script>
     <style>
-      /* Base styles for scrollbars and root layout */
       @layer base {
         :root {
-          --background: 240 14% 97%; /* #F5F7FA */
-          --foreground: 210 25% 16%; /* #1F2933 */
+          --background: 222 47% 11%;
+          --foreground: 210 40% 98%;
         }
         .dark {
-          --background: 210 25% 16%; /* #1F2933 */
-          --foreground: 240 14% 97%; /* #F5F7FA */
+          --background: 222 47% 11%;
+          --foreground: 210 40% 98%;
         }
       }
       body {
-        @apply bg-cloud text-cloud-text dark:bg-charcoal dark:text-charcoal-text transition-colors duration-300;
+        @apply bg-cloud text-cloud-text dark:bg-charcoal dark:text-charcoal-text transition-colors duration-300 font-sans selection:bg-brand selection:text-charcoal;
+      }
+      .terminal-glow {
+        text-shadow: 0 0 10px rgba(0, 229, 255, 0.3);
       }
     </style>
   <script type="importmap">

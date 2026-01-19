@@ -106,6 +106,7 @@ export const parseProjections = (file: File | string): Promise<Player[]> => {
         const players: Player[] = [];
         const headers = results.meta.fields || [];
         const map: Record<string, string> = {};
+        
         headers.forEach((h: string) => {
           const norm = normalizeKey(h);
           for (const [key, candidates] of Object.entries(HEADER_MAP)) {
@@ -118,7 +119,10 @@ export const parseProjections = (file: File | string): Promise<Player[]> => {
         results.data.forEach((row: any, index: number) => {
           const name = row[map.name || 'Name'] || row['Player Name'] || row['Player'];
           if (!name) return;
-          players.push({
+
+          // Non-lossy parsing: Start with ALL original columns
+          const player: Player = {
+            ...row,
             id: canonicalizeId(row[map.id || 'ID'] || row['ID'] || `${name}-${index}`),
             name,
             position: row[map.position || 'Position'] || 'FLEX',
@@ -129,7 +133,20 @@ export const parseProjections = (file: File | string): Promise<Player[]> => {
             floor: parseFloat(row[map.floor || 'Floor'] || '0') || 0,
             ownership: parseFloat(row[map.ownership || 'Own%'] || '0') || 0,
             value: 0
+          };
+
+          // Also ensure any keys that look like numbers are stored as numbers for sorting/filtering
+          Object.keys(player).forEach(key => {
+            const val = player[key];
+            if (typeof val === 'string' && val.trim() !== '') {
+              const num = Number(val.replace(/,/g, ''));
+              if (!isNaN(num) && isFinite(num) && !key.toLowerCase().includes('id')) {
+                 player[key] = num;
+              }
+            }
           });
+
+          players.push(player);
         });
         resolve(players);
       },
@@ -314,7 +331,8 @@ export const parsePipelineJson = (content: any): { referencePlayers: Player[]; c
         }
       }
 
-      return {
+      const player: Player = {
+        ...p, // Non-lossy spread from JSON data
         id: canonicalizeId(rawId || `${p.Name ?? p.name}-${i}`),
         name: p.Name ?? p.name,
         team,
@@ -327,6 +345,8 @@ export const parsePipelineJson = (content: any): { referencePlayers: Player[]; c
         ownership: Number(p.OWN_MEAN ?? p.OWNERSHIP ?? p["Own%"] ?? 0),
         value: 0
       };
+      
+      return player;
     });
 
     const optLineups = json.data?.optimized_lineups ?? json.lineups;

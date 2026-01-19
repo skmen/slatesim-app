@@ -1,7 +1,14 @@
+export type Role = 'admin' | 'regular';
+
+export interface User {
+  username: string;
+  role: Role;
+}
+
 export interface Player {
   id: string;
   name: string;
-  position: string; // QB, RB, WR, TE, DST, etc.
+  position: string;
   team: string;
   opponent?: string;
   salary: number;
@@ -10,6 +17,8 @@ export interface Player {
   floor?: number;
   ownership?: number; // 0-100
   value?: number; // Proj / Salary * 1000
+  // Index signature for dynamic CSV columns (e.g. VOLATILITY, DVP_SCORE, etc.)
+  [key: string]: string | number | undefined;
 }
 
 export interface GameInfo {

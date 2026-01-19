@@ -1,7 +1,8 @@
+
 import { ContestInput, ContestDerived, Player, GameInfo, Lineup, ContestState } from '../types';
 
 export const DEFAULT_CONTEST: ContestInput = {
-  contestName: "My Contest",
+  contestName: "Main Slate",
   site: "DraftKings",
   fieldSize: 1000,
   entryFee: 10,
@@ -13,12 +14,12 @@ export const DEFAULT_CONTEST: ContestInput = {
 // Qualitative Thresholds
 export const getContestViability = (lineup: Lineup) => {
   if ((lineup.missingCount || 0) > 0 || (lineup.players?.length || 0) < 8) {
-    return { label: 'Unknown', color: 'amber', icon: '❓' };
+    return { label: 'Incomplete', color: 'amber' };
   }
   const roi = lineup.simROI ?? 0;
-  if (roi >= 10) return { label: 'Strong', color: 'emerald', icon: '✅' };
-  if (roi >= -5) return { label: 'Marginal', color: 'amber', icon: '⚠️' };
-  return { label: 'Unlikely', color: 'red', icon: '⛔' };
+  if (roi >= 10) return { label: 'High Value', color: 'emerald' };
+  if (roi >= -5) return { label: 'Fair Value', color: 'amber' };
+  return { label: 'Negative EV', color: 'red' };
 };
 
 export const getFieldAlignment = (lineup: Lineup) => {
@@ -26,22 +27,22 @@ export const getFieldAlignment = (lineup: Lineup) => {
     return { label: 'Unknown', color: 'amber' };
   }
   const own = lineup.totalOwnership ?? 0;
-  if (own > 140) return { label: 'Over-Aligned', color: 'red' };
+  if (own > 140) return { label: 'Chalky', color: 'red' };
   if (own < 90) return { label: 'Contrarian', color: 'emerald' };
   return { label: 'Balanced', color: 'blue' };
 };
 
 export const getUpsideQuality = (lineup: Lineup) => {
   if ((lineup.missingCount || 0) > 0 || (lineup.players?.length || 0) < 8) {
-    return { label: 'Unknown', color: 'amber' };
+    return { label: 'Low Info', color: 'amber' };
   }
   const ceiling = lineup.totalCeiling ?? 0;
   const proj = lineup.totalProjection ?? 0;
   const ratio = proj > 0 ? ceiling / proj : 0;
   
-  if (ratio > 1.45) return { label: 'Clean', color: 'emerald' };
-  if (ratio > 1.3) return { label: 'Shared', color: 'blue' };
-  return { label: 'Capped', color: 'amber' };
+  if (ratio > 1.45) return { label: 'High Ceiling', color: 'emerald' };
+  if (ratio > 1.3) return { label: 'GPP Equity', color: 'blue' };
+  return { label: 'Cash Safe', color: 'amber' };
 };
 
 export const formatMoney = (amount: number): string => {
@@ -77,8 +78,7 @@ export const assignDraftKingsSlots = (players: Player[]): { slotMap: Record<stri
     return a.name.localeCompare(b.name);
   });
 
-  const order = ['C', 'PG', 'SG', 'SF', 'PF', 'G', 'F', 'UTIL'];
-  for (const slot of order) {
+  for (const slot of DK_SLOTS) {
     const idx = remainingPlayers.findIndex(p => isEligible(p, slot));
     if (idx !== -1) {
       slotMap[slot] = remainingPlayers[idx];
@@ -91,14 +91,14 @@ export const assignDraftKingsSlots = (players: Player[]): { slotMap: Record<stri
 
 export const getLineupSignal = (lineup: Lineup, contest?: ContestState): { status: 'green' | 'yellow' | 'red', label: string } => {
   if ((lineup.missingCount || 0) > 0 || (lineup.players?.length || 0) < 8) {
-    return { status: 'red', label: 'Stop — invalid / incomplete mapping' };
+    return { status: 'red', label: 'Error' };
   }
-  if (!contest) return { status: 'yellow', label: 'Contest not set — limited evaluation' };
+  if (!contest) return { status: 'yellow', label: 'No Context' };
   
   const viability = getContestViability(lineup);
-  if (viability.label === 'Strong') return { status: 'green', label: 'Positive Reality Check' };
-  if (viability.label === 'Unlikely') return { status: 'red', label: 'Poor Expected Performance' };
-  return { status: 'yellow', label: 'Mixed Signals' };
+  if (viability.label === 'High Value') return { status: 'green', label: 'High EV' };
+  if (viability.label === 'Negative EV') return { status: 'red', label: 'Bad Play' };
+  return { status: 'yellow', label: 'Neutral' };
 };
 
 export function recomputeLineupDisplay(
@@ -180,7 +180,7 @@ export const deriveContest = (input: ContestInput): ContestDerived => {
   const effectiveRakePct = prizePoolOverride !== undefined && totalEntryFees > 0 ? 1 - (prizePool / totalEntryFees) : rakePct;
   const portfolioCoveragePct = fieldSize > 0 ? maxEntries / fieldSize : 0;
   const estimatedPaidPlaces = Math.floor(fieldSize * paidPctGuess);
-  const expectedFieldLossLabel = `Average field loss: ~${formatPct(effectiveRakePct)} (house edge)`;
+  const expectedFieldLossLabel = `Field Loss: ~${formatPct(effectiveRakePct)}`;
   return {
     totalEntryFees, prizePool, rakePct: effectiveRakePct, expectedFieldLossPct: effectiveRakePct,
     expectedFieldLossLabel, portfolioCoveragePct, estimatedPaidPlaces, estimatedMinCash: entryFee * 2,

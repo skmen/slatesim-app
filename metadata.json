@@ -1,6 +1,6 @@
 {
-  "name": "SlateSavvy",
-  "description": "Offline-first daily fantasy sports slate review tool. Load projections and lineups from local files to analyze, filter, and export.",
+  "name": "SlateSim",
+  "description": "Professional NBA DFS Analytics Dashboard. Run lineup simulations against the field to identify high-leverage rosters and win probability.",
   "requestFramePermissions": [],
   "contestDefaults": {
     "presets": [
