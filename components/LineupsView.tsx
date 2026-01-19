@@ -1,6 +1,5 @@
-
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Lineup, ContestState, Player, SlateStats, GameInfo } from '../types';
+import { Lineup, ContestState, Player, SlateStats, GameInfo, Entitlement } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { 
   Copy, 
@@ -84,8 +83,9 @@ export const LineupsView: React.FC<Props> = ({
   slateStats,
   games
 }) => {
-  const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const { user, hasEntitlement } = useAuth();
+  const canRunSim = hasEntitlement('run_sim');
+  const canExport = hasEntitlement('export_data');
 
   const [modifiedLineups, setModifiedLineups] = useState<Lineup[]>(lineups);
   const [activeSet, setActiveSet] = useState<string>('All');
@@ -115,7 +115,7 @@ export const LineupsView: React.FC<Props> = ({
   }, [modifiedLineups, activeSet]);
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!isAdmin) return;
+    if (!canRunSim) return;
     const file = e.target.files?.[0];
     if (!file) return;
     onLineupUpload([file]);
@@ -163,6 +163,7 @@ export const LineupsView: React.FC<Props> = ({
   };
 
   const exportCSV = () => {
+    if (!canExport) return;
     const rows = modifiedLineups.map(l => {
       if (l.slotMap && Object.keys(l.slotMap).length === 8) {
         return DK_NBA_HEADER.map(s => l.slotMap?.[s] || '').join(',');
@@ -449,7 +450,8 @@ export const LineupsView: React.FC<Props> = ({
                 <div className="w-[1px] h-8 bg-gray-800" />
                 <button 
                   onClick={exportCSV}
-                  className="flex items-center gap-3 px-8 py-3 bg-brand text-charcoal rounded-xl text-xs font-extrabold uppercase shadow-xl shadow-brand/20 hover:bg-brand-hover transition-all active:scale-95"
+                  disabled={!canExport}
+                  className={`flex items-center gap-3 px-8 py-3 rounded-xl text-xs font-extrabold uppercase shadow-xl transition-all active:scale-95 ${canExport ? 'bg-brand text-charcoal shadow-brand/20 hover:bg-brand-hover' : 'bg-gray-800 text-gray-600 cursor-not-allowed shadow-none'}`}
                 >
                   <Download className="w-4 h-4" />
                   Export
@@ -465,14 +467,14 @@ export const LineupsView: React.FC<Props> = ({
               </div>
               <h3 className="text-3xl font-extrabold mb-4 uppercase tracking-tight text-white">Field Test Your Lineup</h3>
               <p className="text-gray-500 mb-12 max-w-sm mx-auto text-lg leading-relaxed">Don't guess. Run your roster through the SlateSim Engine to see its true win probability against 20,000 simulated opponents.</p>
-              {isAdmin ? (
+              {canRunSim ? (
                 <label className="cursor-pointer bg-brand hover:bg-brand-hover text-charcoal px-14 py-6 rounded-[2rem] font-extrabold uppercase tracking-[0.2em] text-sm transition-all shadow-2xl inline-block active:scale-95">
                     RUN SIMULATION
                     <input type="file" className="hidden" accept=".csv" onChange={handleUpload} />
                 </label>
               ) : (
                 <p className="text-brand font-bold uppercase text-xs tracking-[0.3em] border border-brand/20 p-8 rounded-3xl bg-brand/5">
-                   Access Restricted: Administrator Clearance Required.
+                   Access Restricted: Insufficient Entitlements.
                 </p>
               )}
            </div>
@@ -512,7 +514,7 @@ export const LineupsView: React.FC<Props> = ({
               </div>
             </div>
             
-            {isAdmin && (
+            {canRunSim && (
               <div className="flex justify-center -mt-4">
                 <label className="text-[10px] font-bold uppercase text-gray-600 hover:text-brand cursor-pointer flex items-center gap-2 transition-colors tracking-[0.2em]">
                   <RefreshCw className="w-3.5 h-3.5" /> RE-INITIALIZE SIM_CORE
@@ -582,9 +584,11 @@ export const LineupsView: React.FC<Props> = ({
                      </div>
                      <div className="text-right font-mono">
                         <div className={`text-xl font-extrabold ${canAfford ? 'text-white' : 'text-red-500'}`}>
-                          ${(player.salary/1000).toFixed(1)}k
+                          {/* Fix: Use Number() and any cast to resolve potential arithmetic issues with index signature types */}
+                          ${(Number(player.salary as any)/1000).toFixed(1)}k
                         </div>
-                        <div className="text-xs font-bold text-brand uppercase tracking-widest mt-1">{player.projection.toFixed(1)} MP</div>
+                        {/* Fix: Avoid arithmetic modulo on string by checking numeric projection directly instead of toFixed output */}
+                        <div className="text-xs font-bold text-brand uppercase tracking-widest mt-1">{Number(player.projection as any) % 1 === 0 ? player.projection.toLocaleString() : player.projection.toFixed(1)} MP</div>
                      </div>
                    </button>
                  ))

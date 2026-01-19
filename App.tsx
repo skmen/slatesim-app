@@ -1,14 +1,14 @@
-
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { UploadCloud, FileText, BarChart2, Users, Activity, Sun, Moon, Database, Check, RefreshCw, Layers, AlertTriangle, LogOut, Cpu, ShieldAlert, Lock } from 'lucide-react';
+import { BarChart2, Users, Database, LogOut, Cpu, Layers, Lock } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
-import { AppState, ViewState, Player, Lineup, ContestInput, ContestDerived } from './types';
-import { parseProjections, parsePipelineJson, parseOptimizerLineups, parseUserLineupsRows, parseOptimizerLineupsFromText } from './utils/csvParser';
+import { SignedIn, SignedOut } from "@clerk/clerk-react";
+import { AppState, ViewState, ContestInput, ContestDerived, Entitlement } from './types';
+import { parseProjections, parsePipelineJson, parseOptimizerLineups, parseUserLineupsRows } from './utils/csvParser';
 import { ProjectionsView } from './components/ProjectionsView';
 import { LineupsView } from './components/LineupsView';
 import { DiagnosticsView } from './components/DiagnosticsView';
 import { deriveContest, DEFAULT_CONTEST, deriveGamesFromPlayers, recomputeLineupDisplay } from './utils/contest';
-import { saveContestInput, loadContestInput, hasDismissedOnboarding, dismissOnboarding, saveBeliefs, loadBeliefs } from './utils/storage';
+import { saveContestInput, loadContestInput, saveBeliefs, loadBeliefs } from './utils/storage';
 import { autoLoadReferencePack } from './utils/assetLoader';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SplashLogin } from './components/SplashLogin';
@@ -48,11 +48,10 @@ const IntegrityFooter: React.FC = () => {
 };
 
 const AppContent: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { user, logout, hasEntitlement } = useAuth();
   const [state, setState] = useState<AppState>(INITIAL_STATE);
   const [view, setView] = useState<ViewState>(ViewState.LINEUPS);
   const [loading, setLoading] = useState(false);
-  const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [contestInput, setContestInput] = useState<ContestInput>(DEFAULT_CONTEST);
 
   const getLocalDateStr = (date: Date) => {
@@ -129,7 +128,7 @@ const AppContent: React.FC = () => {
   }, []);
 
   const onDropMain = useCallback(async (acceptedFiles: File[]) => {
-    if (user?.role !== 'admin') return;
+    if (!hasEntitlement('admin_panel')) return;
     const file = acceptedFiles[0];
     if (!file) return;
     setLoading(true);
@@ -159,7 +158,7 @@ const AppContent: React.FC = () => {
       setLoading(false);
     };
     reader.readAsText(file);
-  }, [user]);
+  }, [hasEntitlement]);
 
   const onBeliefUpload = useCallback(async (acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
@@ -198,12 +197,17 @@ const AppContent: React.FC = () => {
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop: onDropMain, accept: { 'application/json': ['.json'] }, multiple: false });
 
-  const NavItem = ({ label, icon: Icon, targetView }: { label: string, icon: any, targetView: ViewState }) => (
-    <button onClick={() => setView(targetView)} className={`flex flex-col items-center gap-1 p-2 min-w-[64px] rounded-lg transition-colors ${view === targetView ? 'text-brand bg-brand/10 font-bold' : 'text-gray-500 hover:bg-white/5'}`}>
-      <Icon className="w-5 h-5" />
-      <span className="text-[10px] font-black uppercase tracking-tighter">{label}</span>
-    </button>
-  );
+  const NavItem = ({ label, icon: Icon, targetView, entitlement }: { label: string, icon: any, targetView: ViewState, entitlement?: Entitlement }) => {
+    const isGated = entitlement && !hasEntitlement(entitlement);
+    if (isGated) return null;
+    
+    return (
+      <button onClick={() => setView(targetView)} className={`flex flex-col items-center gap-1 p-2 min-w-[64px] rounded-lg transition-colors ${view === targetView ? 'text-brand bg-brand/10 font-bold' : 'text-gray-500 hover:bg-white/5'}`}>
+        <Icon className="w-5 h-5" />
+        <span className="text-[10px] font-black uppercase tracking-tighter">{label}</span>
+      </button>
+    );
+  };
 
   return (
     <div className="min-h-screen font-sans bg-charcoal text-charcoal-text flex flex-col selection:bg-brand selection:text-charcoal">
@@ -219,7 +223,11 @@ const AppContent: React.FC = () => {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            {user?.role === 'admin' && (
+            <div className="flex flex-col items-end mr-2">
+              <span className="text-[10px] font-bold text-white uppercase tracking-tighter">{user?.username}</span>
+              <span className="text-[8px] font-black text-brand uppercase opacity-80">{user?.role}</span>
+            </div>
+            {hasEntitlement('admin_panel') && (
               <button onClick={() => setView(ViewState.LOAD)} className="text-[9px] font-black text-brand border border-brand/20 px-2 py-1 rounded uppercase tracking-widest hover:bg-brand/10 transition-all font-mono">UPDATE_DATA</button>
             )}
             <button onClick={logout} className="p-2 rounded-full hover:bg-red-500/10 text-gray-500 hover:text-red-400 transition-colors"><LogOut className="w-5 h-5" /></button>
@@ -228,7 +236,7 @@ const AppContent: React.FC = () => {
       </header>
 
       <main className="flex-1 max-w-7xl mx-auto px-4 py-6 w-full">
-        {view === ViewState.LOAD && user?.role === 'admin' && (
+        {view === ViewState.LOAD && hasEntitlement('admin_panel') && (
           <div className="max-w-xl mx-auto space-y-8 mt-6 pb-24">
             <div {...getRootProps()} className={`border-2 border-dashed rounded-2xl p-12 text-center transition-all cursor-pointer ${isDragActive ? 'border-brand bg-brand/5' : 'border-gray-800 hover:border-brand bg-charcoal-card'}`}>
               <input {...getInputProps()} />
@@ -262,8 +270,8 @@ const AppContent: React.FC = () => {
       <nav className="fixed bottom-0 left-0 right-0 bg-charcoal-card border-t border-gray-800 px-6 py-2 pb-safe z-40 shadow-2xl backdrop-blur-md">
            <div className="flex justify-around items-center max-w-lg mx-auto">
               <NavItem label="Simulation" icon={Layers} targetView={ViewState.LINEUPS} />
-              <NavItem label="Baseline" icon={Users} targetView={ViewState.PROJECTIONS} />
-              <NavItem label="Stress Test" icon={BarChart2} targetView={ViewState.DIAGNOSTICS} />
+              <NavItem label="Baseline" icon={Users} targetView={ViewState.PROJECTIONS} entitlement="view_projections" />
+              <NavItem label="Stress Test" icon={BarChart2} targetView={ViewState.DIAGNOSTICS} entitlement="view_diagnostics" />
            </div>
       </nav>
 
@@ -282,18 +290,14 @@ const AppContent: React.FC = () => {
 const App: React.FC = () => {
   return (
     <AuthProvider>
-      <AuthConsumer />
+      <SignedIn>
+        <AppContent />
+      </SignedIn>
+      <SignedOut>
+        <SplashLogin />
+      </SignedOut>
     </AuthProvider>
   );
-};
-
-const AuthConsumer: React.FC = () => {
-  const { user, isLoading } = useAuth();
-
-  if (isLoading) return null;
-  if (!user) return <SplashLogin />;
-
-  return <AppContent />;
 };
 
 export default App;

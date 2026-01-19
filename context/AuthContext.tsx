@@ -1,52 +1,56 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { User, Role } from '../types';
+import React, { createContext, useContext, useMemo } from 'react';
+import { useUser, useAuth as useClerkAuth } from "@clerk/clerk-react";
+import { User, Role, Entitlement } from '../types';
 
 interface AuthContextType {
   user: User | null;
-  login: (username: string, password: string) => boolean;
-  logout: () => void;
   isLoading: boolean;
+  hasEntitlement: (capability: Entitlement) => boolean;
+  logout: () => void;
 }
+
+const ROLE_PERMISSIONS: Record<Role, Entitlement[]> = {
+  admin: ['run_sim', 'view_diagnostics', 'export_data', 'admin_panel', 'view_projections'],
+  'beta-user': ['run_sim', 'view_diagnostics', 'export_data', 'view_projections'],
+  user: ['view_projections']
+};
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const { isLoaded, isSignedIn, user: clerkUser } = useUser();
+  const { signOut } = useClerkAuth();
 
-  useEffect(() => {
-    const saved = localStorage.getItem('slatesavvy_session');
-    if (saved) {
-      setUser(JSON.parse(saved));
-    }
-    setIsLoading(false);
-  }, []);
+  // Derive internal User object from Clerk metadata
+  const internalUser = useMemo((): User | null => {
+    if (!isLoaded || !isSignedIn || !clerkUser) return null;
 
-  const login = (username: string, password: string): boolean => {
-    let role: Role | null = null;
+    // We assume the role is stored in Clerk's publicMetadata via the Dashboard or API
+    // Default to 'user' if no role is defined
+    const role = (clerkUser.publicMetadata.role as Role) || 'user';
+    
+    return {
+      username: clerkUser.username || clerkUser.primaryEmailAddress?.emailAddress || 'Sim_User',
+      role,
+      entitlements: ROLE_PERMISSIONS[role] || ROLE_PERMISSIONS['user']
+    };
+  }, [isLoaded, isSignedIn, clerkUser]);
 
-    if (username === 'admin' && password === 'admin') {
-      role = 'admin';
-    } else if (username === 'user' && password === 'user') {
-      role = 'regular';
-    }
-
-    if (role) {
-      const newUser = { username, role };
-      setUser(newUser);
-      localStorage.setItem('slatesavvy_session', JSON.stringify(newUser));
-      return true;
-    }
-    return false;
+  const hasEntitlement = (capability: Entitlement): boolean => {
+    return internalUser?.entitlements.includes(capability) || false;
   };
 
   const logout = () => {
-    setUser(null);
-    localStorage.removeItem('slatesavvy_session');
+    signOut();
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, isLoading }}>
+    <AuthContext.Provider value={{ 
+      user: internalUser, 
+      isLoading: !isLoaded, 
+      hasEntitlement,
+      logout 
+    }}>
       {children}
     </AuthContext.Provider>
   );

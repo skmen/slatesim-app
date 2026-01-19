@@ -1,8 +1,17 @@
-export type Role = 'admin' | 'regular';
+
+export type Role = 'admin' | 'beta-user' | 'user';
+
+export type Entitlement = 
+  | 'run_sim'
+  | 'view_diagnostics'
+  | 'export_data'
+  | 'admin_panel'
+  | 'view_projections';
 
 export interface User {
   username: string;
   role: Role;
+  entitlements: Entitlement[];
 }
 
 export interface Player {

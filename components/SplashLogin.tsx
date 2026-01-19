@@ -1,27 +1,14 @@
-
 import React, { useState, useEffect } from 'react';
-import { useAuth } from '../context/AuthContext';
-import { Box, Activity, ShieldCheck, Lock, User as UserIcon, LogIn, AlertCircle, Cpu } from 'lucide-react';
+import { SignInButton, SignUpButton } from "@clerk/clerk-react";
+import { Lock, LogIn, Cpu, UserPlus } from 'lucide-react';
 
 export const SplashLogin: React.FC = () => {
   const [showSplash, setShowSplash] = useState(true);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const { login } = useAuth();
 
   useEffect(() => {
     const timer = setTimeout(() => setShowSplash(false), 2800);
     return () => clearTimeout(timer);
   }, []);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    if (!login(username, password)) {
-      setError('Sim-Lock Error: Invalid protocol credentials.');
-    }
-  };
 
   if (showSplash) {
     return (
@@ -68,59 +55,28 @@ export const SplashLogin: React.FC = () => {
               <Lock className="w-8 h-8 text-brand" />
             </div>
             <h2 className="text-2xl font-black text-white uppercase tracking-tight">System Initialization</h2>
-            <p className="text-gray-500 text-sm font-medium mt-1 uppercase tracking-widest">SlateSim Auth Protocol</p>
+            <p className="text-gray-500 text-sm font-medium mt-1 uppercase tracking-widest">Secure Cloud Gateway</p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div className="space-y-4">
-              <div className="relative group">
-                <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 group-focus-within:text-brand transition-colors">
-                  <UserIcon className="w-5 h-5" />
-                </div>
-                <input
-                  type="text"
-                  placeholder="Terminal User ID"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  className="w-full bg-charcoal border border-gray-800 rounded-xl py-4 pl-12 pr-4 text-white placeholder:text-gray-600 focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand transition-all font-mono"
-                  required
-                />
-              </div>
+          <div className="space-y-4">
+            <SignInButton mode="modal">
+              <button className="w-full bg-brand hover:bg-brand-hover text-charcoal font-black py-4 rounded-xl shadow-lg shadow-brand/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-sm">
+                <LogIn className="w-5 h-5" />
+                Initialize Session
+              </button>
+            </SignInButton>
 
-              <div className="relative group">
-                <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 group-focus-within:text-brand transition-colors">
-                  <Lock className="w-5 h-5" />
-                </div>
-                <input
-                  type="password"
-                  placeholder="Protocol Key"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-charcoal border border-gray-800 rounded-xl py-4 pl-12 pr-4 text-white placeholder:text-gray-600 focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand transition-all font-mono"
-                  required
-                />
-              </div>
-            </div>
-
-            {error && (
-              <div className="flex items-center gap-3 p-4 bg-red-950/30 border border-red-900/50 rounded-xl text-red-400 text-sm font-bold animate-in shake-200">
-                <AlertCircle className="w-5 h-5 shrink-0" />
-                {error}
-              </div>
-            )}
-
-            <button
-              type="submit"
-              className="w-full bg-brand hover:bg-brand-hover text-charcoal font-black py-4 rounded-xl shadow-lg shadow-brand/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-sm"
-            >
-              <LogIn className="w-5 h-5" />
-              Begin Simulation
-            </button>
-          </form>
+            <SignUpButton mode="modal">
+              <button className="w-full bg-charcoal border border-gray-700 hover:bg-gray-800 text-gray-300 font-black py-4 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-sm">
+                <UserPlus className="w-5 h-5" />
+                Request Protocol Access
+              </button>
+            </SignUpButton>
+          </div>
 
           <div className="mt-8 pt-6 border-t border-gray-800 text-center">
             <p className="text-[10px] text-gray-600 font-bold uppercase tracking-widest">
-              SlateSim integrity Protocol Active
+              SlateSim Integrity Protocol Active
             </p>
           </div>
         </div>
