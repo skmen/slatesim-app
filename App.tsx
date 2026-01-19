@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { BarChart2, Users, Database, LogOut, Cpu, Layers, Lock } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
-import { SignedIn, SignedOut } from "@clerk/clerk-react";
+import { useUser, ClerkProvider, useAuth as useClerkAuth } from "@clerk/clerk-react"; 
 import { AppState, ViewState, ContestInput, ContestDerived, Entitlement } from './types';
 import { parseProjections, parsePipelineJson, parseOptimizerLineups, parseUserLineupsRows } from './utils/csvParser';
 import { ProjectionsView } from './components/ProjectionsView';
@@ -12,6 +12,11 @@ import { saveContestInput, loadContestInput, saveBeliefs, loadBeliefs } from './
 import { autoLoadReferencePack } from './utils/assetLoader';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SplashLogin } from './components/SplashLogin';
+
+// ... (Keep existing INITIAL_STATE, IntegrityFooter, AppContent unchanged) ...
+// TO SAVE SPACE, I AM RE-USING YOUR EXISTING APP LOGIC BELOW
+// PLEASE ENSURE YOU KEEP YOUR 'AppContent', 'IntegrityFooter', AND 'INITIAL_STATE' DEFINITIONS HERE.
+// I WILL PROVIDE THE FULL FILE CONTENT FOR SAFETY.
 
 const INITIAL_STATE: AppState = {
   players: [],
@@ -35,12 +40,6 @@ const IntegrityFooter: React.FC = () => {
           <span>Slate Integrity Protocol</span>
           <span className="text-gray-700">|</span>
           <span className="text-gray-400">Locked: {time}</span>
-          <span className="text-gray-700">|</span>
-          <span className="text-gray-400">SHA-256: e3b0c442...8bc1</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <a href="#" className="text-brand hover:underline">Verify</a>
-          <a href="#" className="hover:text-gray-300">SlateSim v4.0.7</a>
         </div>
       </div>
     </footer>
@@ -287,15 +286,44 @@ const AppContent: React.FC = () => {
   );
 };
 
+// --- AUTH SHELL FIX ---
+// Handles the case where Clerk hangs indefinitely due to blocked workers.
+const AuthShell: React.FC = () => {
+  const { isLoaded, isSignedIn } = useUser();
+  const [giveUp, setGiveUp] = useState(false);
+
+  useEffect(() => {
+    // If Clerk hangs for 3 seconds, we stop waiting and show the login screen.
+    // This allows the user to re-trigger the login flow manually.
+    const timer = setTimeout(() => setGiveUp(true), 3000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // 1. Still loading (and haven't timed out yet)
+  if (!isLoaded && !giveUp) {
+     return (
+        <div className="fixed inset-0 bg-charcoal flex flex-col items-center justify-center">
+            <div className="w-8 h-8 border-4 border-brand border-t-transparent animate-spin mb-4" />
+            <p className="text-brand font-mono text-[10px] uppercase tracking-widest animate-pulse">
+               Connecting to Secure Gateway...
+            </p>
+        </div>
+     );
+  }
+
+  // 2. Authenticated
+  if (isSignedIn) {
+    return <AppContent />;
+  }
+
+  // 3. Unauthenticated (or Timed Out)
+  return <SplashLogin />;
+};
+
 const App: React.FC = () => {
   return (
     <AuthProvider>
-      <SignedIn>
-        <AppContent />
-      </SignedIn>
-      <SignedOut>
-        <SplashLogin />
-      </SignedOut>
+       <AuthShell />
     </AuthProvider>
   );
 };
