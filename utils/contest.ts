@@ -8,12 +8,11 @@ export const DEFAULT_CONTEST: ContestInput = {
   entryFee: 10,
   maxEntries: 20,
   rakePct: 0.159,
-  paidPctGuess: 0.22,
 };
 
 // Qualitative Thresholds
 export const getContestViability = (lineup: Lineup) => {
-  if ((lineup.missingCount || 0) > 0 || (lineup.players?.length || 0) < 8) {
+  if ((lineup.playerIds.length || 0) < 8) {
     return { label: 'Incomplete', color: 'amber' };
   }
   const roi = lineup.simROI ?? 0;
@@ -23,7 +22,7 @@ export const getContestViability = (lineup: Lineup) => {
 };
 
 export const getFieldAlignment = (lineup: Lineup) => {
-  if ((lineup.missingCount || 0) > 0 || (lineup.players?.length || 0) < 8) {
+  if ((lineup.playerIds.length || 0) < 8) {
     return { label: 'Unknown', color: 'amber' };
   }
   const own = lineup.totalOwnership ?? 0;
@@ -33,7 +32,7 @@ export const getFieldAlignment = (lineup: Lineup) => {
 };
 
 export const getUpsideQuality = (lineup: Lineup) => {
-  if ((lineup.missingCount || 0) > 0 || (lineup.players?.length || 0) < 8) {
+  if ((lineup.playerIds.length || 0) < 8) {
     return { label: 'Low Info', color: 'amber' };
   }
   const ceiling = lineup.totalCeiling ?? 0;
@@ -90,7 +89,7 @@ export const assignDraftKingsSlots = (players: Player[]): { slotMap: Record<stri
 };
 
 export const getLineupSignal = (lineup: Lineup, contest?: ContestState): { status: 'green' | 'yellow' | 'red', label: string } => {
-  if ((lineup.missingCount || 0) > 0 || (lineup.players?.length || 0) < 8) {
+  if ((lineup.playerIds.length || 0) < 8) {
     return { status: 'red', label: 'Error' };
   }
   if (!contest) return { status: 'yellow', label: 'No Context' };
@@ -157,34 +156,60 @@ export function recomputeLineupDisplay(
   });
 }
 
-export const deriveGamesFromPlayers = (players: Player[]): GameInfo[] => {
+export const deriveGamesFromPlayers = (players: Player[], teams: any[]): GameInfo[] => {
   const matchups = new Map<string, GameInfo>();
+  const teamsMap = new Map(teams.map(t => [t.teamId, t]));
+
+  const ensureTeam = (teamId: string) => {
+    if (teamsMap.has(teamId)) return teamsMap.get(teamId);
+    return {
+      teamId,
+      abbreviation: teamId,
+      name: teamId,
+      seasonStats: {
+        pace: 100,
+        offensiveEfficiency: 112,
+        defensiveEfficiency: 112,
+      },
+      positionalDvP: {},
+    };
+  };
+
   players.forEach(p => {
-    const team = p.team?.toUpperCase();
-    const opp = p.opponent?.toUpperCase();
-    if (team && opp && opp !== 'UNK' && team !== opp) {
-      const sortedTeams = [team, opp].sort();
-      const key = sortedTeams.join('_vs_');
+    if (!p.team || !p.opponent) return;
+
+    const team = ensureTeam(p.team);
+    const opp = ensureTeam(p.opponent);
+
+    if (team && opp) {
+      const sortedTeams = [team, opp].sort((a, b) => a.teamId.localeCompare(b.teamId));
+      const key = `${sortedTeams[0].abbreviation}_vs_${sortedTeams[1].abbreviation}`;
+
       if (!matchups.has(key)) {
-        matchups.set(key, { matchupKey: key, teamA: sortedTeams[0], teamB: sortedTeams[1] });
+        matchups.set(key, {
+          matchupKey: key,
+          teamA: sortedTeams[0],
+          teamB: sortedTeams[1],
+          gameTime: 'TBD',
+          spread: 0,
+          overUnder: 0,
+        });
       }
     }
   });
+
   return Array.from(matchups.values()).sort((a, b) => a.matchupKey.localeCompare(b.matchupKey));
 };
 
 export const deriveContest = (input: ContestInput): ContestDerived => {
-  const { fieldSize, entryFee, rakePct, paidPctGuess, prizePoolOverride, maxEntries } = input;
+  const { fieldSize, entryFee, rakePct } = input;
   const totalEntryFees = fieldSize * entryFee;
-  const prizePool = prizePoolOverride !== undefined && prizePoolOverride > 0 ? prizePoolOverride : totalEntryFees * (1 - rakePct);
-  const effectiveRakePct = prizePoolOverride !== undefined && totalEntryFees > 0 ? 1 - (prizePool / totalEntryFees) : rakePct;
-  const portfolioCoveragePct = fieldSize > 0 ? maxEntries / fieldSize : 0;
-  const estimatedPaidPlaces = Math.floor(fieldSize * paidPctGuess);
-  const expectedFieldLossLabel = `Field Loss: ~${formatPct(effectiveRakePct)}`;
+  const prizePool = totalEntryFees * (1 - rakePct);
+  const estimatedPaidPlaces = Math.floor(fieldSize * 0.22); // Using a default of 22%
   return {
-    totalEntryFees, prizePool, rakePct: effectiveRakePct, expectedFieldLossPct: effectiveRakePct,
-    expectedFieldLossLabel, portfolioCoveragePct, estimatedPaidPlaces, estimatedMinCash: entryFee * 2,
-    notes: []
+    prizePool,
+    estimatedPaidPlaces,
+    estimatedMinCash: entryFee * 2,
   };
 };
 

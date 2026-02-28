@@ -39,7 +39,7 @@ describe('SlateSavvy Authoritative Data Layer', () => {
     const lineups = parseOptimizerLineupsFromText(MOCK_CSV, referencePlayers);
     expect(lineups.length).toBe(1);
     expect(lineups[0].players?.length).toBe(8);
-    expect(lineups[0].missingCount).toBe(0);
+    expect(lineups[0].playerIds.length).toBe(8);
     // Verify player object is hydrated
     expect(lineups[0].players?.[0].name).toBe("Brandin Podziemski");
   });
@@ -48,7 +48,7 @@ describe('SlateSavvy Authoritative Data Layer', () => {
     const { referencePlayers } = parsePipelineJson(JSON.stringify(MOCK_PIPELINE));
     const csvFloats = `Lineup_ID,PG,SG,SF,PF,C,G,F,UTIL\n1,1641764.0,1642272.0,1627741,203076,1642852,1642267,1630529,1630595`;
     const lineups = parseOptimizerLineupsFromText(csvFloats, referencePlayers);
-    expect(lineups[0].missingCount).toBe(0);
+    expect(lineups[0].playerIds.length).toBe(8);
     expect(lineups[0].playerIds[0]).toBe("1641764");
   });
 });

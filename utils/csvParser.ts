@@ -1,6 +1,6 @@
 
 import Papa from 'papaparse';
-import { Player, Lineup, ContestState } from '../types';
+import { Player, Lineup, ContestState, Team, GameInfo, HistoricalGame } from '../types';
 import { deriveContest } from './contest';
 
 /**
@@ -21,7 +21,10 @@ export const safeJsonParse = (content: any): any => {
 };
 
 export const normalizeName = (name: string): string => {
-  return name.toLowerCase()
+  return String(name || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
     .replace(/\s+(jr|sr|ii|iii|iv|v|1st|2nd|3rd)(\.?)$/g, '')
     .replace(/[^a-z]/g, '')
     .trim();
@@ -48,6 +51,78 @@ const toPct = (val: any): number => {
   if (n > 0 && n < 1.0) return n * 100;
   return n;
 };
+
+const toNumber = (val: any, fallback = 0): number => {
+  const n = Number(val);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const toOptionalNumber = (val: any): number | undefined => {
+  const n = Number(val);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+const normalizeTeamToken = (val: any): string =>
+  String(val ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+const parseGameInfoMatchup = (value: any): { away: string; home: string } | null => {
+  const text = String(value ?? '');
+  const match = text.match(/([A-Z]{2,5})@([A-Z]{2,5})/i);
+  if (!match) return null;
+  return { away: match[1].toUpperCase(), home: match[2].toUpperCase() };
+};
+
+const readByNormalizedKey = (obj: any, keys: string[]): any => {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const wanted = new Set(keys.map(k => k.toLowerCase().replace(/[^a-z0-9]/g, '')));
+  for (const [k, v] of Object.entries(obj)) {
+    const normalized = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (wanted.has(normalized)) return v;
+  }
+  return undefined;
+};
+
+const NBA_TEAM_ALIASES: Record<string, string[]> = {
+  ATL: ['ATLANTA'],
+  BOS: ['BOSTON'],
+  BKN: ['BROOKLYN'],
+  CHA: ['CHARLOTTE'],
+  CHI: ['CHICAGO'],
+  CLE: ['CLEVELAND'],
+  DAL: ['DALLAS'],
+  DEN: ['DENVER'],
+  DET: ['DETROIT'],
+  GSW: ['GOLDENSTATE'],
+  HOU: ['HOUSTON'],
+  IND: ['INDIANA'],
+  LAC: ['LOSANGELESCLIPPERS', 'LACLIPPERS', 'CLIPPERS'],
+  LAL: ['LOSANGELESLAKERS', 'LALAKERS', 'LAKERS'],
+  MEM: ['MEMPHIS'],
+  MIA: ['MIAMI'],
+  MIL: ['MILWAUKEE'],
+  MIN: ['MINNESOTA'],
+  NOP: ['NEWORLEANS'],
+  NYK: ['NEWYORK'],
+  OKC: ['OKLAHOMACITY'],
+  ORL: ['ORLANDO'],
+  PHI: ['PHILADELPHIA'],
+  PHX: ['PHOENIX'],
+  POR: ['PORTLAND'],
+  SAC: ['SACRAMENTO'],
+  SAS: ['SANANTONIO'],
+  TOR: ['TORONTO'],
+  UTA: ['UTAH'],
+  WAS: ['WASHINGTON'],
+};
+
+const NBA_TEAM_ALIAS_REVERSE: Record<string, string> = Object.entries(NBA_TEAM_ALIASES)
+  .reduce((acc, [abbr, aliases]) => {
+    aliases.forEach((alias) => {
+      acc[normalizeTeamToken(alias)] = abbr;
+    });
+    acc[normalizeTeamToken(abbr)] = abbr;
+    return acc;
+  }, {} as Record<string, string>);
 
 export const buildPlayerIndex = (pool: Player[]) => {
   const byId = new Map<string, Player>();
@@ -127,6 +202,7 @@ export const parseProjections = (file: File | string): Promise<Player[]> => {
             name,
             position: row[map.position || 'Position'] || 'FLEX',
             team: row[map.team || 'Team'] || row['TeamAbbrev'] || 'UNK',
+            opponent: row['Opponent'] || 'UNK',
             salary: parseFloat(row[map.salary || 'Salary'] || '0') || 0,
             projection: parseFloat(row[map.projection || 'Fpts'] || '0') || 0,
             ceiling: parseFloat(row[map.ceiling || 'Ceiling'] || '0') || 0,
@@ -208,25 +284,23 @@ export const parseOptimizerLineupsFromRows = (rows: any[], playerPool: Player[],
     const lineupIdRaw = String(row[headerMap.id || ''] || index + 1);
     lineups.push({
       id: `${source === 'reference' ? 'Ref' : 'OPT'}-${lineupIdRaw}`,
-      lineupIdRaw,
+      
       playerIds,
       players: matchedPlayers,
       totalSalary: matchedPlayers.reduce((s, p) => s + p.salary, 0),
       totalProjection: matchedPlayers.reduce((s, p) => s + p.projection, 0),
       totalCeiling: matchedPlayers.reduce((s, p) => s + (p.ceiling || 0), 0),
       totalOwnership: matchedPlayers.reduce((s, p) => s + (p.ownership || 0), 0),
-      set: (row[headerMap.set || ''] || 'Unknown') as any,
+      
       simEV: headerMap.ev ? parseFloat(row[headerMap.ev]) : undefined,
       simROI: headerMap.roi ? toPct(row[headerMap.roi]) : undefined,
       winProbPct: headerMap.win ? toPct(row[headerMap.win]) : undefined,
       top10Pct: headerMap.top10 ? toPct(row[headerMap.top10]) : undefined,
       cashPct: headerMap.cash ? toPct(row[headerMap.cash]) : undefined,
-      tailEV: headerMap.tail ? parseFloat(row[headerMap.tail]) : undefined,
-      finalRankScore: headerMap.rank ? parseFloat(row[headerMap.rank]) : undefined,
+      
+      
       lineupSource: source,
-      rawPlayerRefs,
-      missingRefs,
-      missingCount: missingRefs.length
+      
     });
   });
   
@@ -280,6 +354,7 @@ export const parseUserLineupsRows = (file: File): Promise<Lineup[]> => {
             name: row[map.name] || 'Unknown',
             position: row[map.position] || 'UTIL',
             team: row[map.team] || 'UNK',
+            opponent: 'UNK',
             salary: parseFloat(row[map.salary] || '0') || 0,
             projection: parseFloat(row[map.projection] || '0') || 0,
             ownership: parseFloat(row[map.ownership] || '0') || 0,
@@ -288,15 +363,13 @@ export const parseUserLineupsRows = (file: File): Promise<Lineup[]> => {
           }));
           lineups.push({
             id: `USR-${lid}`,
-            lineupIdRaw: lid,
             playerIds: matchedPlayers.map(p => p.id),
             players: matchedPlayers,
             totalSalary: matchedPlayers.reduce((s, p) => s + p.salary, 0),
             totalProjection: matchedPlayers.reduce((s, p) => s + p.projection, 0),
             totalOwnership: matchedPlayers.reduce((s, p) => s + (p.ownership || 0), 0),
             totalCeiling: matchedPlayers.reduce((s, p) => s + (p.ceiling || 0), 0),
-            lineupSource: 'player_row_csv',
-            missingCount: matchedPlayers.length === 8 ? 0 : (8 - matchedPlayers.length)
+            lineupSource: 'user_upload',
           });
         });
         resolve(lineups);
@@ -306,52 +379,343 @@ export const parseUserLineupsRows = (file: File): Promise<Lineup[]> => {
   });
 };
 
-export const parsePipelineJson = (content: any): { referencePlayers: Player[]; contestState?: ContestState; diagnostics?: any; meta?: any; referenceLineups?: Lineup[]; files?: any } => {
+export const parsePipelineJson = (
+  content: any
+): {
+  referencePlayers: Player[];
+  contestState?: ContestState;
+  diagnostics?: any;
+  meta?: any;
+  referenceLineups?: Lineup[];
+  files?: any;
+  teams?: Team[];
+  games?: GameInfo[];
+} => {
+  if (!content) {
+    console.error("parsePipelineJson received null or undefined content");
+    return {
+      referencePlayers: [],
+      referenceLineups: [],
+      contestState: undefined,
+      diagnostics: { error: 'Invalid input content' },
+      meta: {},
+      files: {},
+      teams: [],
+      games: [],
+    };
+  }
+
   const json = safeJsonParse(content);
   let referencePlayers: Player[] = [];
   let referenceLineups: Lineup[] = [];
   let contestState: ContestState | undefined = undefined;
 
-  const playersData = json.data?.projections ?? json.players ?? json.projections;
+  const playersData = json.players ?? json.data?.projections ?? json.projections;
+  const rawTeams = Array.isArray(json.teams ?? json.data?.teams) ? (json.teams ?? json.data?.teams) : [];
+  const rawGames = Array.isArray(json.games ?? json.data?.games) ? (json.games ?? json.data?.games) : [];
+
+  const baseTeam = (teamId: string): Team => ({
+    teamId,
+    abbreviation: teamId,
+    name: teamId,
+    seasonStats: {
+      pace: 100,
+      offensiveEfficiency: 112,
+      defensiveEfficiency: 112,
+    },
+    positionalDvP: {},
+  });
+
+  type TeamCandidate = { team: Team; score: number };
+  const teamByToken = new Map<string, TeamCandidate[]>();
+
+  const scoreTeam = (team: Team): number => {
+    let score = 0;
+    const pace = team.seasonStats?.pace;
+    const off = team.seasonStats?.offensiveEfficiency;
+    const def = team.seasonStats?.defensiveEfficiency;
+    if (Number.isFinite(pace)) score += 1;
+    if (Number.isFinite(off)) score += 1;
+    if (Number.isFinite(def)) score += 1;
+    if (Number.isFinite(pace) && Math.abs((pace as number) - 100) > 0.01) score += 2;
+    if (Number.isFinite(off) && Math.abs((off as number) - 112) > 0.01) score += 2;
+    if (Number.isFinite(def) && Math.abs((def as number) - 112) > 0.01) score += 2;
+    score += Object.keys(team.positionalDvP || {}).length * 0.05;
+    return score;
+  };
+
+  const upsertCandidate = (token: string, candidate: TeamCandidate) => {
+    if (!token) return;
+    const list = teamByToken.get(token) || [];
+    list.push(candidate);
+    teamByToken.set(token, list);
+  };
+
+  rawTeams.forEach((t: any) => {
+    const candidates = [
+      normalizeTeamToken(t?.teamId),
+      normalizeTeamToken(t?.abbreviation),
+      normalizeTeamToken(t?.name),
+    ].filter(Boolean);
+    const short = candidates.find((c) => c.length <= 4) || candidates[0];
+    if (!short) return;
+
+    const team: Team = {
+      teamId: short,
+      abbreviation: short,
+      name: String(t?.name || short),
+      seasonStats: {
+        pace: toNumber(t?.seasonStats?.pace, 100),
+        offensiveEfficiency: toNumber(t?.seasonStats?.offensiveEfficiency, 112),
+        defensiveEfficiency: toNumber(t?.seasonStats?.defensiveEfficiency, 112),
+      },
+      positionalDvP: t?.positionalDvP && typeof t.positionalDvP === 'object' ? t.positionalDvP : {},
+    };
+    const candidate = { team, score: scoreTeam(team) };
+    upsertCandidate(short, candidate);
+    candidates.forEach((token) => upsertCandidate(token, candidate));
+  });
+
+  const pickBest = (candidates: TeamCandidate[]): Team => {
+    return [...candidates].sort((a, b) => b.score - a.score)[0].team;
+  };
+
+  const getTeam = (rawTeamId: any): Team => {
+    const token = normalizeTeamToken(rawTeamId);
+    if (!token) return baseTeam('UNK');
+    const canonicalKey =
+      NBA_TEAM_ALIAS_REVERSE[token] ||
+      (token.length <= 4 ? token : token.slice(0, 4));
+
+    const candidatePool: TeamCandidate[] = [];
+    const pushCandidates = (lookup: string) => {
+      const items = teamByToken.get(lookup);
+      if (items && items.length > 0) candidatePool.push(...items);
+    };
+
+    pushCandidates(token);
+    if (token.length > 4) pushCandidates(token.slice(0, 4));
+    if (token.length >= 3) {
+      for (const [knownToken, entries] of teamByToken.entries()) {
+        if (knownToken.startsWith(token) || token.startsWith(knownToken)) {
+          candidatePool.push(...entries);
+        }
+      }
+    }
+
+    const aliasTokens = NBA_TEAM_ALIASES[token];
+    if (aliasTokens) {
+      aliasTokens.forEach((alias) => pushCandidates(normalizeTeamToken(alias)));
+    }
+
+    if (candidatePool.length > 0) {
+      const best = pickBest(candidatePool);
+      return {
+        ...best,
+        teamId: canonicalKey,
+        abbreviation: canonicalKey,
+      };
+    }
+
+    return baseTeam(canonicalKey);
+  };
+
+  const normalizedGames: GameInfo[] = rawGames.map((g: any, i: number) => {
+    const awayRaw = g?.awayTeamId ?? g?.teamA?.teamId ?? g?.away ?? g?.awayTeam;
+    const homeRaw = g?.homeTeamId ?? g?.teamB?.teamId ?? g?.home ?? g?.homeTeam;
+    const teamA = getTeam(awayRaw);
+    const teamB = getTeam(homeRaw);
+    return {
+      matchupKey: String(g?.matchupKey || g?.gameId || `${teamA.teamId}_vs_${teamB.teamId}_${i}`),
+      teamA,
+      teamB,
+      gameTime: String(g?.gameTime || g?.startTime || 'TBD'),
+      spread: toNumber(g?.spread ?? g?.line, 0),
+      overUnder: toNumber(g?.overUnder ?? g?.total ?? g?.ou, 0),
+    };
+  });
+
+  const opponentByTeam = new Map<string, string>();
+  normalizedGames.forEach((g) => {
+    opponentByTeam.set(g.teamA.teamId, g.teamB.teamId);
+    opponentByTeam.set(g.teamB.teamId, g.teamA.teamId);
+  });
 
   if (Array.isArray(playersData)) {
     referencePlayers = playersData.map((p: any, i: number) => {
-      const team = (p.TeamAbbrev ?? p.Team ?? p.team ?? 'UNK').toUpperCase();
-      const rawId = p.ID ?? p.Id ?? p.id ?? p.DK_ID ?? p.dk_id ?? p.playerId;
-      
-      let opponent = p.opponent ?? 'UNK';
-      const gameInfo = p["Game Info"] || p["GameInfo"] || p.game_info;
-      if (gameInfo && typeof gameInfo === 'string') {
-        const matchup = gameInfo.split(' ')[0]; 
-        if (matchup.includes('@')) {
-          const parts = matchup.split('@');
-          const teamA = parts[0].toUpperCase();
-          const teamB = parts[1].toUpperCase();
-          opponent = teamA === team ? teamB : teamA;
-        }
-      }
+      const slateData = p?.slateData || {};
+      const metrics = p?.advancedMetrics || {};
+
+      const rawTeam = p?.teamId ?? p?.TeamAbbrev ?? p?.team ?? p?.Team;
+      const normalizedTeam = getTeam(rawTeam).teamId;
+      const directOpponent = p?.opponent ?? p?.Opponent ?? p?.opponentTeamId;
+      const parsedMatchup = parseGameInfoMatchup(p?.['Game Info'] ?? p?.gameInfo);
+      const inferredOpponent =
+        directOpponent
+          ? getTeam(directOpponent).teamId
+          : parsedMatchup
+            ? (normalizedTeam === getTeam(parsedMatchup.away).teamId
+                ? getTeam(parsedMatchup.home).teamId
+                : getTeam(parsedMatchup.away).teamId)
+            : opponentByTeam.get(normalizedTeam) || '';
+
+      const playByPlayGames = Array.isArray(p?.last5PlayByPlay) ? p.last5PlayByPlay : [];
+      const rawHistoricalLog =
+        (Array.isArray(p?.historicalGameLog) && p.historicalGameLog) ||
+        (Array.isArray(p?.historical_game_log) && p.historical_game_log) ||
+        (Array.isArray(p?.gameLog) && p.gameLog) ||
+        (Array.isArray(p?.gamelog) && p.gamelog) ||
+        (Array.isArray(readByNormalizedKey(p, ['historicalgamelog', 'historicalgamelogs', 'gamelog'])) &&
+          readByNormalizedKey(p, ['historicalgamelog', 'historicalgamelogs', 'gamelog'])) ||
+        [];
+
+      const historyFromHistoricalLog: HistoricalGame[] = rawHistoricalLog
+        .map((game: any) => {
+          const opponentRaw =
+            game?.opponentTeamId ??
+            game?.opponent ??
+            game?.opp ??
+            readByNormalizedKey(game, ['opponentteamid', 'opponent', 'opp']);
+
+          const minutesRaw =
+            game?.minutes ??
+            game?.mins ??
+            game?.min ??
+            game?.minutesPlayed ??
+            readByNormalizedKey(game, ['minutes', 'mins', 'min', 'minutesplayed']);
+
+          const actualRaw =
+            game?.fpts ??
+            game?.actual ??
+            game?.actualFpts ??
+            game?.fantasyPoints ??
+            readByNormalizedKey(game, ['fpts', 'actual', 'actualfpts', 'fantasypoints']);
+
+          const projectionRaw =
+            game?.projection ??
+            game?.projectedFantasyPoints ??
+            game?.proj ??
+            game?.projFpts ??
+            readByNormalizedKey(game, ['projection', 'projectedfantasypoints', 'proj', 'projfpts']);
+
+          const date = String(game?.date ?? game?.gameDate ?? readByNormalizedKey(game, ['date', 'gamedate']) ?? '');
+          const minutes = toNumber(minutesRaw, 0);
+          const fpts = toNumber(actualRaw, 0);
+
+          if (!date) return null;
+
+          return {
+            date,
+            opponent: getTeam(opponentRaw).teamId || String(opponentRaw || '--'),
+            minutes,
+            fpts,
+            projection: toOptionalNumber(projectionRaw),
+          } as HistoricalGame;
+        })
+        .filter((g: HistoricalGame | null): g is HistoricalGame => g !== null);
+
+      const historyFromPlayByPlay: HistoricalGame[] = playByPlayGames.map((game: any) => {
+        const chunks = Array.isArray(game?.chunks) ? game.chunks : [];
+        const minutes = chunks.reduce((sum: number, c: any) => sum + toNumber(c?.minutesPlayed, 0), 0);
+        const fpts = chunks.reduce((sum: number, c: any) => sum + toNumber(c?.fantasyPoints, 0), 0);
+        return {
+          date: String(game?.date || ''),
+          opponent: getTeam(game?.opponentTeamId).teamId,
+          minutes,
+          fpts,
+          projection: toOptionalNumber(
+            game?.projection ??
+            game?.projectedFantasyPoints ??
+            readByNormalizedKey(game, ['projection', 'projfpts', 'projectedfpts'])
+          ),
+        };
+      });
+
+      const latestChunks = playByPlayGames.length > 0
+        ? (playByPlayGames[playByPlayGames.length - 1]?.chunks || [])
+        : [];
+      const rotations = Array.isArray(latestChunks)
+        ? latestChunks.map((chunk: any) => ({
+            period: toNumber(chunk?.quarter, 1),
+            startSec: Math.max(0, Math.round(toNumber(chunk?.startMinute, 0) * 60)),
+            endSec: Math.max(0, Math.round(toNumber(chunk?.endMinute, 0) * 60)),
+            stats: {
+              minutes: toNumber(chunk?.minutesPlayed, 0),
+              pts: toNumber(chunk?.points, 0),
+              reb: toNumber(chunk?.rebounds, 0),
+              ast: toNumber(chunk?.assists, 0),
+              stl: toNumber(chunk?.steals, 0),
+              blk: toNumber(chunk?.blocks, 0),
+              to: toNumber(chunk?.turnovers, 0),
+              fpts: toNumber(chunk?.fantasyPoints, 0),
+            },
+          }))
+        : [];
+
+      const actualFromCandidates = toOptionalNumber(
+        slateData?.actual ??
+        p?.actual ??
+        p?.Actual ??
+        p?.actualFpts ??
+        p?.ActualFpts ??
+        readByNormalizedKey(p, ['actual', 'actualfpts', 'fptsactual', 'dkactual'])
+      );
+      const resolvedHistory =
+        historyFromHistoricalLog.length > 0
+          ? historyFromHistoricalLog
+          : (historyFromPlayByPlay.length > 0
+            ? historyFromPlayByPlay
+            : (Array.isArray(p?.history) ? p.history : []));
+
+      const latestHistoryFpts = resolvedHistory.length > 0
+        ? resolvedHistory[resolvedHistory.length - 1].fpts
+        : undefined;
+
+      const projection = toNumber(
+        slateData?.projection ??
+        p?.projection ??
+        p?.DK_FPTS_PROJ ??
+        readByNormalizedKey(p, ['projection', 'projfpts', 'dkfptsproj']),
+        0
+      );
 
       const player: Player = {
-        ...p, // Non-lossy spread from JSON data
-        id: canonicalizeId(rawId || `${p.Name ?? p.name}-${i}`),
-        name: p.Name ?? p.name,
-        team,
-        opponent,
-        position: Array.isArray(p.Position) ? p.Position.join('/') : (p.Position ?? 'FLEX'),
-        salary: Number(p.Salary ?? p.salary ?? 0),
-        projection: Number(p.DK_FPTS_PROJ ?? p.projection ?? 0),
-        ceiling: Number(p.CEILING ?? p.ceiling ?? 0),
-        floor: Number(p.FLOOR ?? p.floor ?? 0),
-        ownership: Number(p.OWN_MEAN ?? p.OWNERSHIP ?? p["Own%"] ?? 0),
-        value: 0
+        ...p,
+        ...metrics,
+        ...slateData,
+        id: canonicalizeId(p?.playerId || p?.id || p?.ID || `${p?.name || p?.Name}-${i}`),
+        name: String(p?.name || p?.Name || `Player ${i + 1}`),
+        position: String(p?.position || p?.Position || 'UTIL'),
+        team: normalizedTeam,
+        opponent: inferredOpponent,
+        salary: toNumber(slateData?.salary ?? p?.salary ?? p?.Salary, 0),
+        projection,
+        ceiling: toOptionalNumber(slateData?.ceiling ?? p?.ceiling ?? p?.CEILING),
+        floor: toOptionalNumber(slateData?.floor ?? p?.floor ?? p?.FLOOR),
+        ownership: toOptionalNumber(slateData?.ownership ?? p?.ownership ?? p?.OWN_MEAN),
+        minutesProjection: toOptionalNumber(
+          slateData?.minutesProjection ??
+          p?.minutesProjection ??
+          p?.MinutesProjection ??
+          readByNormalizedKey(p, ['minutesprojection', 'projminutes', 'minutes'])
+        ),
+        usageRate: toOptionalNumber(metrics?.usageRate ?? p?.usageRate ?? p?.USG),
+        actual: actualFromCandidates ?? latestHistoryFpts,
+        history: resolvedHistory,
+        rotations: rotations.length > 0 ? rotations : p?.rotations,
+        last5PlayByPlay: playByPlayGames,
       };
-      
+      player.value = player.salary > 0 ? (player.projection / player.salary) * 1000 : 0;
       return player;
     });
 
     const optLineups = json.data?.optimized_lineups ?? json.lineups;
     if (optLineups) {
-      referenceLineups = parseOptimizerLineupsFromRows(Array.isArray(optLineups) ? optLineups : (optLineups.optimizer_core || []), referencePlayers, 'reference');
+      referenceLineups = parseOptimizerLineupsFromRows(
+        Array.isArray(optLineups) ? optLineups : (optLineups.optimizer_core || []),
+        referencePlayers,
+        'reference'
+      );
     }
   }
 
@@ -363,9 +727,25 @@ export const parsePipelineJson = (content: any): { referencePlayers: Player[]; c
       fieldSize: Number(json.contest.field_size || 0),
       maxEntries: Number(json.contest.max_entries || 20),
       rakePct: Number(json.contest.rake_pct || 0) > 1 ? Number(json.contest.rake_pct) / 100 : Number(json.contest.rake_pct || 0),
-      paidPctGuess: 0.22, 
+      paidPctGuess: 0.22,
     };
     contestState = { input, derived: deriveContest(input) };
   }
-  return { referencePlayers, contestState, diagnostics: json.diagnostics, meta: json.meta, referenceLineups, files: json.files };
+
+  return {
+    referencePlayers,
+    contestState,
+    diagnostics: json.diagnostics,
+    meta: json.meta,
+    referenceLineups,
+    files: json.files,
+    teams: Array.from(
+      new Map(
+        Array.from(teamByToken.values())
+          .flat()
+          .map((candidate) => [candidate.team.teamId, candidate.team])
+      ).values()
+    ),
+    games: normalizedGames,
+  };
 };

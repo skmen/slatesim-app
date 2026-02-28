@@ -20,6 +20,7 @@ const META_DIR_URL = (() => {
 })();
 
 const CURRENT_APP_ORIGIN =
+  (window as any).__APP_ORIGIN__ ||
   (window.location.origin && window.location.origin !== "null" && !window.location.origin.startsWith("blob"))
     ? window.location.origin
     : (META_ORIGIN || "https://aistudio.google.com");
@@ -53,70 +54,6 @@ const PUBLISHABLE_KEY = ENV_KEY || "pk_test_bG92ZWQtY291Z2FyLTYuY2xlcmsuYWNjb3Vu
 if (!PUBLISHABLE_KEY || PUBLISHABLE_KEY.includes('REPLACE_ME')) {
   throw new Error("Missing Clerk Publishable Key. Set VITE_CLERK_PUBLISHABLE_KEY in your environment or provide a valid fallback.");
 }
-
-// --- SHIMS START ---
-
-/**
- * A. WORKER SHIM
- * Essential for sandboxed environments that block Web Workers via CSP.
- */
-class MockWorker {
-  onmessage = null;
-  onmessageerror = null;
-  onerror = null;
-  constructor(stringUrl: string | URL, options?: WorkerOptions) { 
-    console.log("MockWorker initialized"); 
-  }
-  postMessage(msg: any) { return; }
-  terminate() { return; }
-  addEventListener() { return; }
-  removeEventListener() { return; }
-  dispatchEvent() { return true; }
-}
-// @ts-ignore
-window.Worker = MockWorker;
-// @ts-ignore
-globalThis.Worker = MockWorker;
-
-/**
- * B. URL SHIM
- * Prevents "URL constructor" crashes in restricted origins.
- * Ensures relative URLs resolve against the dynamic CURRENT_APP_ORIGIN.
- */
-const NativeURL = window.URL;
-// @ts-ignore
-window.URL = function(url: string | URL, base?: string | URL) {
-  let finalBase = base;
-  if (!finalBase && typeof url === 'string') {
-    const s = url;
-    // Check for a scheme at the start of the string, not just the presence of ':'
-    const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s);
-    if (s.startsWith('/') || !hasScheme) {
-      finalBase = CURRENT_APP_ORIGIN;
-    }
-  }
-
-  try {
-    const u = new NativeURL(url, finalBase || CURRENT_APP_ORIGIN);
-    if (u.origin === "null" || u.protocol === "blob:" || u.hostname === "localhost") {
-      return new NativeURL(u.pathname + u.search + u.hash, CURRENT_APP_ORIGIN);
-    }
-    return u;
-  } catch (e) {
-    return new NativeURL("/", CURRENT_APP_ORIGIN); 
-  }
-} as any;
-
-window.URL.prototype = NativeURL.prototype;
-Object.getOwnPropertyNames(NativeURL).forEach(prop => {
-  if (prop !== 'prototype' && prop !== 'name' && prop !== 'length') {
-    try {
-      // @ts-ignore
-      window.URL[prop] = NativeURL[prop];
-    } catch (e) {}
-  }
-});
-// --- SHIM END ---
 
 /**
  * 2. REDIRECT & NAVIGATION HELPERS

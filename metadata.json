@@ -1,6 +1,6 @@
 {
   "name": "SlateSim",
-  "description": "Professional NBA DFS Analytics Dashboard. Run lineup simulations against the field to identify high-leverage rosters and win probability.",
+  "description": "Professional NBA DFS Research and Backtesting Analytics Dashboard. Analyze historical trends, player rotations, and matchup synergies to build winning lineups.",
   "requestFramePermissions": [],
   "contestDefaults": {
     "presets": [

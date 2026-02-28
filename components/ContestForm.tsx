@@ -204,17 +204,7 @@ export const ContestForm: React.FC<Props> = ({ input, onChange, onClose }) => {
                   className="w-full px-4 py-2 rounded-lg border border-cloud-darker dark:border-gray-600 bg-white dark:bg-charcoal focus:ring-2 focus:ring-brand outline-none text-xs font-medium"
                 />
               </div>
-              <div className="space-y-2">
-                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider">Paid Places % Estimate</label>
-                <input 
-                  type="number" 
-                  step="0.01"
-                  min="0"
-                  value={input.paidPctGuess} 
-                  onChange={(e) => handleChange('paidPctGuess', Math.max(0, parseFloat(e.target.value) || 0))}
-                  className="w-full px-4 py-2 rounded-lg border border-cloud-darker dark:border-gray-600 bg-white dark:bg-charcoal focus:ring-2 focus:ring-brand outline-none text-xs font-medium"
-                />
-              </div>
+
             </div>
           )}
         </div>

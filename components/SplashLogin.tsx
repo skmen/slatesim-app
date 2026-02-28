@@ -61,16 +61,16 @@ export const SplashLogin: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-charcoal text-charcoal-text font-sans selection:bg-brand selection:text-charcoal">
-      <header className="fixed top-0 left-0 right-0 z-50 bg-charcoal/80 backdrop-blur-md border-b border-gray-800">
+    <div className="min-h-screen bg-background text-text-primary font-sans selection:bg-accent selection:text-background">
+      <header className="fixed top-0 left-0 right-0 z-50 bg-background/80 backdrop-blur-md border-b border-border-base">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="bg-brand p-1.5 rounded-lg"><Cpu className="w-5 h-5 text-charcoal" /></div>
-            <h1 className="font-black text-xl tracking-tighter leading-none italic uppercase">SLATE<span className="text-brand">SIM</span></h1>
+            <div className="bg-accent p-1.5 rounded-lg"><Cpu className="w-5 h-5 text-background" /></div>
+            <h1 className="font-black text-xl tracking-tighter leading-none italic uppercase">SLATE<span className="text-accent">SAVVY</span></h1>
           </div>
           <div className="flex items-center gap-2">
             <SignInButton mode="modal">
-              <button className="px-4 py-2 bg-brand hover:bg-brand-hover text-charcoal text-xs font-black uppercase rounded-lg transition-colors flex items-center gap-2">
+              <button className="px-4 py-2 bg-accent hover:opacity-90 text-background text-xs font-black uppercase rounded-lg transition-colors flex items-center gap-2">
                 <LogIn className="w-4 h-4" /> Log In
               </button>
             </SignInButton>
@@ -80,15 +80,24 @@ export const SplashLogin: React.FC = () => {
 
       <main className="pt-24 pb-12">
         <section className="text-center px-4">
+          <div className="inline-flex items-center gap-2 px-3 py-1 bg-accent/10 border border-accent/20 rounded-full mb-8">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-accent"></span>
+            </span>
+            <span className="text-[10px] font-black text-accent uppercase tracking-widest">Deep Stealth Mode Active</span>
+          </div>
+          
           <h2 className="text-3xl md:text-5xl font-black uppercase tracking-tighter italic">
-            Find Your <span className="text-brand terminal-glow">Winning Edge</span> in NBA DFS
+            Find Your <span className="text-accent terminal-glow">Winning Edge</span> in NBA DFS
           </h2>
-          <p className="max-w-2xl mx-auto mt-4 text-sm text-gray-400 font-mono leading-relaxed">
-            SlateSim is a professional analytics dashboard that runs thousands of simulations on your DFS lineups against the field, identifying high-leverage rosters and quantifying your actual win probability.
+          <p className="max-w-2xl mx-auto mt-4 text-sm text-text-secondary font-mono leading-relaxed">
+            SlateSavvy is a professional analytics dashboard for high-stakes DFS research. 
+            Built for analysts who demand data density, precision, and backtesting capabilities.
           </p>
 
-          <div className="mt-10 max-w-lg mx-auto bg-charcoal-card p-6 border border-gray-800 rounded-2xl shadow-2xl">
-            <h3 className="text-sm font-bold uppercase tracking-widest text-brand mb-4">Join the Private Beta</h3>
+          <div className="mt-10 max-w-lg mx-auto bg-surface p-6 border border-border-base rounded-2xl shadow-2xl">
+            <h3 className="text-sm font-bold uppercase tracking-widest text-accent mb-4">Join the Private Beta</h3>
             <form onSubmit={handleSubmit} className="space-y-4">
               <input 
                 type="hidden" 
@@ -102,20 +111,20 @@ export const SplashLogin: React.FC = () => {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="Enter your email address..."
-                className="w-full bg-charcoal border border-gray-700 rounded-lg px-4 py-3 text-xs font-bold text-white focus:border-brand outline-none transition-all placeholder:text-gray-600"
+                className="w-full bg-background border border-border-base rounded-lg px-4 py-3 text-xs font-bold text-white focus:border-accent outline-none transition-all placeholder:text-neutral"
                 disabled={status === 'submitting' || status === 'success'}
               />
               <button
                 type="submit"
-                className="w-full bg-brand hover:bg-brand-hover text-charcoal font-black py-3 rounded-lg shadow-lg shadow-brand/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full bg-accent hover:opacity-90 text-background font-black py-3 rounded-lg shadow-lg shadow-accent/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={status === 'submitting' || status === 'success'}
               >
                 {status === 'submitting' ? 'Submitting...' : 'Request Beta Access'}
                 {status !== 'submitting' && <Send className="w-4 h-4" />}
               </button>
               <div className="h-5 text-xs font-bold font-mono uppercase tracking-widest">
-                {status === 'success' && <p className="text-emerald-400 flex items-center justify-center gap-2 animate-in fade-in"><CheckCircle className="w-4 h-4"/>Thanks! We'll reach out soon.</p>}
-                {status === 'error' && <p className="text-red-400 flex items-center justify-center gap-2 animate-in fade-in"><AlertTriangle className="w-4 h-4"/>{error}</p>}
+                {status === 'success' && <p className="text-boom flex items-center justify-center gap-2 animate-in fade-in"><CheckCircle className="w-4 h-4"/>Thanks! We'll reach out soon.</p>}
+                {status === 'error' && <p className="text-bust flex items-center justify-center gap-2 animate-in fade-in"><AlertTriangle className="w-4 h-4"/>{error}</p>}
               </div>
             </form>
           </div>
@@ -123,14 +132,14 @@ export const SplashLogin: React.FC = () => {
 
         <section className="max-w-4xl mx-auto mt-20 px-4">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <Feature icon={Layers} title="Field Simulation">
-              Test your lineups against thousands of simulated opponent rosters to see how they perform in a realistic contest environment.
+            <Feature icon={Layers} title="Backtesting Engine">
+              Simulate your strategies against historical data to find true alpha and quantify your edge.
             </Feature>
-            <Feature icon={Zap} title="Leverage Analysis">
-              Identify "chalky" players and discover high-leverage pivots that differentiate your rosters and increase your GPP upside.
+            <Feature icon={Zap} title="Synergy Matrix">
+              Analyze player correlations and lineup overlap in real-time with advanced data density.
             </Feature>
-            <Feature icon={BarChart2} title="Quantify Win %">
-              Move beyond simple projections. Our engine calculates your true probability of winning, cashing, or landing in the top 1%.
+            <Feature icon={BarChart2} title="Positional DvP">
+              Advanced defensive rankings with positional granularity to identify high-leverage matchups.
             </Feature>
           </div>
         </section>
