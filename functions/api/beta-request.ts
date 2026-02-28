@@ -3,7 +3,7 @@
 
 // Environment variables that need to be set in your Cloudflare Pages project settings:
 // - RESEND_API_KEY: Your API key from Resend (resend.com)
-// - BETA_NOTIFY_EMAIL: The email address where you want to receive notifications (e.g., your personal email)
+// - BETA_NOTIFY_EMAIL (optional): Notification target; falls back to slatesiminfo@gmail.com if unset
 // - BETA_FROM_EMAIL: A verified "from" email address on your Resend account (e.g., beta@yourdomain.com)
 
 // Fix: Add type definition for Cloudflare PagesFunction to resolve "Cannot find name 'PagesFunction'" error.
@@ -19,7 +19,7 @@ type PagesFunction<Env = any> = (context: {
 
 interface Env {
   RESEND_API_KEY: string;
-  BETA_NOTIFY_EMAIL: string;
+  BETA_NOTIFY_EMAIL?: string;
   BETA_FROM_EMAIL: string;
 }
 
@@ -76,10 +76,13 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     }
 
     // 3. Check for required environment variables
-    if (!env.RESEND_API_KEY || !env.BETA_NOTIFY_EMAIL || !env.BETA_FROM_EMAIL) {
+    if (!env.RESEND_API_KEY || !env.BETA_FROM_EMAIL) {
         console.error("Missing environment variables for email notification.");
         return new Response(JSON.stringify({ error: 'Server configuration error.' }), { status: 500, headers });
     }
+
+    // Use explicit notify target when provided; fall back to the team inbox
+    const notifyEmail = env.BETA_NOTIFY_EMAIL || 'slatesiminfo@gmail.com';
 
     // 4. Send email using Resend API
     const resendResponse = await fetch('https://api.resend.com/emails', {
@@ -90,10 +93,10 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       },
       body: JSON.stringify({
         from: env.BETA_FROM_EMAIL,
-        to: env.BETA_NOTIFY_EMAIL,
-        subject: '🚀 New SlateSim Beta Request!',
+        to: notifyEmail,
+        subject: '🚀 New Slate Sim Beta Request!',
         html: `
-          <p>You have a new beta access request for SlateSim.</p>
+          <p>You have a new beta access request for Slate Sim.</p>
           <ul>
             <li><strong>Email:</strong> ${email}</li>
             <li><strong>Timestamp:</strong> ${new Date(body.ts || Date.now()).toUTCString()}</li>

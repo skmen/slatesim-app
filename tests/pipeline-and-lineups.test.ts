@@ -20,7 +20,7 @@ const MOCK_PIPELINE = {
 const MOCK_CSV = `Lineup_ID,PG,SG,SF,PF,C,G,F,UTIL,EV,TailScore
 1,1641764,1642272,1627741,203076,1642852,1642267,1630529,1630595,275,362`;
 
-describe('SlateSavvy Authoritative Data Layer', () => {
+describe('Slate Sim Authoritative Data Layer', () => {
   it('parses pipeline and extracts reference players', () => {
     const result = parsePipelineJson(JSON.stringify(MOCK_PIPELINE));
     expect(result.referencePlayers.length).toBe(8);
