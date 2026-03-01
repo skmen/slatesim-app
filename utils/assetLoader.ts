@@ -63,6 +63,7 @@ const safeJsonParse = (text: string): any => {
 };
 
 const R2_BASE_URL = 'https://pub-513149f63c494eefba758cd3927e2285.r2.dev';
+const INTERNAL_PROJECTIONS_URL = '/api/projections';
 
 const fetchOptionalJson = async (url: string): Promise<{ data: any | null; lastModified?: string; error?: string }> => {
   try {
@@ -143,7 +144,7 @@ export const loadSlateEcosystem = async (
   const targetDate = options.targetDate;
   const includeHistory = options.includeHistory !== false;
 
-  const slateUrl = `${R2_BASE_URL}/${targetDate}/slate.json`;
+  const slateUrl = `${INTERNAL_PROJECTIONS_URL}?date=${targetDate}`;
   const defaultInjuriesUrl = `${R2_BASE_URL}/${targetDate}/injuries.json`;
   const defaultDepthChartsUrl = `${R2_BASE_URL}/${targetDate}/nba_depth_charts.json`;
   const defaultStartingLineupsUrl = `${R2_BASE_URL}/${targetDate}/nba_starting_lineups.json`;
