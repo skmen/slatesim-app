@@ -24,7 +24,6 @@ interface Props {
   players: Player[];
   games: GameInfo[];
   slateDate?: string;
-  showActuals?: boolean;
   injuryLookup?: InjuryLookup | null;
   startingLineupLookup?: StartingLineupLookup | null;
 }
@@ -639,7 +638,7 @@ const computeOptimizerPriority = (player: Player, games: GameInfo[]): number => 
   return 0;
 };
 
-export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, showActuals: showActualsProp, injuryLookup, startingLineupLookup }) => {
+export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, injuryLookup, startingLineupLookup }) => {
   const isDateBeforeToday = (dateStr: string): boolean => {
     if (!dateStr) return false;
     const input = new Date(dateStr);
@@ -671,11 +670,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     return isDateBeforeToday(slateDate);
   }, [slateDate]);
 
-  const showActuals = useMemo(() => {
-    const base = typeof showActualsProp === 'boolean' ? showActualsProp : true;
-    if (!slateDate) return base;
-    return base && isDateBeforeToday(slateDate);
-  }, [slateDate, showActualsProp]);
   const [expandedLineupId, setExpandedLineupId] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [lockedIds, setLockedIds] = useState<string[]>([]);
@@ -922,32 +916,10 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       .filter((p): p is Player => Boolean(p));
   };
 
-  const getPlayerActual = (player: Player): number | null => {
-    const raw = player.actual ?? player.actualFpts ?? player.actual_fpts ?? player.history?.[player.history.length - 1]?.fpts;
-    const num = Number(raw);
-    return Number.isFinite(num) ? num : null;
-  };
-
-  const getLineupActualTotal = (lineup: Lineup): number | null => {
-    const lineupPlayers = getLineupPlayers(lineup);
-    let total = 0;
-    let hasActual = false;
-    lineupPlayers.forEach((p) => {
-      const val = getPlayerActual(p);
-      if (val !== null) {
-        total += val;
-        hasActual = true;
-      }
-    });
-    return hasActual ? Number(total.toFixed(2)) : null;
-  };
-
   const sortedLineups = useMemo(() => {
     const indexMap = new Map<string, number>();
-    const actualMap = new Map<string, number | null>();
     generatedLineups.forEach((lineup, idx) => {
       indexMap.set(lineup.id, idx);
-      actualMap.set(lineup.id, getLineupActualTotal(lineup));
     });
     const rows = [...generatedLineups];
     rows.sort((a, b) => {
@@ -955,7 +927,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         switch (lineupSort.key) {
           case 'index': return indexMap.get(lineup.id) ?? 0;
           case 'projection': return lineup.totalProjection;
-          case 'actual': return actualMap.get(lineup.id) ?? -Infinity;
           case 'salary': return config.salaryCap - lineup.totalSalary;
           default: return lineup.totalProjection;
         }
@@ -1105,7 +1076,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           games={games}
           onClose={() => setSelectedPlayer(null)}
           isHistorical={isHistorical}
-          showActuals={showActuals}
+          showActuals={true}
           depthCharts={undefined}
           injuryLookup={injuryLookup}
           startingLineupLookup={startingLineupLookup}
@@ -1217,12 +1188,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                     Proj{lineupSort.key === 'projection' ? (lineupSort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
                   </th>
                   <th
-                    onClick={() => setLineupSort(nextSort(lineupSort, 'actual', 'desc'))}
-                    className="px-4 py-3 text-right cursor-pointer select-none"
-                  >
-                    Actual{lineupSort.key === 'actual' ? (lineupSort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
-                  </th>
-                  <th
                     onClick={() => setLineupSort(nextSort(lineupSort, 'salary', 'desc'))}
                     className="px-4 py-3 text-right cursor-pointer select-none"
                   >
@@ -1234,7 +1199,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                 {sortedLineups.map((lineup, i) => {
                   const lineupPlayers = getLineupPlayers(lineup);
                   const names = lineupPlayers.map((p) => p.name).join(', ');
-                  const actualTotal = getLineupActualTotal(lineup);
                   const remainingSalary = config.salaryCap - lineup.totalSalary;
                   const isExpanded = expandedLineupId === lineup.id;
                   return (
@@ -1247,27 +1211,22 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                         <td className="px-4 py-3 text-ink/70 max-w-[320px] truncate">{names || '—'}</td>
                         <td className="px-4 py-3 text-right font-black text-emerald-600">{lineup.totalProjection.toFixed(2)}</td>
                         <td className="px-4 py-3 text-right font-bold text-ink/60">
-                          {actualTotal !== null ? actualTotal.toFixed(2) : '--'}
-                        </td>
-                        <td className="px-4 py-3 text-right font-bold text-ink/60">
                           ${Math.max(0, remainingSalary).toLocaleString()}
                         </td>
                       </tr>
                       {isExpanded && (
                         <tr className="border-b border-ink/10 bg-ink/5">
-                          <td colSpan={5} className="px-4 py-3">
+                          <td colSpan={4} className="px-4 py-3">
                             <div className="grid grid-cols-1 gap-2">
-                            <div className={`grid ${showActuals ? 'grid-cols-8' : 'grid-cols-7'} text-[11px] font-black uppercase tracking-widest text-ink/40`}>
+                            <div className="grid grid-cols-7 text-[11px] font-black uppercase tracking-widest text-ink/40">
                               <span className="col-span-2">Player</span>
                               <span className="text-right">Team</span>
                               <span className="text-right">Pos</span>
                               <span className="text-right">Salary</span>
                               <span className="text-right">Lev Tier</span>
                               <span className="text-right">Proj</span>
-                              {showActuals && <span className="text-right">Actual</span>}
                             </div>
                             {lineupPlayers.map((player) => {
-                              const actual = getPlayerActual(player);
                               const levTier = getLeverageTier(player);
                               const injuryInfo = getPlayerInjuryInfo(player, injuryLookup);
                               const startingInfo = getPlayerStartingLineupInfo(player, startingLineupLookup);
@@ -1276,7 +1235,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                               const startStatus = startingInfo?.status;
                               const showStarter = startStatus === 'confirmed' || startStatus === 'expected';
                               return (
-                                  <div key={player.id} className={`grid ${showActuals ? 'grid-cols-8' : 'grid-cols-7'} text-[13px] font-mono text-ink/70`}>
+                                  <div key={player.id} className="grid grid-cols-7 text-[13px] font-mono text-ink/70">
                                     <span className="col-span-2 font-bold text-ink">
                                       <button
                                         type="button"
@@ -1316,9 +1275,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                                     <span className="text-right">
                                       {Number.isFinite(Number(player.projection)) ? Number(player.projection).toFixed(2) : '--'}
                                     </span>
-                                    {showActuals && (
-                                      <span className="text-right">{actual !== null ? actual.toFixed(2) : '--'}</span>
-                                    )}
                                   </div>
                               );
                             })}
@@ -1331,7 +1287,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                 })}
                 {generatedLineups.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-12 text-center text-ink/40 font-black uppercase tracking-widest italic opacity-50">
+                    <td colSpan={4} className="px-4 py-12 text-center text-ink/40 font-black uppercase tracking-widest italic opacity-50">
                       No lineups generated yet
                     </td>
                   </tr>

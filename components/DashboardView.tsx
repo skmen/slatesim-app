@@ -1051,7 +1051,7 @@ export const DashboardView: React.FC<Props> = ({ players, games, isHistorical, s
           games={effectiveGames}
           onClose={() => setSelectedPlayer(null)}
           isHistorical={isHistorical}
-          showActuals={showActuals}
+          showActuals={true}
           injuryLookup={injuryLookup}
           depthCharts={depthCharts}
           startingLineupLookup={startingLineupLookup}

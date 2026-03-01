@@ -405,13 +405,10 @@ const AppContent: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [isHistorical, setIsHistorical] = useState(false);
   const [selectedDate, setSelectedDate] = useState(getLocalDateStr(new Date()));
-  const [showActuals, setShowActuals] = useState(true);
   const [injuryLookup, setInjuryLookup] = useState<InjuryLookup>(new Map());
   const [dataLastModified, setDataLastModified] = useState<string | null>(null);
   const [depthCharts, setDepthCharts] = useState<any | null>(null);
   const [startingLineupLookup, setStartingLineupLookup] = useState<StartingLineupLookup>(new Map());
-  const allowHistoricalActuals = useMemo(() => isDateBeforeToday(selectedDate), [selectedDate]);
-  const effectiveShowActuals = showActuals && allowHistoricalActuals;
   const formattedLastModified = useMemo(() => {
     if (!dataLastModified) return null;
     const parsed = new Date(dataLastModified);
@@ -511,7 +508,7 @@ const AppContent: React.FC = () => {
     };
 
     initApp();
-  }, [selectedDate, allowHistoricalActuals]);
+  }, [selectedDate]);
 
   useEffect(() => {
     setIsHistorical(isDateBeforeToday(state.slate.date));
@@ -640,13 +637,7 @@ const AppContent: React.FC = () => {
                 onChange={(e) => setSelectedDate(e.target.value)}
                 className="bg-vellum border border-ink/20 rounded-sm px-2 py-1 text-xs font-bold text-ink outline-none focus:border-drafting-orange"
               />
-              <button
-                onClick={() => setShowActuals((prev) => !prev)}
-                disabled={!allowHistoricalActuals}
-                className="text-[10px] font-black border border-ink/20 px-2 py-1 rounded uppercase tracking-widest text-ink/60 hover:text-drafting-orange hover:border-drafting-orange transition-all"
-              >
-                {!allowHistoricalActuals ? 'Actuals Unavailable' : (showActuals ? 'Hide Actuals' : 'Reveal Actuals')}
-              </button>
+              <span className="text-[10px] font-black text-ink/40 uppercase tracking-widest">Actuals limited to Deep Dive</span>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -682,7 +673,7 @@ const AppContent: React.FC = () => {
             players={state.slate.players}
             games={state.slate.games || []}
             isHistorical={isHistorical}
-            showActuals={effectiveShowActuals}
+            showActuals={false}
             injuryLookup={injuryLookup}
             depthCharts={depthCharts}
             startingLineupLookup={startingLineupLookup}
@@ -693,7 +684,7 @@ const AppContent: React.FC = () => {
             players={state.slate.players}
             games={state.slate.games}
             slateDate={state.slate.date}
-            showActuals={effectiveShowActuals}
+            showActuals={false}
             injuryLookup={injuryLookup}
             startingLineupLookup={startingLineupLookup}
           />
@@ -701,7 +692,7 @@ const AppContent: React.FC = () => {
       </main>
 
       <IntegrityFooter />
-      <LineupDrawer players={state.slate.players} showActuals={effectiveShowActuals} />
+      <LineupDrawer players={state.slate.players} showActuals={false} />
 
       <nav className="fixed bottom-0 left-0 right-0 bg-white/80 border-t border-ink/10 px-6 py-2 pb-safe z-40 shadow-2xl backdrop-blur-md">
            <div className="flex justify-around items-center max-w-lg mx-auto">
