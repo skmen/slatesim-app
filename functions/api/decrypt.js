@@ -17,6 +17,13 @@ const DEFAULT_DATA_BASE_URL = 'https://pub-513149f63c494eefba758cd3927e2285.r2.d
 const te = new TextEncoder();
 const td = new TextDecoder();
 
+const safeJsonParse = (text) => {
+  const sanitized = text
+    .replace(/\bNaN\b/g, 'null')
+    .replace(/\b-?Infinity\b/g, 'null');
+  return JSON.parse(sanitized);
+};
+
 const base64ToUint8 = (b64) => {
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);
@@ -33,7 +40,7 @@ const decrypt = async (cryptoKey, encrypted) => {
   const iv = base64ToUint8(encrypted.iv);
   const cipherBytes = base64ToUint8(encrypted.payload);
   const plainBuf = await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, cryptoKey, cipherBytes);
-  return JSON.parse(td.decode(new Uint8Array(plainBuf)));
+  return safeJsonParse(td.decode(new Uint8Array(plainBuf)));
 };
 
 export const onRequest = async ({ request, env }) => {
