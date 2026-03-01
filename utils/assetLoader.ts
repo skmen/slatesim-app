@@ -62,8 +62,6 @@ const safeJsonParse = (text: string): any => {
   return JSON.parse(sanitized);
 };
 
-const DEFAULT_DATA_BASE_URL = 'https://pub-513149f63c494eefba758cd3927e2285.r2.dev';
-const DATA_BASE_URL = (import.meta as any)?.env?.VITE_DATA_BASE_URL || DEFAULT_DATA_BASE_URL;
 const INTERNAL_PROJECTIONS_URL = '/api/projections';
 const INTERNAL_DECRYPT_URL = '/api/decrypt';
 
@@ -95,12 +93,14 @@ const fetchOptionalWithFallback = async (
   filename: string,
   maxLookbackDays = 30
 ): Promise<OptionalFallbackResult> => {
+  // Strip any .json suffix; decrypt endpoint appends internally
+  const fileBase = filename.replace(/\.json$/i, '');
   const firstCheckDate = targetDate;
   let currentDate = firstCheckDate;
   let lastError: string | undefined;
 
   for (let dayOffset = 0; dayOffset < maxLookbackDays; dayOffset += 1) {
-    const url = `${R2_BASE_URL}/${currentDate}/${filename}`;
+    const url = `${INTERNAL_DECRYPT_URL}?file=${fileBase}&date=${currentDate}`;
     const result = await fetchOptionalJson(url);
 
     if (result.data) {
@@ -122,7 +122,7 @@ const fetchOptionalWithFallback = async (
   return {
     data: null,
     asOf: firstCheckDate,
-    url: `${R2_BASE_URL}/${firstCheckDate}/${filename}`,
+    url: `${INTERNAL_DECRYPT_URL}?file=${fileBase}&date=${firstCheckDate}`,
     error: lastError || `No ${filename} found in last ${maxLookbackDays} days`,
   };
 };
