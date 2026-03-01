@@ -62,7 +62,8 @@ const safeJsonParse = (text: string): any => {
   return JSON.parse(sanitized);
 };
 
-const R2_BASE_URL = 'https://pub-513149f63c494eefba758cd3927e2285.r2.dev';
+const DEFAULT_DATA_BASE_URL = 'https://pub-513149f63c494eefba758cd3927e2285.r2.dev';
+const DATA_BASE_URL = (import.meta as any)?.env?.VITE_DATA_BASE_URL || DEFAULT_DATA_BASE_URL;
 const INTERNAL_PROJECTIONS_URL = '/api/projections';
 
 const fetchOptionalJson = async (url: string): Promise<{ data: any | null; lastModified?: string; error?: string }> => {
@@ -145,12 +146,12 @@ export const loadSlateEcosystem = async (
   const includeHistory = options.includeHistory !== false;
 
   const slateUrl = `${INTERNAL_PROJECTIONS_URL}?date=${targetDate}`;
-  const defaultInjuriesUrl = `${R2_BASE_URL}/${targetDate}/injuries.json`;
-  const defaultDepthChartsUrl = `${R2_BASE_URL}/${targetDate}/nba_depth_charts.json`;
-  const defaultStartingLineupsUrl = `${R2_BASE_URL}/${targetDate}/nba_starting_lineups.json`;
-  const defaultRotationsUrl = `${R2_BASE_URL}/${targetDate}/rotations.json`;
-  const defaultBoxscoresUrl = `${R2_BASE_URL}/${targetDate}/boxscores.json`;
-  const defaultStatsUrl = `${R2_BASE_URL}/${targetDate}/stats.json`;
+  const defaultInjuriesUrl = `${DATA_BASE_URL}/${targetDate}/injuries.json`;
+  const defaultDepthChartsUrl = `${DATA_BASE_URL}/${targetDate}/nba_depth_charts.json`;
+  const defaultStartingLineupsUrl = `${DATA_BASE_URL}/${targetDate}/nba_starting_lineups.json`;
+  const defaultRotationsUrl = `${DATA_BASE_URL}/${targetDate}/rotations.json`;
+  const defaultBoxscoresUrl = `${DATA_BASE_URL}/${targetDate}/boxscores.json`;
+  const defaultStatsUrl = `${DATA_BASE_URL}/${targetDate}/stats.json`;
 
   const settled = await Promise.allSettled([
     fetchRequiredJson(slateUrl),
