@@ -851,10 +851,36 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     if (generatedLineups.length === 0) return;
 
     // DraftKings CSV Format: PG,SG,SF,PF,C,G,F,UTIL
-    const headers = ['PG', 'SG', 'SF', 'PF', 'C', 'G', 'F', 'UTIL'];
-    const rows = generatedLineups.map(lineup => {
-      const lineupPlayers = getLineupPlayers(lineup);
-      return headers.map(slot => lineupPlayers.find(p => p.position.includes(slot))?.id || '').join(',');
+    const headers = ['PG', 'SG', 'SF', 'PF', 'C', 'G', 'F', 'UTIL'] as const;
+
+    const takeFirst = (players: Player[], predicate: (p: Player) => boolean) => {
+      const idx = players.findIndex(predicate);
+      if (idx === -1) return null;
+      return players.splice(idx, 1)[0];
+    };
+
+    const rows = generatedLineups.map((lineup) => {
+      const remaining = [...getLineupPlayers(lineup)];
+      const positions = (p: Player) => p.position.split('/');
+
+      const slotMap: Record<typeof headers[number], string> = {
+        PG: takeFirst(remaining, (p) => positions(p).includes('PG'))?.id || '',
+        SG: takeFirst(remaining, (p) => positions(p).includes('SG'))?.id || '',
+        SF: takeFirst(remaining, (p) => positions(p).includes('SF'))?.id || '',
+        PF: takeFirst(remaining, (p) => positions(p).includes('PF'))?.id || '',
+        C: takeFirst(remaining, (p) => positions(p).includes('C'))?.id || '',
+        G: takeFirst(remaining, (p) => {
+          const pos = positions(p);
+          return pos.includes('G') || pos.includes('PG') || pos.includes('SG');
+        })?.id || '',
+        F: takeFirst(remaining, (p) => {
+          const pos = positions(p);
+          return pos.includes('F') || pos.includes('SF') || pos.includes('PF');
+        })?.id || '',
+        UTIL: takeFirst(remaining, () => true)?.id || '',
+      };
+
+      return headers.map((slot) => slotMap[slot]).join(',');
     });
 
     const csvContent = [headers.join(','), ...rows].join('\n');
@@ -862,7 +888,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `slatesavvy_lineups_${new Date().getTime()}.csv`);
+    link.setAttribute('download', `slatesim_lineups_${new Date().getTime()}.csv`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
