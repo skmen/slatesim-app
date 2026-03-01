@@ -4,13 +4,15 @@
  *   - file: required, base filename without extension (e.g., "injuries", "rotations", "stats")
  *   - date: optional YYYY-MM-DD (defaults to today UTC)
  *
- * Expects the encrypted object at: `${env.DATA_BASE_URL}/${date}/${file}.json`
+ * Expects the encrypted object at: `${DATA_BASE_URL}/${date}/${file}.json`
  * The object format: { iv: "<base64>", payload: "<base64>" }
  *
  * Env:
  *   ENCRYPTION_KEY   // 32-char secret
- *   DATA_BASE_URL    // base URL to the R2 bucket/domain hosting encrypted files
+ *   DATA_BASE_URL    // base URL to the R2 bucket/domain hosting encrypted files (public)
  */
+
+const DEFAULT_DATA_BASE_URL = 'https://pub-513149f63c494eefba758cd3927e2285.r2.dev';
 
 const te = new TextEncoder();
 const td = new TextDecoder();
@@ -44,8 +46,10 @@ export const onRequest = async ({ request, env }) => {
       return new Response(JSON.stringify({ error: 'file required' }), { status: 400, headers });
     }
 
-    const base = env.DATA_BASE_URL || env.PROJECTIONS_URL?.replace(/\/\{date\}.+$/, '') || '';
-    if (!base) throw new Error('Missing DATA_BASE_URL');
+    const base =
+      env.DATA_BASE_URL ||
+      env.PROJECTIONS_URL?.replace(/\/\{date\}.+$/, '') ||
+      DEFAULT_DATA_BASE_URL;
     const target = `${base.replace(/\/$/, '')}/${date}/${file}.json`;
 
     const key = await importKey(env.ENCRYPTION_KEY);
