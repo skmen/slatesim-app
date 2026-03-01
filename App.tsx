@@ -14,6 +14,7 @@ import { loadSlateEcosystem } from './utils/assetLoader';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LineupProvider } from './context/LineupContext';
 import { SplashLogin } from './components/SplashLogin';
+import { PricingPage } from './components/PricingPage';
 import { LineupDrawer } from './components/LineupDrawer';
 
 // ... (Keep existing INITIAL_STATE, IntegrityFooter, AppContent unchanged) ...
@@ -405,10 +406,13 @@ const AppContent: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [isHistorical, setIsHistorical] = useState(false);
   const [selectedDate, setSelectedDate] = useState(getLocalDateStr(new Date()));
+  const [showActuals, setShowActuals] = useState(true);
   const [injuryLookup, setInjuryLookup] = useState<InjuryLookup>(new Map());
   const [dataLastModified, setDataLastModified] = useState<string | null>(null);
   const [depthCharts, setDepthCharts] = useState<any | null>(null);
   const [startingLineupLookup, setStartingLineupLookup] = useState<StartingLineupLookup>(new Map());
+  const allowHistoricalActuals = useMemo(() => isDateBeforeToday(selectedDate), [selectedDate]);
+  const effectiveShowActuals = showActuals && allowHistoricalActuals;
   const formattedLastModified = useMemo(() => {
     if (!dataLastModified) return null;
     const parsed = new Date(dataLastModified);
@@ -508,7 +512,7 @@ const AppContent: React.FC = () => {
     };
 
     initApp();
-  }, [selectedDate]);
+  }, [selectedDate, allowHistoricalActuals]);
 
   useEffect(() => {
     setIsHistorical(isDateBeforeToday(state.slate.date));
@@ -637,7 +641,13 @@ const AppContent: React.FC = () => {
                 onChange={(e) => setSelectedDate(e.target.value)}
                 className="bg-vellum border border-ink/20 rounded-sm px-2 py-1 text-xs font-bold text-ink outline-none focus:border-drafting-orange"
               />
-              <span className="text-[10px] font-black text-ink/40 uppercase tracking-widest">Actuals limited to Deep Dive</span>
+              <button
+                onClick={() => setShowActuals((prev) => !prev)}
+                disabled={!allowHistoricalActuals}
+                className="text-[10px] font-black border border-ink/20 px-2 py-1 rounded uppercase tracking-widest text-ink/60 hover:text-drafting-orange hover:border-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {!allowHistoricalActuals ? 'Actuals Unavailable' : (showActuals ? 'Hide Actuals' : 'Reveal Actuals')}
+              </button>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -673,7 +683,7 @@ const AppContent: React.FC = () => {
             players={state.slate.players}
             games={state.slate.games || []}
             isHistorical={isHistorical}
-            showActuals={false}
+            showActuals={effectiveShowActuals}
             injuryLookup={injuryLookup}
             depthCharts={depthCharts}
             startingLineupLookup={startingLineupLookup}
@@ -684,7 +694,7 @@ const AppContent: React.FC = () => {
             players={state.slate.players}
             games={state.slate.games}
             slateDate={state.slate.date}
-            showActuals={false}
+            showActuals={effectiveShowActuals}
             injuryLookup={injuryLookup}
             startingLineupLookup={startingLineupLookup}
           />
@@ -692,7 +702,7 @@ const AppContent: React.FC = () => {
       </main>
 
       <IntegrityFooter />
-      <LineupDrawer players={state.slate.players} showActuals={false} />
+      <LineupDrawer players={state.slate.players} showActuals={effectiveShowActuals} />
 
       <nav className="fixed bottom-0 left-0 right-0 bg-white/80 border-t border-ink/10 px-6 py-2 pb-safe z-40 shadow-2xl backdrop-blur-md">
            <div className="flex justify-around items-center max-w-lg mx-auto">
@@ -717,6 +727,7 @@ const AppContent: React.FC = () => {
 // Handles the case where Clerk hangs indefinitely due to blocked workers.
 const AuthShell: React.FC = () => {
   const { isLoaded, isSignedIn } = useUser();
+  const isPricingRoute = typeof window !== 'undefined' && window.location.pathname === '/pricing';
 
   if (!isLoaded) {
     return (
@@ -727,6 +738,11 @@ const AuthShell: React.FC = () => {
         </p>
       </div>
     );
+  }
+
+  // Public pricing page (no auth required)
+  if (isPricingRoute) {
+    return <PricingPage />;
   }
 
   if (isSignedIn) {
