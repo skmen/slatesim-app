@@ -20,7 +20,7 @@ type PagesFunction<Env = any> = (context: {
 interface Env {
   RESEND_API_KEY: string;
   BETA_NOTIFY_EMAIL?: string;
-  BETA_FROM_EMAIL: string;
+  BETA_FROM_EMAIL?: string;
 }
 
 interface BetaRequestBody {
@@ -76,13 +76,15 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     }
 
     // 3. Check for required environment variables
-    if (!env.RESEND_API_KEY || !env.BETA_FROM_EMAIL) {
-        console.error("Missing environment variables for email notification.");
+    if (!env.RESEND_API_KEY) {
+        console.error("Missing RESEND_API_KEY for email notification.");
         return new Response(JSON.stringify({ error: 'Server configuration error.' }), { status: 500, headers });
     }
 
     // Use explicit notify target when provided; fall back to the team inbox
     const notifyEmail = env.BETA_NOTIFY_EMAIL || 'slatesiminfo@gmail.com';
+    // Allow a safe default from address for Resend sandbox sending if not provided
+    const fromEmail = env.BETA_FROM_EMAIL || 'onboarding@resend.dev';
 
     // 4. Send email using Resend API
     const resendResponse = await fetch('https://api.resend.com/emails', {
@@ -92,7 +94,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: env.BETA_FROM_EMAIL,
+        from: fromEmail,
         to: notifyEmail,
         subject: '🚀 New Slate Sim Beta Request!',
         html: `
