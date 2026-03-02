@@ -1,22 +1,14 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import Papa from 'papaparse';
-import { Upload, Lock, Unlock, Download, SlidersHorizontal } from 'lucide-react';
-import { Player, GameInfo } from '../types';
+import { Upload, Lock, Unlock, Download, Zap, ShieldCheck, ShieldAlert, X } from 'lucide-react';
+import { Player, GameInfo, Lineup } from '../types';
 import { PlayerDeepDive } from './PlayerDeepDive';
-
-/**
- * DraftKings Entry Manager
- * - Parse DKEntries.csv (first 12 cols)
- * - Batch apply optimizer lineups
- * - Inline edit slots
- * - Late swap marking + placeholder optimizer trigger
- * - Export back to DK upload format
- */
 
 type Slot = 'PG' | 'SG' | 'SF' | 'PF' | 'C' | 'G' | 'F' | 'UTIL';
 
 const SLOT_ORDER: Slot[] = ['PG', 'SG', 'SF', 'PF', 'C', 'G', 'F', 'UTIL'];
 const REQUIRED_COLS = ['Entry ID', 'Contest Name', 'Contest ID', 'Entry Fee', ...SLOT_ORDER];
+const SALARY_CAP = 50000;
 
 export type Entry = {
   entryId: string;
@@ -24,56 +16,132 @@ export type Entry = {
   contestId: string;
   entryFee: string;
   slots: Record<Slot, string>;
+  projectedPoints?: number;
+  currentPoints?: number;
+  remainingSalary?: number;
 };
 
-const iconLocked = <Lock className="w-4 h-4 text-red-500 inline ml-1" />;
-const iconUnlocked = <Unlock className="w-4 h-4 text-emerald-600 inline ml-1" />;
+const parseGameTime = (timeStr: string): Date | null => {
+  if (!timeStr) return null;
+  const now = new Date();
+  const timePart = timeStr.match(/(\d{1,2}:\d{2})\s*(AM|PM)/i);
+  if (!timePart) return null;
 
-type Props = {
-  players: Player[];
-  games: GameInfo[];
-  showActuals?: boolean;
+  let [_, time, modifier] = timePart;
+  let [hours, minutes] = time.split(':').map(Number);
+
+  if (modifier.toUpperCase() === 'PM' && hours < 12) hours += 12;
+  if (modifier.toUpperCase() === 'AM' && hours === 12) hours = 0;
+
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes);
 };
+
+const formatPlayerName = (name: string) => {
+    const parts = name.split(' ');
+    if (parts.length < 2) return name;
+    return `${parts[0][0]}. ${parts.slice(1).join(' ')}`;
+}
 
 export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = false }) => {
   const [entries, setEntries] = useState<Entry[]>([]);
-  const [lockedTeams, setLockedTeams] = useState<string[]>([]);
-  const [lateSwapMode, setLateSwapMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<{ entryIdx: number; slot: Slot } | null>(null);
   const [showCandidates, setShowCandidates] = useState(false);
   const [deepDivePlayer, setDeepDivePlayer] = useState<Player | null>(null);
+  const [manualLocks, setManualLocks] = useState<Set<string>>(new Set());
+  const [playerScores, setPlayerScores] = useState<Record<string, number>>({});
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const playerRefs = useRef<Record<string, HTMLDivElement>>({});
 
-  // -------- CSV PARSING --------
+  const gameStartedCache = useMemo(() => {
+    const cache = new Map<string, boolean>();
+    const now = new Date();
+    games.forEach((game) => {
+      const gameTime = parseGameTime(game.gameTime);
+      const started = gameTime ? now >= gameTime : false;
+      cache.set(game.teamA.abbreviation, started);
+      cache.set(game.teamB.abbreviation, started);
+    });
+    return cache;
+  }, [games]);
+
+  const playerMap = useMemo(() => {
+    const map = new Map<string, Player>();
+    players.forEach(p => {
+      map.set(p.id, p);
+      map.set(`${p.name} (${p.id})`, p);
+    });
+    return map;
+  }, [players]);
+
+  const getPlayerFromString = (playerStr: string): Player | undefined => playerMap.get(playerStr);
+
+  const isGameStarted = (teamAbbr: string): boolean => !!gameStartedCache.get(teamAbbr.toUpperCase());
+
+  const isGameManuallyLocked = (game: GameInfo): boolean =>
+    manualLocks.has(game.teamA.abbreviation) || manualLocks.has(game.teamB.abbreviation);
+
+  const isPlayerLocked = (playerString: string): boolean => {
+    const player = getPlayerFromString(playerString);
+    if (!player) return false;
+    if (isGameStarted(player.team)) return true;
+    
+    const game = games.find(g => g.teamA.abbreviation === player.team || g.teamB.abbreviation === player.team);
+    return game ? isGameManuallyLocked(game) : false;
+  };
+  
   const handleCsv = (file: File) => {
     Papa.parse(file, {
-      header: true,
+      header: false,
       skipEmptyLines: true,
       complete: (result) => {
-        const rows = result.data as Record<string, string>[];
-        const mapped: Entry[] = [];
+        const rows = result.data as string[][];
+        const newEntries: Entry[] = [];
+        const newPlayerScores: Record<string, number> = {};
+
         rows.forEach((row) => {
-          const hasCols = REQUIRED_COLS.every((c) => c in row);
-          if (!hasCols) return;
-          const slots: Record<Slot, string> = {
-            PG: row['PG'] || '',
-            SG: row['SG'] || '',
-            SF: row['SF'] || '',
-            PF: row['PF'] || '',
-            C: row['C'] || '',
-            G: row['G'] || '',
-            F: row['F'] || '',
-            UTIL: row['UTIL'] || '',
-          };
-          mapped.push({
-            entryId: row['Entry ID'] || '',
-            contestName: row['Contest Name'] || '',
-            contestId: row['Contest ID'] || '',
-            entryFee: row['Entry Fee'] || '',
-            slots,
-          });
+          if (row[0] && row[2]) { // Entry row
+            const slots: Record<Slot, string> = {
+              PG: row[4] || '', SG: row[5] || '', SF: row[6] || '', PF: row[7] || '',
+              C: row[8] || '', G: row[9] || '', F: row[10] || '', UTIL: row[11] || '',
+            };
+            const salary = SLOT_ORDER.reduce((sum, s) => sum + (getPlayerFromString(slots[s])?.salary || 0), 0);
+            newEntries.push({
+              entryId: row[0],
+              contestName: row[1],
+              contestId: row[2],
+              entryFee: row[3],
+              slots,
+              remainingSalary: SALARY_CAP - salary,
+            });
+          } else if (!row[0] && !row[2] && row[14]) { // Player score row
+            const playerId = row[15];
+            const score = parseFloat(row[21]);
+            if (playerId && !isNaN(score)) {
+              newPlayerScores[playerId] = score;
+            }
+          }
         });
-        setEntries(mapped);
+        
+        setPlayerScores(newPlayerScores);
+
+        const updatedEntries = newEntries.map(entry => {
+          let currentPoints = 0;
+          let projectedPoints = 0;
+          SLOT_ORDER.forEach(slot => {
+            const player = getPlayerFromString(entry.slots[slot]);
+            if (player) {
+              const score = newPlayerScores[player.id] || player.projection || 0;
+              if (isPlayerLocked(entry.slots[slot])) {
+                currentPoints += score;
+              }
+              projectedPoints += score;
+            }
+          });
+          return { ...entry, currentPoints, projectedPoints };
+        });
+
+        setEntries(updatedEntries);
       },
       error: (err) => {
         console.error('CSV parse error', err);
@@ -82,61 +150,16 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     });
   };
 
-  const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const file = e.dataTransfer.files?.[0];
-    if (file) handleCsv(file);
-  };
-
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) handleCsv(file);
   };
 
-  // -------- INLINE EDITING --------
-  const updateSlot = (idx: number, slot: Slot, value: string) => {
-    setEntries((prev) =>
-      prev.map((en, i) => (i === idx ? { ...en, slots: { ...en.slots, [slot]: value } } : en))
-    );
-  };
-
-  // -------- BATCH APPLY LINEUPS --------
-  // optimizedLineups: array of objects with slot names mapping to player strings
-  const handleBatchApply = (optimizedLineups: Record<Slot, string>[]) => {
-    if (!optimizedLineups.length) return;
-    setEntries((prev) =>
-      prev.map((en, i) => {
-        const lineup = optimizedLineups[i % optimizedLineups.length];
-        return { ...en, slots: { ...en.slots, ...lineup } };
-      })
-    );
-  };
-
-  // -------- LATE SWAP --------
-  const toggleLockedTeam = (team: string) => {
-    setLockedTeams((prev) =>
-      prev.includes(team) ? prev.filter((t) => t !== team) : [...prev, team]
-    );
-  };
-
-  const isPlayerLocked = (player: string) => {
-    const tokens = player.split(/[^A-Z0-9]+/i).map((t) => t.toUpperCase());
-    return lockedTeams.some((team) => tokens.includes(team.toUpperCase()));
-  };
-
-  // -------- EXPORT CSV --------
   const downloadCsv = () => {
     if (!entries.length) return;
     const rows = entries.map((en) => {
-      const row: Record<string, string> = {
-        'Entry ID': en.entryId,
-        'Contest Name': en.contestName,
-        'Contest ID': en.contestId,
-        'Entry Fee': en.entryFee,
-      };
-      SLOT_ORDER.forEach((s) => {
-        row[s] = en.slots[s] || '';
-      });
+      const row: Record<string, string> = { 'Entry ID': en.entryId, 'Contest Name': en.contestName, 'Contest ID': en.contestId, 'Entry Fee': en.entryFee };
+      SLOT_ORDER.forEach((s) => { row[s] = en.slots[s] || ''; });
       return row;
     });
     const csv = Papa.unparse(rows, { columns: REQUIRED_COLS });
@@ -149,20 +172,9 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     URL.revokeObjectURL(url);
   };
 
-  // -------- DERIVED --------
-  const grouped = useMemo(() => {
-    const map = new Map<string, Entry[]>();
-    entries.forEach((en) => {
-      const list = map.get(en.contestName) || [];
-      list.push(en);
-      map.set(en.contestName, list);
-    });
-    return map;
-  }, [entries]);
-
   const openSwapModal = (entryIdx: number, slot: Slot) => {
     const current = entries[entryIdx]?.slots[slot] || '';
-    if (current && isPlayerLocked(current)) return; // locked cannot be swapped
+    if (current && isPlayerLocked(current)) return;
     setSelectedSlot({ entryIdx, slot });
     setShowCandidates(true);
   };
@@ -170,206 +182,281 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
   const applySwap = (playerName: string) => {
     if (!selectedSlot) return;
     setEntries((prev) =>
-      prev.map((en, idx) =>
-        idx === selectedSlot.entryIdx
-          ? { ...en, slots: { ...en.slots, [selectedSlot.slot]: playerName } }
-          : en
-      )
+      prev.map((en, idx) => {
+        if (idx !== selectedSlot.entryIdx) return en;
+        const newSlots = { ...en.slots, [selectedSlot.slot]: playerName };
+        let currentPoints = 0;
+        let projectedPoints = 0;
+        let salary = 0;
+        SLOT_ORDER.forEach(slot => {
+            const player = getPlayerFromString(newSlots[slot]);
+            if(player) {
+                salary += player.salary;
+                const score = playerScores[player.id] || player.projection || 0;
+                if (isPlayerLocked(newSlots[slot])) {
+                    currentPoints += score;
+                }
+                projectedPoints += score;
+            }
+        });
+        return { ...en, slots: newSlots, projectedPoints, currentPoints, remainingSalary: SALARY_CAP - salary };
+      })
     );
     setShowCandidates(false);
   };
-
+  
   const candidatePlayers = useMemo(() => {
     if (!selectedSlot) return [];
-    return players.filter((p) => p.position && p.position.split(/[\\/ ,]+/).includes(selectedSlot.slot));
+    const positions: string[] = (() => {
+      switch (selectedSlot.slot) {
+        case 'G': return ['PG', 'SG'];
+        case 'F': return ['SF', 'PF'];
+        case 'UTIL': return ['PG', 'SG', 'SF', 'PF', 'C'];
+        default: return [selectedSlot.slot];
+      }
+    })();
+    return players
+      .filter(p => p.position && positions.some(pos => p.position.includes(pos)))
+      .sort((a,b) => b.salary - a.salary);
   }, [selectedSlot, players]);
 
-  const lockedPlayers = useMemo(
-    () =>
-      new Set(
-        entries.flatMap((en) =>
-          SLOT_ORDER.map((s) => en.slots[s]).filter((p) => p && isPlayerLocked(p))
-        )
-      ),
-    [entries, lockedTeams]
-  );
+  useEffect(() => {
+    if (showCandidates && selectedSlot && scrollContainerRef.current) {
+      const remainingSalary = entries[selectedSlot.entryIdx].remainingSalary || 0;
+      const playerOut = getPlayerFromString(entries[selectedSlot.entryIdx].slots[selectedSlot.slot]);
+      const budget = remainingSalary + (playerOut?.salary || 0);
+      const bestFit = candidatePlayers.find(p => p.salary <= budget) || candidatePlayers[0];
+      const container = scrollContainerRef.current;
+      const targetEl = bestFit ? playerRefs.current[bestFit.id] : null;
+      if (targetEl && container) {
+        const offset = targetEl.offsetTop - container.offsetTop;
+        container.scrollTo({ top: offset, behavior: 'smooth' });
+      }
+    }
+  }, [showCandidates, selectedSlot, candidatePlayers, entries]);
+
+  const currentLineupSalary = useMemo(() => {
+    if (!selectedSlot) return 0;
+    const entry = entries[selectedSlot.entryIdx];
+    return SLOT_ORDER.reduce((sum, s) => sum + (getPlayerFromString(entry.slots[s])?.salary || 0), 0);
+  }, [selectedSlot, entries, playerMap]);
+
+  const toggleManualLock = (game: GameInfo) => {
+    setManualLocks(prev => {
+        const next = new Set(prev);
+        const isLocked = isGameManuallyLocked(game);
+        [game.teamA.abbreviation, game.teamB.abbreviation].forEach(abbr => {
+            if(isLocked) next.delete(abbr);
+            else next.add(abbr);
+        });
+        return next;
+    });
+  }
+
+  const runLateSwap = () => {
+    const worker = new Worker(new URL('../../src/workers/optimizer.worker.ts', import.meta.url));
+
+    worker.onmessage = (e) => {
+      if (e.data.type === 'result') {
+        const optimizedLineups = e.data.lineups as Lineup[];
+        setEntries(prev => {
+          return prev.map((entry, index) => {
+            const optimizedLineup = optimizedLineups[index % optimizedLineups.length];
+            if (!optimizedLineup) return entry;
+            
+            const newSlots: Record<Slot, string> = { ...entry.slots };
+            const playerIds = optimizedLineup.playerIds;
+            const lineupPlayers = playerIds.map(id => players.find(p => p.id === id)).filter(Boolean) as Player[];
+
+            SLOT_ORDER.forEach(slot => {
+              if(!isPlayerLocked(entry.slots[slot])) {
+                const playerIndex = lineupPlayers.findIndex(p => p.position.includes(slot.toString()));
+                if(playerIndex > -1) {
+                  const player = lineupPlayers[playerIndex];
+                  newSlots[slot] = `${player.name} (${player.id})`;
+                  lineupPlayers.splice(playerIndex, 1);
+                }
+              }
+            });
+
+            let currentPoints = 0;
+            let projectedPoints = 0;
+            let salary = 0;
+            SLOT_ORDER.forEach(slot => {
+                const player = getPlayerFromString(newSlots[slot]);
+                if(player) {
+                    salary += player.salary;
+                    const score = playerScores[player.id] || player.projection || 0;
+                    if (isPlayerLocked(newSlots[slot])) {
+                        currentPoints += score;
+                    }
+                    projectedPoints += score;
+                }
+            });
+
+            return { ...entry, slots: newSlots, projectedPoints, currentPoints, remainingSalary: SALARY_CAP - salary };
+          });
+        });
+        worker.terminate();
+      }
+    };
+
+    const unlockedPlayers = players.filter(p => !isPlayerLocked(`${p.name} (${p.id})`));
+
+    worker.postMessage({
+      players: unlockedPlayers,
+      config: { salaryCap: SALARY_CAP, numLineups: entries.length, maxExposure: 1 },
+    });
+  };
 
   return (
-    <div className="min-h-screen bg-vellum text-ink font-sans p-4 space-y-6">
-      <div
-        onDrop={onDrop}
-        onDragOver={(e) => e.preventDefault()}
-        className="border-2 border-dashed border-ink/20 rounded-2xl p-6 text-center bg-white/70 hover:bg-white transition-colors cursor-pointer shadow-sm"
-        onClick={() => fileInputRef.current?.click()}
-      >
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".csv"
-          className="hidden"
-          onChange={onFileChange}
-        />
-        <div className="flex items-center justify-center gap-3 text-drafting-orange">
-          <Upload className="w-6 h-6" />
-          <div className="text-sm font-mono uppercase tracking-widest text-ink">
-            Drop DKEntries.csv or click to upload
+    <div className="flex flex-col h-full space-y-6 pb-24 bg-vellum text-black">
+      {/* Top Header */}
+      <div className="flex-shrink-0 bg-white border-b border-ink/10 p-4 flex items-center justify-between shadow-sm rounded-b-lg">
+        <div>
+          <h1 className="text-xl font-black uppercase tracking-wider text-black">Late Swap Manager</h1>
+          <p className="text-sm text-black/60">{entries.length} Entries Loaded</p>
+        </div>
+        <div className="flex items-center gap-4">
+          <button onClick={runLateSwap} className="px-5 py-2 rounded-lg bg-drafting-orange text-white font-bold text-sm uppercase tracking-widest shadow hover:brightness-110 transition-all">
+            <Zap className="inline-block w-4 h-4 mr-2"/>
+            Run Late Swap
+          </button>
+          <button onClick={downloadCsv} className="px-4 py-2 rounded-lg bg-white border border-ink/20 text-black font-bold text-sm uppercase tracking-widest hover:border-drafting-orange transition-all">
+            <Download className="inline-block w-4 h-4 mr-2"/>
+            Export CSV
+          </button>
+        </div>
+      </div>
+
+      <div className="flex flex-1 overflow-hidden">
+        {/* Left Panel: Slate Controls */}
+        <div className="w-[18%] flex-shrink-0 bg-white border-r border-ink/10 p-4 overflow-y-auto rounded-lg shadow-sm">
+          <h2 className="text-lg font-bold uppercase tracking-wider text-black mb-4">Slate Controls</h2>
+          <div className="space-y-3">
+              {games.map(game => {
+                  const isLive = isGameStarted(game.teamA.abbreviation) || isGameStarted(game.teamB.abbreviation);
+                  const isUpcoming = !isLive;
+                  const manuallyLocked = isGameManuallyLocked(game);
+
+                  return (
+                      <div key={game.matchupKey} className="bg-vellum p-3 rounded-lg border border-ink/10">
+                          <div className="flex items-center justify-between">
+                            <div>
+                                <span className={`px-2 py-1 rounded-full text-xs font-bold uppercase ${isLive ? 'bg-red-100 text-red-700' : 'bg-emerald-600 text-white'}`}>
+                                    {isLive ? 'Live' : 'Upcoming'}
+                                </span>
+                                <p className="text-sm font-bold text-black mt-1">{game.teamA.abbreviation} vs {game.teamB.abbreviation}</p>
+                                <p className="text-xs text-black/60">{game.gameTime}</p>
+                            </div>
+                            {isUpcoming && (
+                                <button onClick={() => toggleManualLock(game)} className={`p-2 rounded-full transition-colors ${manuallyLocked ? 'bg-blue-100 text-blue-700' : 'bg-white border border-ink/10 text-black hover:border-drafting-orange'}`}>
+                                    {manuallyLocked ? <Lock className="w-5 h-5"/> : <Unlock className="w-5 h-5"/>}
+                                </button>
+                            )}
+                          </div>
+                      </div>
+                  )
+              })}
           </div>
         </div>
-        <p className="text-xs text-ink/60 mt-2">
-          Only the first 12 DraftKings columns are read; extra columns are ignored.
-        </p>
-      </div>
 
-      <div className="flex flex-wrap gap-3 items-center">
-        <button
-          onClick={() => handleBatchApply([])}
-          className="px-3 py-2 rounded-lg bg-vellum border border-ink/20 text-sm font-black uppercase tracking-widest hover:border-drafting-orange flex items-center gap-2"
-        >
-          <SlidersHorizontal className="w-4 h-4" />
-          Batch Apply Lineups
-        </button>
-        <button
-          onClick={() => setLateSwapMode((p) => !p)}
-          className={`px-3 py-2 rounded-lg text-sm font-black uppercase tracking-widest border flex items-center gap-2 ${
-            lateSwapMode
-              ? 'bg-red-50 border-red-300 text-red-700'
-              : 'bg-vellum border-ink/20 hover:border-drafting-orange'
-          }`}
-        >
-          <Lock className="w-4 h-4" />
-          Late Swap Mode
-        </button>
-        <button
-          onClick={downloadCsv}
-          className="px-3 py-2 rounded-lg bg-vellum border border-ink/20 text-sm font-black uppercase tracking-widest hover:border-drafting-orange flex items-center gap-2"
-        >
-          <Download className="w-4 h-4" />
-          Download Updated Entries
-        </button>
-      </div>
-
-      {lateSwapMode && (
-        <div className="p-4 rounded-xl border border-red-300 bg-white shadow-sm">
-          <div className="text-xs font-black uppercase tracking-widest text-red-600 mb-2">
-            Mark Locked Teams (games started)
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {['BOS', 'NYK', 'LAL', 'GSW', 'MIA', 'DEN', 'PHI', 'DAL'].map((team) => {
-              const locked = lockedTeams.includes(team);
-              return (
-                <button
-                  key={team}
-                  onClick={() => toggleLockedTeam(team)}
-                  className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-widest border ${
-                    locked
-                      ? 'bg-red-50 border-red-300 text-red-700'
-                      : 'bg-vellum border-ink/20 text-ink hover:border-drafting-orange'
-                  }`}
+        {/* Right Panel: Entry Inspector */}
+        <div className="flex-1 p-4 overflow-y-auto">
+            {entries.length === 0 ? (
+                <div 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="h-full flex items-center justify-center border-4 border-dashed border-ink/20 rounded-xl text-black/50 hover:border-drafting-orange hover:text-black transition-all cursor-pointer bg-white"
                 >
-                  {team} {locked ? iconLocked : iconUnlocked}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      <div className="space-y-6">
-        {[...grouped.entries()].map(([contest, list]) => (
-          <div key={contest} className="border border-ink/10 rounded-xl bg-white shadow-sm">
-            <div className="px-4 py-3 border-b border-ink/10 flex items-center justify-between">
-              <div className="text-sm font-black uppercase tracking-widest text-drafting-orange">
-                {contest} — {list.length} entries
-              </div>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-vellum text-ink/60 text-[11px] uppercase tracking-widest">
-                  <tr>
-                    <th className="px-3 py-2">Entry ID</th>
-                    <th className="px-3 py-2">Contest ID</th>
-                    <th className="px-3 py-2">Entry Fee</th>
-                    {SLOT_ORDER.map((s) => (
-                      <th key={s} className="px-3 py-2">
-                        {s}
-                      </th>
+                    <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={onFileChange} />
+                    <div className="text-center">
+                        <Upload className="w-12 h-12 mx-auto mb-2 text-drafting-orange"/>
+                        <h3 className="text-lg font-bold uppercase text-black">Load Entries CSV</h3>
+                        <p className="text-black/60">Drop a file or click here to get started.</p>
+                    </div>
+                </div>
+            ) : (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                    {entries.map((entry, idx) => (
+                        <div key={entry.entryId} className="bg-white rounded-xl border border-ink/10 shadow-sm">
+                            <div className="p-3 border-b border-ink/10 flex justify-between items-center">
+                                <div>
+                                    <p className="text-sm font-bold text-black truncate">{entry.contestName}</p>
+                                    <p className="text-xs text-black/60 font-mono">
+                                      Current: {entry.currentPoints?.toFixed(2)} | Proj: {entry.projectedPoints?.toFixed(2)} | Rem. Salary: ${entry.remainingSalary?.toLocaleString()}
+                                    </p>
+                                </div>
+                                <div className="text-[11px] text-black/60 font-mono"></div>
+                            </div>
+                            <div className="p-3 space-y-2">
+                                {SLOT_ORDER.map(slot => {
+                                    const playerStr = entry.slots[slot];
+                                    const player = getPlayerFromString(playerStr);
+                                    const locked = isPlayerLocked(playerStr);
+                                    const proj = player ? (playerScores[player.id] || player.projection || 0) : 0;
+                                    const salaryK = player ? `$${(player.salary / 1000).toFixed(1)}k` : '$0.0k';
+                                    return (
+                                        <div
+                                          key={slot}
+                                          onClick={() => !locked && openSwapModal(idx, slot)}
+                                          className={`flex items-center justify-between rounded border px-2 py-2 ${locked ? 'bg-ink/5 border-ink/10' : 'bg-vellum border-ink/10 hover:border-drafting-orange cursor-pointer'}`}
+                                        >
+                                          <div className="flex items-center gap-3 w-full">
+                                            <span className="text-[10px] font-black uppercase text-black/60 min-w-[28px]">{slot}</span>
+                                            {player ? (
+                                              <div className="flex items-center w-full gap-3">
+                                                <span className={`text-sm font-bold text-black truncate ${locked ? 'opacity-70' : ''}`}>{formatPlayerName(player.name)}</span>
+                                                <span className="text-sm text-black/70 font-mono whitespace-nowrap">{salaryK}</span>
+                                                <span className="text-sm text-black/70 font-mono ml-auto whitespace-nowrap">{locked ? 'Current' : 'Proj'}: {proj.toFixed(2)}</span>
+                                              </div>
+                                            ) : (
+                                              <span className="text-black/40 text-sm font-mono flex-1">Empty</span>
+                                            )}
+                                          </div>
+                                          {locked && iconLocked}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
                     ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {list.map((en, rowIdx) => {
-                    const globalIdx = entries.indexOf(en);
-                    return (
-                      <tr
-                        key={en.entryId + rowIdx}
-                        className="border-t border-ink/10 hover:bg-vellum transition-colors"
-                      >
-                        <td className="px-3 py-2 font-mono text-xs text-ink/80">{en.entryId}</td>
-                        <td className="px-3 py-2 font-mono text-xs text-ink/80">{en.contestId}</td>
-                        <td className="px-3 py-2 font-mono text-xs text-ink/80">${en.entryFee}</td>
-                        {SLOT_ORDER.map((slot) => {
-                          const val = en.slots[slot] || '';
-                          const locked = val && isPlayerLocked(val);
-                          return (
-                            <td key={slot} className="px-3 py-2">
-                              <div className="flex items-center gap-2 text-sm">
-                                <input
-                                  value={val}
-                                  onClick={() => openSwapModal(globalIdx, slot)}
-                                  onChange={(e) => updateSlot(globalIdx, slot, e.target.value)}
-                                  disabled={locked}
-                                  className={`w-full bg-white border ${locked ? 'border-ink/10 text-ink/40' : 'border-ink/20 text-ink'} rounded px-2 py-1 text-xs focus:border-drafting-orange outline-none cursor-pointer`}
-                                  placeholder="Player Name (ID)"
-                                />
-                                <span>{locked ? iconLocked : null}</span>
-                              </div>
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ))}
+                </div>
+            )}
+        </div>
       </div>
+
       {showCandidates && selectedSlot && (
-        <div className="fixed inset-0 z-[120] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl border border-ink/10 w-full max-w-2xl max-h-[80vh] overflow-hidden shadow-2xl">
-            <div className="px-4 py-3 border-b border-ink/10 flex items-center justify-between">
-              <div className="text-sm font-black uppercase tracking-widest text-drafting-orange">
-                Swap {selectedSlot.slot}
-              </div>
-              <button
-                onClick={() => setShowCandidates(false)}
-                className="text-ink/40 hover:text-ink px-2 py-1 rounded"
-              >
-                Close
-              </button>
+        <div className="fixed inset-0 z-[120] bg-vellum/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div ref={scrollContainerRef} className="bg-vellum rounded-xl border border-ink/10 w-full max-w-3xl max-h-[80vh] overflow-hidden shadow-2xl flex flex-col">
+            <div className="p-4 border-b border-ink/10 flex items-center justify-between flex-shrink-0">
+                <div>
+                    <h3 className="text-lg font-black uppercase tracking-wider text-drafting-orange">Swap {selectedSlot.slot}</h3>
+                    <p className="text-sm text-black/70 font-mono">Remaining Salary: ${(SALARY_CAP - currentLineupSalary).toLocaleString()}</p>
+                </div>
+              <button onClick={() => setShowCandidates(false)} className="p-2 text-black/50 hover:text-black transition-colors rounded-full"><X className="w-5 h-5"/></button>
             </div>
-            <div className="overflow-y-auto max-h-[70vh] divide-y divide-ink/10">
+            <div className="overflow-y-auto flex-1 divide-y divide-ink/10">
               {candidatePlayers.map((p) => {
-                const locked = isPlayerLocked(`${p.name} ${p.team}`);
+                const locked = isPlayerLocked(`${p.name} (${p.id})`);
+                const playerOut = getPlayerFromString(entries[selectedSlot.entryIdx].slots[selectedSlot.slot]);
+                const salaryAfterSwap = currentLineupSalary - (playerOut?.salary || 0) + p.salary;
+                const canAfford = salaryAfterSwap <= SALARY_CAP;
+                
                 return (
-                  <div key={p.id} className="flex items-center justify-between px-4 py-2 hover:bg-vellum">
-                    <div className="flex flex-col">
-                      <button
-                        className="text-sm font-bold text-ink text-left hover:underline"
-                        onClick={() => setDeepDivePlayer(p)}
-                      >
+                  <div key={p.id} ref={el => playerRefs.current[p.id] = el!} className="flex items-center justify-between px-4 py-3 hover:bg-white">
+                    <div>
+                      <button className="text-lg font-black text-black text-left hover:underline" onClick={() => setDeepDivePlayer(p)}>
                         {p.name}
                       </button>
-                      <div className="text-[11px] text-ink/60 font-mono uppercase">
-                        {p.team} • {p.position} • ${p.salary?.toLocaleString?.() ?? '--'}
-                      </div>
+                      <span className="text-sm text-black/60 ml-3 font-mono">
+                        {p.team} - {p.position} - ${p.salary?.toLocaleString()}
+                      </span>
                     </div>
-                    <div className="flex items-center gap-3">
-                      {locked && iconLocked}
+                    <div className="flex items-center gap-4">
+                      {locked ? <ShieldAlert className="w-5 h-5 text-red-600"/> : <ShieldCheck className="w-5 h-5 text-emerald-600"/>}
                       <button
-                        className="px-3 py-1 rounded bg-drafting-orange text-white text-[11px] font-black uppercase tracking-widest disabled:opacity-40"
-                        disabled={locked}
+                        className="px-4 py-2 rounded bg-drafting-orange text-white text-xs font-bold uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110 transition-colors"
+                        disabled={locked || !canAfford}
                         onClick={() => applySwap(`${p.name} (${p.id})`)}
                       >
                         Swap In
@@ -384,17 +471,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
       )}
 
       {deepDivePlayer && (
-        <PlayerDeepDive
-          player={deepDivePlayer}
-          players={players}
-          games={games}
-          onClose={() => setDeepDivePlayer(null)}
-          isHistorical={false}
-          showActuals={showActuals}
-          depthCharts={undefined}
-          injuryLookup={undefined}
-          startingLineupLookup={undefined}
-        />
+        <PlayerDeepDive player={deepDivePlayer} players={players} games={games} onClose={() => setDeepDivePlayer(null)} isHistorical={false} showActuals={showActuals} depthCharts={undefined} injuryLookup={undefined} startingLineupLookup={undefined}/>
       )}
     </div>
   );

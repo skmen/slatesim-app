@@ -858,8 +858,8 @@ export const PlayerDeepDive: React.FC<Props> = ({ player, players, games, onClos
   ];
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-vellum/80 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-vellum border border-ink/10 rounded-sm w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-vellum/80 backdrop-blur-sm animate-in fade-in duration-200" onClick={onClose}>
+      <div className="bg-vellum border border-ink/10 rounded-sm w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="p-6 border-b border-ink/10 flex justify-between items-start bg-white/40">
           <div className="flex items-center gap-4">
             <div className="w-16 h-16 bg-drafting-orange/10 rounded-sm flex items-center justify-center border border-drafting-orange/20">

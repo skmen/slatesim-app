@@ -421,6 +421,15 @@ const AppContent: React.FC = () => {
     return parsed.toLocaleString();
   }, [dataLastModified]);
 
+  const displayedUpdated = useMemo(() => {
+    if (formattedLastModified) return formattedLastModified;
+    if (state.lastUpdated) {
+      const dt = new Date(state.lastUpdated);
+      if (Number.isFinite(dt.getTime())) return dt.toLocaleString();
+    }
+    return '—';
+  }, [formattedLastModified, state.lastUpdated]);
+
   useEffect(() => {
     const initApp = async () => {
       setLoading(true);
@@ -655,7 +664,7 @@ const AppContent: React.FC = () => {
             <div className="flex flex-col items-end mr-2">
               <span className="text-[10px] font-bold text-ink uppercase tracking-tighter">{user?.username}</span>
               <span className="text-[9px] font-bold text-ink/70 uppercase tracking-widest">
-                Updated: {formattedLastModified ?? '—'}
+                Updated: {displayedUpdated}
               </span>
               <span className="text-[8px] font-black text-drafting-orange uppercase opacity-80">{user?.role}</span>
             </div>
@@ -700,7 +709,7 @@ const AppContent: React.FC = () => {
             startingLineupLookup={startingLineupLookup}
           />
         )}
-        {view === ViewState.ENTRY_MANAGER && (
+        {view === ViewState.ENTRY_MANAGER && selectedDate === getLocalDateStr(new Date()) && (
           <DKEntryManager players={state.slate.players} games={state.slate.games} showActuals={effectiveShowActuals} />
         )}
       </main>
