@@ -62,7 +62,7 @@ const safeJsonParse = (text: string): any => {
   return JSON.parse(sanitized);
 };
 
-const INTERNAL_PROJECTIONS_URL = '/api/projections';
+const INTERNAL_PROJECTIONS_URL = (import.meta as any)?.env?.VITE_PROJECTIONS_ENDPOINT || '/api/projections';
 const INTERNAL_DECRYPT_URL = '/api/decrypt';
 
 const fetchOptionalJson = async (url: string): Promise<{ data: any | null; lastModified?: string; error?: string }> => {
