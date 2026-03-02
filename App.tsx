@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { BarChart2, Database, LogOut, Cpu, Lock, Zap } from 'lucide-react';
+import { BarChart2, List, LogOut, Cpu, Lock, Zap } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import { useUser, ClerkProvider, useAuth as useClerkAuth } from "@clerk/clerk-react"; 
 import { AppState, ViewState, ContestInput, ContestDerived, Entitlement, GameInfo } from './types';
@@ -16,6 +16,7 @@ import { LineupProvider } from './context/LineupContext';
 import { SplashLogin } from './components/SplashLogin';
 import { PricingPage } from './components/PricingPage';
 import { LineupDrawer } from './components/LineupDrawer';
+import DKEntryManager from './components/DKEntryManager';
 
 // ... (Keep existing INITIAL_STATE, IntegrityFooter, AppContent unchanged) ...
 // TO SAVE SPACE, I AM RE-USING YOUR EXISTING APP LOGIC BELOW
@@ -699,6 +700,9 @@ const AppContent: React.FC = () => {
             startingLineupLookup={startingLineupLookup}
           />
         )}
+        {view === ViewState.ENTRY_MANAGER && (
+          <DKEntryManager players={state.slate.players} games={state.slate.games} showActuals={effectiveShowActuals} />
+        )}
       </main>
 
       <IntegrityFooter />
@@ -708,6 +712,7 @@ const AppContent: React.FC = () => {
            <div className="flex justify-around items-center max-w-lg mx-auto">
               <NavItem label="Research" icon={BarChart2} targetView={ViewState.RESEARCH} setView={setView} view={view} hasEntitlement={hasEntitlement} />
               <NavItem label="Optimizer" icon={Zap} targetView={ViewState.OPTIMIZER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
+              <NavItem label="Entry Manager" icon={List} targetView={ViewState.ENTRY_MANAGER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
            </div>
       </nav>
 

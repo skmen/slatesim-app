@@ -95,6 +95,14 @@ export interface Lineup {
   lineupSource?: 'optimizer_csv' | 'user_upload' | 'reference' | 'optimizer';
 }
 
+// App view state (add new pages here)
+export enum ViewState {
+  RESEARCH = 'research',
+  OPTIMIZER = 'optimizer',
+  LOAD = 'load',
+  ENTRY_MANAGER = 'entry_manager',
+}
+
 // --- CONTEST & SLATE ---
 
 export interface Slate {

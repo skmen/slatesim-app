@@ -14,12 +14,21 @@
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
+const safeJsonParse = (text) => {
+  const sanitized = text
+    .replace(/\bNaN\b/g, 'null')
+    .replace(/\b-?Infinity\b/g, 'null');
+  return JSON.parse(sanitized);
+};
+
 const base64ToUint8 = (b64) => {
   const binary = atob(b64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
 };
+
+const DEFAULT_DATA_BASE_URL = 'https://pub-513149f63c494eefba758cd3927e2285.r2.dev';
 
 const buildUrl = (template, date) => {
   if (!template) throw new Error('Missing PROJECTIONS_URL');
@@ -39,7 +48,7 @@ const decryptPayload = async (cryptoKey, encrypted) => {
   const cipherBytes = base64ToUint8(encrypted.payload);
   const plainBuffer = await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, cryptoKey, cipherBytes);
   const jsonText = textDecoder.decode(new Uint8Array(plainBuffer));
-  return JSON.parse(jsonText);
+  return safeJsonParse(jsonText);
 };
 
 export const onRequest = async ({ request, env }) => {
@@ -52,8 +61,8 @@ export const onRequest = async ({ request, env }) => {
     const url = new URL(request.url);
     const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
 
-    const targetUrl = buildUrl(env.PROJECTIONS_URL, date);
-    const key = await importAesKey(env.ENCRYPTION_KEY);
+    const targetUrl = buildUrl(env.PROJECTIONS_URL || `${DEFAULT_DATA_BASE_URL}/{date}/slate.json`, date);
+    const key = await importAesKey(env.ENCRYPTION_KEY || '');
 
     const resp = await fetch(targetUrl, { cache: 'no-cache' });
     if (!resp.ok) {
@@ -61,14 +70,22 @@ export const onRequest = async ({ request, env }) => {
       return new Response(JSON.stringify({ error: 'Unavailable' }), { status: 502, headers });
     }
 
-    const encrypted = await resp.json();
-    if (!encrypted?.iv || !encrypted?.payload) {
-      console.error('Malformed encrypted payload', targetUrl);
-      return new Response(JSON.stringify({ error: 'Malformed payload' }), { status: 500, headers });
+    const rawText = await resp.text();
+    let parsed;
+    try {
+      parsed = safeJsonParse(rawText);
+    } catch (parseErr) {
+      console.error('Parse error for projections payload', parseErr);
+      return new Response(JSON.stringify({ error: 'Invalid payload' }), { status: 500, headers });
     }
 
-    const decrypted = await decryptPayload(key, encrypted);
-    return new Response(JSON.stringify(decrypted), { status: 200, headers });
+    // If payload is encrypted, decrypt; otherwise return as-is (supports plain JSON fallback)
+    if (parsed?.iv && parsed?.payload) {
+      const decrypted = await decryptPayload(key, parsed);
+      return new Response(JSON.stringify(decrypted), { status: 200, headers });
+    }
+
+    return new Response(JSON.stringify(parsed), { status: 200, headers });
   } catch (err) {
     console.error('Decryption error', err?.message);
     return new Response(JSON.stringify({ error: 'Unable to load projections' }), { status: 500, headers });

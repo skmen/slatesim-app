@@ -71,7 +71,11 @@ const fetchOptionalJson = async (url: string): Promise<{ data: any | null; lastM
     if (res.status === 404) return { data: null };
     if (!res.ok) return { data: null, error: `HTTP ${res.status}` };
     const text = await res.text();
-    return { data: safeJsonParse(text), lastModified: res.headers.get('last-modified') || undefined };
+    try {
+      return { data: safeJsonParse(text), lastModified: res.headers.get('last-modified') || undefined };
+    } catch (parseErr: any) {
+      return { data: null, error: `Parse error: ${parseErr?.message || 'invalid JSON'}` };
+    }
   } catch (e: any) {
     return { data: null, error: e?.message || 'Network error' };
   }
@@ -82,7 +86,11 @@ const fetchRequiredJson = async (url: string): Promise<{ ok: boolean; data: any 
     const res = await fetch(url, { cache: 'no-cache' });
     if (!res.ok) return { ok: false, data: null, error: `HTTP ${res.status}` };
     const text = await res.text();
-    return { ok: true, data: safeJsonParse(text), lastModified: res.headers.get('last-modified') || undefined };
+    try {
+      return { ok: true, data: safeJsonParse(text), lastModified: res.headers.get('last-modified') || undefined };
+    } catch (parseErr: any) {
+      return { ok: false, data: null, error: `Parse error: ${parseErr?.message || 'invalid JSON'}` };
+    }
   } catch (e: any) {
     return { ok: false, data: null, error: e?.message || 'Network error' };
   }
