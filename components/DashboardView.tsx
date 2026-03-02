@@ -14,6 +14,8 @@ interface Props {
   injuryLookup?: InjuryLookup | null;
   depthCharts?: any | null;
   startingLineupLookup?: StartingLineupLookup | null;
+  previewMode?: boolean;
+  hideSignalColumn?: boolean;
 }
 
 interface FilterRule {
@@ -426,7 +428,17 @@ const countDvpNet = (positions: string[], dvp: any, player?: Player): number => 
   return green - red;
 };
 
-export const DashboardView: React.FC<Props> = ({ players, games, isHistorical, showActuals, injuryLookup, depthCharts, startingLineupLookup }) => {
+export const DashboardView: React.FC<Props> = ({
+  players,
+  games,
+  isHistorical,
+  showActuals,
+  injuryLookup,
+  depthCharts,
+  startingLineupLookup,
+  previewMode = false,
+  hideSignalColumn = false,
+}) => {
   const [search, setSearch] = useState('');
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
   const [selectedMatchupKey, setSelectedMatchupKey] = useState<string>(ALL_MATCHUPS_KEY);
@@ -513,6 +525,22 @@ export const DashboardView: React.FC<Props> = ({ players, games, isHistorical, s
     return map;
   }, [effectiveGames]);
 
+  const previewTopProjectedIds = useMemo(() => {
+    if (!previewMode) return null;
+    const topPlayers = [...players]
+      .sort((a, b) => {
+        const projA = Number(a.projection) || 0;
+        const projB = Number(b.projection) || 0;
+        if (projB !== projA) return projB - projA;
+        const salA = Number(a.salary) || 0;
+        const salB = Number(b.salary) || 0;
+        if (salB !== salA) return salB - salA;
+        return String(a.name || '').localeCompare(String(b.name || ''));
+      })
+      .slice(0, 25);
+    return new Set(topPlayers.map((p) => p.id));
+  }, [players, previewMode]);
+
   useEffect(() => {
     if (selectedMatchupKey !== ALL_MATCHUPS_KEY && !matchupMap.has(selectedMatchupKey)) {
       setSelectedMatchupKey(ALL_MATCHUPS_KEY);
@@ -528,6 +556,10 @@ export const DashboardView: React.FC<Props> = ({ players, games, isHistorical, s
 
   const filteredPlayers = useMemo(() => {
     let pool = players;
+
+    if (previewMode && previewTopProjectedIds) {
+      pool = pool.filter((player) => previewTopProjectedIds.has(player.id));
+    }
 
     if (selectedTeams.length > 0) {
       const teamSet = new Set(selectedTeams);
@@ -652,8 +684,8 @@ export const DashboardView: React.FC<Props> = ({ players, games, isHistorical, s
         const cmp = compareValues(getSortValue(a, sortKey), getSortValue(b, sortKey));
         return sortDir === 'asc' ? cmp : -cmp;
       })
-      .slice(0, 30);
-  }, [players, search, selectedMatchupKey, selectedTeams, matchupMap, sortKey, sortDir, teamAbbrevMap, filters, salaryTab]);
+      .slice(0, previewMode ? 25 : 30);
+  }, [players, previewMode, previewTopProjectedIds, search, selectedMatchupKey, selectedTeams, matchupMap, sortKey, sortDir, teamAbbrevMap, filters, salaryTab]);
 
   const handleSort = (key: string) => {
     if (sortKey === key) {
@@ -886,9 +918,11 @@ export const DashboardView: React.FC<Props> = ({ players, games, isHistorical, s
                     <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('minutesProjection')}>
                       Min{sortIndicator('minutesProjection')}
                     </th>
-                    <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('signal')}>
-                      Signal{sortIndicator('signal')}
-                    </th>
+                    {!hideSignalColumn && (
+                      <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('signal')}>
+                        Signal{sortIndicator('signal')}
+                      </th>
+                    )}
                     <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('projection')}>
                       Proj{sortIndicator('projection')}
                     </th>
@@ -914,44 +948,15 @@ export const DashboardView: React.FC<Props> = ({ players, games, isHistorical, s
                     const reasonText = injuryInfo?.reason || 'Questionable';
                     const startStatus = startingInfo?.status;
                     const showStarter = startStatus === 'confirmed' || startStatus === 'expected';
-                    const opponentTeam = getOpponentTeamForPlayer(player, effectiveGames);
-                    const positions = parsePositions(player.position);
-                    const dvp = opponentTeam?.positionalDvP || {};
-                    const blendConfPct = getBlendConfidencePct(player);
-                    const reliabilityOk = (blendConfPct ?? 0) >= 95;
-                    const neutralOrBetter = isNeutralOrBetterSignal(player);
-                    const impactTier = getImpactTier(player) ?? '';
-                    const isNeutralSignal = impactTier === 'neutral';
-
-                    const dvpNet = countDvpNet(positions, dvp, player);
-                    const overallPositiveDvp = dvpNet > 0;
-                    const usageRate = readPercentLike(player, ['usageRate', 'usage_rate', 'USG%', 'USAGE_PCT']) ?? 0;
-                    const minutesProj = readStatNumber(player, ['minutesProjection', 'minutes', 'min', 'MINUTES_PROJ']) ?? 0;
                     const leverageTier = getLeverageTier(player);
-                    const blendDiff = readStatNumber(player, [
-                      'DEF_SIGNAL_ONOFF_BLEND_DIFF',
-                      'def_signal_onoff_blend_diff',
-                      'onOffBlendDiff',
-                    ]) ?? 0;
-                    const strongBoostEnv = impactTier.includes('strong boost') && blendDiff > 3.0;
 
-                    const overrideAll = overallPositiveDvp &&
-                      (blendConfPct ?? 0) >= 80 &&
-                      usageRate > 27 &&
-                      minutesProj >= 34.9;
-
-                    const isHighlighted = ((reliabilityOk && neutralOrBetter) && !isNeutralSignal) || overrideAll || strongBoostEnv;
-                    const dvpTextTier = isHighlighted ? getBestDvpTextTier(positions, dvp, player) : 'mixed';
-                    const nameTextClass = isHighlighted ? getDvpTextClass(dvpTextTier) : 'text-ink';
                     return (
                     <tr
                       key={player.id}
                       onClick={() => setSelectedPlayer(player)}
-                      className={`border-b border-ink/5 hover:bg-white/70 cursor-pointer transition-colors ${
-                        isHighlighted ? 'bg-emerald-500/10' : ''
-                      }`}
+                      className="border-b border-ink/5 hover:bg-white/70 cursor-pointer transition-colors"
                     >
-                      <td className={`px-3 py-2 font-black uppercase tracking-tight ${nameTextClass}`}>
+                      <td className="px-3 py-2 font-black uppercase tracking-tight text-ink">
                         <div className="flex items-center gap-2">
                           <span>{player.name}</span>
                           {showStarter && (
@@ -1000,9 +1005,11 @@ export const DashboardView: React.FC<Props> = ({ players, games, isHistorical, s
                       <td className="px-3 py-2 text-right text-ink/60">
                         {player.minutesProjection !== undefined ? player.minutesProjection.toFixed(1) : '--'}
                       </td>
-                      <td className="px-3 py-2 text-right text-ink/60">
-                        {getSignalLabel(player)}
-                      </td>
+                      {!hideSignalColumn && (
+                        <td className="px-3 py-2 text-right text-ink/60">
+                          {getSignalLabel(player)}
+                        </td>
+                      )}
                       <td className="px-3 py-2 text-right font-black text-drafting-orange">
                         {player.projection.toFixed(2)}
                       </td>
@@ -1031,7 +1038,7 @@ export const DashboardView: React.FC<Props> = ({ players, games, isHistorical, s
                 ) : (
                   <tr>
                     <td
-                      colSpan={showActuals ? 15 : 14}
+                      colSpan={(showActuals ? 15 : 14) - (hideSignalColumn ? 1 : 0)}
                       className="py-8 text-center text-[10px] font-black text-ink/40 uppercase tracking-widest"
                     >
                       No players matched the active search/filter criteria
@@ -1055,6 +1062,7 @@ export const DashboardView: React.FC<Props> = ({ players, games, isHistorical, s
           injuryLookup={injuryLookup}
           depthCharts={depthCharts}
           startingLineupLookup={startingLineupLookup}
+          previewMode={previewMode}
         />
       )}
     </div>

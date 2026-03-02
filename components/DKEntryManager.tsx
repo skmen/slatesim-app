@@ -1,14 +1,23 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import Papa from 'papaparse';
-import { Upload, Lock, Unlock, Download, Zap, ShieldCheck, ShieldAlert, X } from 'lucide-react';
+import { Upload, Lock, Unlock, Download, Save, Zap, ShieldCheck, ShieldAlert, X } from 'lucide-react';
 import { Player, GameInfo, Lineup } from '../types';
 import { PlayerDeepDive } from './PlayerDeepDive';
+import { SavedLineupSet, loadSavedLineupSets } from '../utils/savedLineups';
 
 type Slot = 'PG' | 'SG' | 'SF' | 'PF' | 'C' | 'G' | 'F' | 'UTIL';
 
 const SLOT_ORDER: Slot[] = ['PG', 'SG', 'SF', 'PF', 'C', 'G', 'F', 'UTIL'];
 const REQUIRED_COLS = ['Entry ID', 'Contest Name', 'Contest ID', 'Entry Fee', ...SLOT_ORDER];
 const SALARY_CAP = 50000;
+const ENTRY_MANAGER_SESSION_KEY = 'slatesim.entryManager.session.v1';
+
+interface Props {
+  players: Player[];
+  games: GameInfo[];
+  showActuals?: boolean;
+  slateDate?: string;
+}
 
 export type Entry = {
   entryId: string;
@@ -20,6 +29,15 @@ export type Entry = {
   currentPoints?: number;
   remainingSalary?: number;
 };
+
+interface EntryManagerSession {
+  entries: Entry[];
+  playerScores: Record<string, number>;
+  manualLocks: string[];
+  fileName: string;
+  slateDate: string;
+  updatedAt: number;
+}
 
 const parseGameTime = (timeStr: string): Date | null => {
   if (!timeStr) return null;
@@ -40,9 +58,93 @@ const formatPlayerName = (name: string) => {
     const parts = name.split(' ');
     if (parts.length < 2) return name;
     return `${parts[0][0]}. ${parts.slice(1).join(' ')}`;
-}
+};
 
-export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = false }) => {
+const playerLabel = (player: Player): string => `${player.name} (${player.id})`;
+
+const getPlayerPositions = (player: Player): string[] => {
+  return String(player.position || '')
+    .split('/')
+    .map((pos) => pos.trim().toUpperCase())
+    .filter(Boolean);
+};
+
+const takeFirstEligible = (pool: Player[], predicate: (player: Player) => boolean): Player | null => {
+  const idx = pool.findIndex(predicate);
+  if (idx === -1) return null;
+  return pool.splice(idx, 1)[0];
+};
+
+const lineupToSlots = (lineup: Lineup, playerById: Map<string, Player>): Record<Slot, string> => {
+  const lineupPlayers =
+    Array.isArray(lineup.players) && lineup.players.length > 0
+      ? lineup.players
+      : (lineup.playerIds || []).map((id) => playerById.get(id)).filter((player): player is Player => Boolean(player));
+  const pool = [...lineupPlayers];
+  const pick = (predicate: (player: Player) => boolean) => takeFirstEligible(pool, predicate);
+
+  const pg = pick((player) => getPlayerPositions(player).includes('PG'));
+  const sg = pick((player) => getPlayerPositions(player).includes('SG'));
+  const sf = pick((player) => getPlayerPositions(player).includes('SF'));
+  const pf = pick((player) => getPlayerPositions(player).includes('PF'));
+  const c = pick((player) => getPlayerPositions(player).includes('C'));
+  const g = pick((player) => {
+    const positions = getPlayerPositions(player);
+    return positions.includes('PG') || positions.includes('SG');
+  });
+  const f = pick((player) => {
+    const positions = getPlayerPositions(player);
+    return positions.includes('SF') || positions.includes('PF');
+  });
+  const util = pick(() => true);
+
+  return {
+    PG: pg ? playerLabel(pg) : '',
+    SG: sg ? playerLabel(sg) : '',
+    SF: sf ? playerLabel(sf) : '',
+    PF: pf ? playerLabel(pf) : '',
+    C: c ? playerLabel(c) : '',
+    G: g ? playerLabel(g) : '',
+    F: f ? playerLabel(f) : '',
+    UTIL: util ? playerLabel(util) : '',
+  };
+};
+
+const loadEntryManagerSession = (): EntryManagerSession | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(ENTRY_MANAGER_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      entries: Array.isArray(parsed.entries) ? parsed.entries : [],
+      playerScores: parsed.playerScores && typeof parsed.playerScores === 'object' ? parsed.playerScores : {},
+      manualLocks: Array.isArray(parsed.manualLocks) ? parsed.manualLocks : [],
+      fileName: String(parsed.fileName || ''),
+      slateDate: String(parsed.slateDate || ''),
+      updatedAt: Number.isFinite(Number(parsed.updatedAt)) ? Number(parsed.updatedAt) : Date.now(),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const saveEntryManagerSession = (session: EntryManagerSession) => {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(ENTRY_MANAGER_SESSION_KEY, JSON.stringify(session));
+  } catch (error) {
+    console.warn('Failed to persist entry manager session', error);
+  }
+};
+
+const clearEntryManagerSession = () => {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem(ENTRY_MANAGER_SESSION_KEY);
+};
+
+export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = false, slateDate = '' }) => {
   const [entries, setEntries] = useState<Entry[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<{ entryIdx: number; slot: Slot } | null>(null);
@@ -50,6 +152,10 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
   const [deepDivePlayer, setDeepDivePlayer] = useState<Player | null>(null);
   const [manualLocks, setManualLocks] = useState<Set<string>>(new Set());
   const [playerScores, setPlayerScores] = useState<Record<string, number>>({});
+  const [loadedFileName, setLoadedFileName] = useState('');
+  const [sessionSavedAt, setSessionSavedAt] = useState<number | null>(null);
+  const [showImportLineupsModal, setShowImportLineupsModal] = useState(false);
+  const [savedLineupSets, setSavedLineupSets] = useState<SavedLineupSet[]>([]);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const playerRefs = useRef<Record<string, HTMLDivElement>>({});
 
@@ -89,6 +195,71 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     const game = games.find(g => g.teamA.abbreviation === player.team || g.teamB.abbreviation === player.team);
     return game ? isGameManuallyLocked(game) : false;
   };
+
+  const computeEntryMetrics = (slots: Record<Slot, string>, scores: Record<string, number> = playerScores) => {
+    let currentPoints = 0;
+    let projectedPoints = 0;
+    let salary = 0;
+
+    SLOT_ORDER.forEach((slot) => {
+      const player = getPlayerFromString(slots[slot]);
+      if (!player) return;
+      salary += player.salary || 0;
+      const score = scores[player.id] || player.projection || 0;
+      if (isPlayerLocked(slots[slot])) {
+        currentPoints += score;
+      }
+      projectedPoints += score;
+    });
+
+    return {
+      currentPoints,
+      projectedPoints,
+      remainingSalary: SALARY_CAP - salary,
+    };
+  };
+
+  const hydrateEntry = (entry: Entry, scores: Record<string, number> = playerScores): Entry => {
+    const metrics = computeEntryMetrics(entry.slots, scores);
+    return {
+      ...entry,
+      ...metrics,
+    };
+  };
+
+  useEffect(() => {
+    setSavedLineupSets(loadSavedLineupSets());
+  }, [showImportLineupsModal]);
+
+  useEffect(() => {
+    const session = loadEntryManagerSession();
+    if (!session) return;
+    if (session.slateDate && slateDate && session.slateDate !== slateDate) return;
+    setPlayerScores(session.playerScores || {});
+    setManualLocks(new Set(session.manualLocks || []));
+    setLoadedFileName(session.fileName || '');
+    setSessionSavedAt(session.updatedAt || null);
+    setEntries((session.entries || []).map((entry) => hydrateEntry(entry, session.playerScores || {})));
+  }, [slateDate]);
+
+  useEffect(() => {
+    if (!loadedFileName || entries.length === 0) return;
+    saveEntryManagerSession({
+      entries,
+      playerScores,
+      manualLocks: Array.from(manualLocks),
+      fileName: loadedFileName,
+      slateDate,
+      updatedAt: Date.now(),
+    });
+  }, [entries, loadedFileName, manualLocks, playerScores, slateDate]);
+
+  useEffect(() => {
+    setEntries((prev) => {
+      if (prev.length === 0) return prev;
+      return prev.map((entry) => hydrateEntry(entry));
+    });
+  }, [games, manualLocks, playerScores, players]);
   
   const handleCsv = (file: File) => {
     Papa.parse(file, {
@@ -100,19 +271,19 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
         const newPlayerScores: Record<string, number> = {};
 
         rows.forEach((row) => {
+          const firstCell = String(row[0] || '').trim().toLowerCase();
+          if (firstCell === 'entry id') return;
           if (row[0] && row[2]) { // Entry row
             const slots: Record<Slot, string> = {
               PG: row[4] || '', SG: row[5] || '', SF: row[6] || '', PF: row[7] || '',
               C: row[8] || '', G: row[9] || '', F: row[10] || '', UTIL: row[11] || '',
             };
-            const salary = SLOT_ORDER.reduce((sum, s) => sum + (getPlayerFromString(slots[s])?.salary || 0), 0);
             newEntries.push({
               entryId: row[0],
               contestName: row[1],
               contestId: row[2],
               entryFee: row[3],
               slots,
-              remainingSalary: SALARY_CAP - salary,
             });
           } else if (!row[0] && !row[2] && row[14]) { // Player score row
             const playerId = row[15];
@@ -122,26 +293,21 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
             }
           }
         });
-        
+
+        const updatedEntries = newEntries.map((entry) => hydrateEntry(entry, newPlayerScores));
         setPlayerScores(newPlayerScores);
-
-        const updatedEntries = newEntries.map(entry => {
-          let currentPoints = 0;
-          let projectedPoints = 0;
-          SLOT_ORDER.forEach(slot => {
-            const player = getPlayerFromString(entry.slots[slot]);
-            if (player) {
-              const score = newPlayerScores[player.id] || player.projection || 0;
-              if (isPlayerLocked(entry.slots[slot])) {
-                currentPoints += score;
-              }
-              projectedPoints += score;
-            }
-          });
-          return { ...entry, currentPoints, projectedPoints };
-        });
-
         setEntries(updatedEntries);
+        setLoadedFileName(file.name);
+        const savedAt = Date.now();
+        setSessionSavedAt(savedAt);
+        saveEntryManagerSession({
+          entries: updatedEntries,
+          playerScores: newPlayerScores,
+          manualLocks: Array.from(manualLocks),
+          fileName: file.name,
+          slateDate,
+          updatedAt: savedAt,
+        });
       },
       error: (err) => {
         console.error('CSV parse error', err);
@@ -172,6 +338,53 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     URL.revokeObjectURL(url);
   };
 
+  const saveCurrentSession = () => {
+    if (!loadedFileName || entries.length === 0) return;
+    const savedAt = Date.now();
+    saveEntryManagerSession({
+      entries,
+      playerScores,
+      manualLocks: Array.from(manualLocks),
+      fileName: loadedFileName,
+      slateDate,
+      updatedAt: savedAt,
+    });
+    setSessionSavedAt(savedAt);
+  };
+
+  const clearLoadedEntries = () => {
+    setEntries([]);
+    setPlayerScores({});
+    setManualLocks(new Set());
+    setLoadedFileName('');
+    setSessionSavedAt(null);
+    clearEntryManagerSession();
+    setShowCandidates(false);
+    setSelectedSlot(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const savedLineupSetsForDate = useMemo(() => {
+    if (!slateDate) return savedLineupSets;
+    return savedLineupSets.filter((set) => set.slateDate === slateDate);
+  }, [savedLineupSets, slateDate]);
+
+  const applySavedLineupSetToEntries = (savedSet: SavedLineupSet) => {
+    if (!entries.length || savedSet.lineups.length === 0) return;
+    const nextEntries = entries.map((entry, idx) => {
+      const sourceLineup = savedSet.lineups[idx % savedSet.lineups.length];
+      const slots = lineupToSlots(sourceLineup, playerMap);
+      return hydrateEntry({
+        ...entry,
+        slots,
+      });
+    });
+    setEntries(nextEntries);
+    setShowImportLineupsModal(false);
+  };
+
   const openSwapModal = (entryIdx: number, slot: Slot) => {
     const current = entries[entryIdx]?.slots[slot] || '';
     if (current && isPlayerLocked(current)) return;
@@ -185,21 +398,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
       prev.map((en, idx) => {
         if (idx !== selectedSlot.entryIdx) return en;
         const newSlots = { ...en.slots, [selectedSlot.slot]: playerName };
-        let currentPoints = 0;
-        let projectedPoints = 0;
-        let salary = 0;
-        SLOT_ORDER.forEach(slot => {
-            const player = getPlayerFromString(newSlots[slot]);
-            if(player) {
-                salary += player.salary;
-                const score = playerScores[player.id] || player.projection || 0;
-                if (isPlayerLocked(newSlots[slot])) {
-                    currentPoints += score;
-                }
-                projectedPoints += score;
-            }
-        });
-        return { ...en, slots: newSlots, projectedPoints, currentPoints, remainingSalary: SALARY_CAP - salary };
+        return hydrateEntry({ ...en, slots: newSlots });
       })
     );
     setShowCandidates(false);
@@ -262,21 +461,68 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     <div className="flex flex-col h-full space-y-6 pb-24 bg-vellum text-black">
       {/* Top Header */}
       <div className="flex-shrink-0 bg-white border-b border-ink/10 p-4 flex items-center justify-between shadow-sm rounded-b-lg">
-        <div>
-          <h1 className="text-xl font-black uppercase tracking-wider text-black">Late Swap Manager</h1>
-          <p className="text-sm text-black/60">{entries.length} Entries Loaded</p>
+        <div className="flex items-center gap-3">
+          <div>
+            <h1 className="text-xl font-black uppercase tracking-wider text-black">Entry Manager</h1>
+            <p className="text-sm text-black/60">{entries.length} Entries Loaded</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setSavedLineupSets(loadSavedLineupSets());
+              setShowImportLineupsModal(true);
+            }}
+            className="px-3 py-1.5 rounded-sm border border-ink/20 text-[10px] font-black uppercase tracking-widest text-black hover:border-drafting-orange transition-all"
+          >
+            Import Lineups
+          </button>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 ml-auto">
           <button onClick={runLateSwap} className="px-5 py-2 rounded-lg bg-drafting-orange text-white font-bold text-sm uppercase tracking-widest shadow hover:brightness-110 transition-all">
             <Zap className="inline-block w-4 h-4 mr-2"/>
             Run Late Swap
           </button>
-          <button onClick={downloadCsv} className="px-4 py-2 rounded-lg bg-white border border-ink/20 text-black font-bold text-sm uppercase tracking-widest hover:border-drafting-orange transition-all">
-            <Download className="inline-block w-4 h-4 mr-2"/>
-            Export CSV
-          </button>
         </div>
       </div>
+
+      {loadedFileName && (
+        <div className="flex items-center justify-between bg-white border border-ink/10 rounded-lg px-4 py-2 shadow-sm">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-[11px] font-black uppercase tracking-widest text-black/70">File</span>
+            <span className="text-sm font-mono font-bold text-black truncate">{loadedFileName}</span>
+            <button
+              type="button"
+              onClick={clearLoadedEntries}
+              className="inline-flex items-center justify-center w-5 h-5 rounded-full border border-ink/20 text-black/60 hover:text-red-600 hover:border-red-600/40 transition-colors"
+              title="Clear loaded entries"
+              aria-label="Clear loaded entries"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            {sessionSavedAt && (
+              <span className="text-[10px] font-mono text-black/50">Saved {new Date(sessionSavedAt).toLocaleTimeString()}</span>
+            )}
+            <button
+              type="button"
+              onClick={saveCurrentSession}
+              className="px-3 py-1.5 rounded-sm border border-ink/20 text-[10px] font-black uppercase tracking-widest text-black hover:border-drafting-orange transition-all"
+            >
+              <Save className="inline-block w-3 h-3 mr-1.5" />
+              Save
+            </button>
+            <button
+              type="button"
+              onClick={downloadCsv}
+              className="px-3 py-1.5 rounded-sm bg-emerald-600 text-white text-[10px] font-black uppercase tracking-widest hover:opacity-90 transition-all"
+            >
+              <Download className="inline-block w-3 h-3 mr-1.5" />
+              Download Entries
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         {/* Left Panel: Slate Controls */}
@@ -362,7 +608,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
                                               <span className="text-black/40 text-sm font-mono flex-1">Empty</span>
                                             )}
                                           </div>
-                                          {locked && iconLocked}
+                                          {locked && <Lock className="w-4 h-4 text-black/50 shrink-0" />}
                                         </div>
                                     );
                                 })}
@@ -414,6 +660,52 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
                   </div>
                 );
               })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showImportLineupsModal && (
+        <div className="fixed inset-0 z-[125] bg-vellum/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-vellum rounded-xl border border-ink/10 w-full max-w-2xl max-h-[80vh] overflow-hidden shadow-2xl flex flex-col">
+            <div className="p-4 border-b border-ink/10 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-black uppercase tracking-wider text-drafting-orange">Import Saved Lineups</h3>
+                <p className="text-xs text-black/70 font-mono mt-1">
+                  {entries.length > 0
+                    ? 'Select a saved lineup set to map lineups across your entries.'
+                    : 'Load a DK entries CSV first, then import saved lineups.'}
+                </p>
+              </div>
+              <button onClick={() => setShowImportLineupsModal(false)} className="p-2 text-black/50 hover:text-black transition-colors rounded-full">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="overflow-y-auto flex-1 divide-y divide-ink/10">
+              {savedLineupSetsForDate.length === 0 ? (
+                <div className="p-8 text-center text-black/50 font-bold uppercase tracking-widest text-sm">
+                  No saved lineups available for this slate.
+                </div>
+              ) : (
+                savedLineupSetsForDate.map((savedSet) => (
+                  <div key={savedSet.id} className="px-4 py-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-black truncate">{savedSet.name}</p>
+                      <p className="text-xs text-black/60 font-mono">
+                        {savedSet.lineups.length} lineups • {new Date(savedSet.createdAt).toLocaleString()}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => applySavedLineupSetToEntries(savedSet)}
+                      disabled={entries.length === 0}
+                      className="px-4 py-2 rounded bg-drafting-orange text-white text-xs font-bold uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110 transition-colors"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>

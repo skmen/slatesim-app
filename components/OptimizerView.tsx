@@ -1,11 +1,12 @@
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   Zap, 
   Settings, 
   Play, 
   Square, 
   Download, 
+  Save,
   Users, 
   Activity,
   AlertCircle,
@@ -18,7 +19,8 @@ import { Player, Lineup, GameInfo } from '../types';
 import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { PlayerDeepDive } from './PlayerDeepDive';
-import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker';
+import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
+import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260302-priorityreset2';
 
 interface Props {
   players: Player[];
@@ -45,6 +47,60 @@ interface PoolFilterRule {
 }
 
 type PoolFilterOperator = 'equals' | 'contains' | 'gt' | 'lt' | 'in';
+
+type OptimizerMode = 'max_projection' | 'upside_max';
+
+interface AdvancedMinimumSettings {
+  minUsage: number;
+  minMinutes: number;
+  minLeverageTier: number;
+  minSignal: number;
+}
+
+interface OptimizerConfigState {
+  numLineups: number;
+  salaryCap: number;
+  minExposure: number;
+  maxExposure: number;
+  site: 'DraftKings';
+  optimizerMode: OptimizerMode;
+  upsideDelta: number;
+  enableStatConstraints: boolean;
+  statConstraintMode: 'cash' | 'gpp';
+  deltaFromBestProjection: number;
+  upsideWeights: {
+    wLev: number;
+    wOwn: number;
+    wMin: number;
+    wUsage: number;
+    wMatch: number;
+    wForm: number;
+  };
+  enforceUpsideStructureConstraints: boolean;
+}
+
+const DEFAULT_ADVANCED_MINIMUMS: AdvancedMinimumSettings = {
+  minUsage: 0,
+  minMinutes: 0,
+  minLeverageTier: 1,
+  minSignal: 1,
+};
+
+const LEVERAGE_TIER_RANK_OPTIONS = [
+  { value: 1, label: '1. TOXIC' },
+  { value: 2, label: '2. NEGATIVE' },
+  { value: 3, label: '3. NEUTRAL' },
+  { value: 4, label: '4. STRONG' },
+  { value: 5, label: '5. ELITE' },
+] as const;
+
+const SIGNAL_RANK_OPTIONS = [
+  { value: 1, label: '1. STRONG FADE' },
+  { value: 2, label: '2. FADE' },
+  { value: 3, label: '3. NEUTRAL' },
+  { value: 4, label: '4. BOOST' },
+  { value: 5, label: '5. STRONG BOOST' },
+] as const;
 
 const compareValues = (a: any, b: any): number => {
   const aEmpty = a === null || a === undefined || a === '';
@@ -278,6 +334,70 @@ const getSignalLabel = (player: Player): string => {
   return tier.replace(/\b\w/g, (c) => c.toUpperCase());
 };
 
+const normalizePercentValue = (value: number | undefined): number | undefined => {
+  if (!Number.isFinite(Number(value))) return undefined;
+  const n = Number(value);
+  return n <= 1 ? n * 100 : n;
+};
+
+const getUsagePercent = (player: Player): number | undefined => {
+  const raw = readPercentLike(player, [
+    'USG_pct',
+    'USG%',
+    'usageRate',
+    'usage_rate',
+    'usage',
+    'USAGE_PCT',
+    'USAGE%',
+  ]);
+  return normalizePercentValue(raw);
+};
+
+const getLeverageTierRank = (player: Player): number => {
+  const numericRank = readStatNumber(player, [
+    'leverageTierRank',
+    'leverage_tier_rank',
+    'signalLeverageTierRank',
+    'signal_leverage_tier_rank',
+  ]);
+  if (Number.isFinite(Number(numericRank))) {
+    return Math.max(1, Math.min(5, Math.round(Number(numericRank))));
+  }
+
+  const tier = (getLeverageTier(player) || '').toLowerCase();
+  if (!tier) return 0;
+  if (tier.includes('elite')) return 5;
+  if (tier.includes('toxic') || tier.includes('strong fade')) return 1;
+  if (tier.includes('strong') && !tier.includes('negative') && !tier.includes('fade')) return 4;
+  if (tier.includes('neutral')) return 3;
+  if (tier.includes('negative') || tier.includes('fade')) return 2;
+  return 0;
+};
+
+const getSignalRank = (player: Player): number => {
+  const numericRank = readStatNumber(player, ['signalRank', 'signal_rank']);
+  if (Number.isFinite(Number(numericRank))) {
+    return Math.max(1, Math.min(5, Math.round(Number(numericRank))));
+  }
+
+  const tier = (getImpactTier(player) || readStatString(player, ['signalTier', 'signal_tier', 'signal']) || '').toLowerCase();
+  if (tier) {
+    if (tier.includes('strong boost')) return 5;
+    if (tier.includes('boost')) return 4;
+    if (tier.includes('neutral')) return 3;
+    if (tier.includes('strong fade')) return 1;
+    if (tier.includes('fade')) return 2;
+  }
+
+  const impactFp = getImpactFp(player);
+  if (impactFp === null) return 0;
+  if (impactFp >= 1.0) return 5;
+  if (impactFp >= 0.15) return 4;
+  if (impactFp > -0.15) return 3;
+  if (impactFp > -1.0) return 2;
+  return 1;
+};
+
 const getAverageMinutes = (player: Player): number | null => {
   const avg = readStatNumber(player, [
     'avgMinutes',
@@ -301,6 +421,47 @@ const getAverageMinutes = (player: Player): number | null => {
     'MIN_PER_GAME',
   ]);
   return Number.isFinite(Number(avg)) ? Number(avg) : null;
+};
+
+const getEffectiveMinutes = (player: Player): number | undefined => {
+  const minutesProjection = Number(player.minutesProjection);
+  if (Number.isFinite(minutesProjection)) return minutesProjection;
+  const avg = getAverageMinutes(player);
+  return Number.isFinite(Number(avg)) ? Number(avg) : undefined;
+};
+
+const sanitizeAdvancedMinimums = (raw: any): AdvancedMinimumSettings => {
+  const minUsage = Number(raw?.minUsage);
+  const minMinutes = Number(raw?.minMinutes);
+  const minLeverageTier = Number(raw?.minLeverageTier);
+  const minSignal = Number(raw?.minSignal);
+
+  return {
+    minUsage: Number.isFinite(minUsage) ? Math.max(0, minUsage) : DEFAULT_ADVANCED_MINIMUMS.minUsage,
+    minMinutes: Number.isFinite(minMinutes) ? Math.max(0, minMinutes) : DEFAULT_ADVANCED_MINIMUMS.minMinutes,
+    minLeverageTier: Number.isFinite(minLeverageTier)
+      ? Math.max(1, Math.min(5, Math.round(minLeverageTier)))
+      : DEFAULT_ADVANCED_MINIMUMS.minLeverageTier,
+    minSignal: Number.isFinite(minSignal)
+      ? Math.max(1, Math.min(5, Math.round(minSignal)))
+      : DEFAULT_ADVANCED_MINIMUMS.minSignal,
+  };
+};
+
+const passesAdvancedMinimums = (player: Player, minimums: AdvancedMinimumSettings): boolean => {
+  if (minimums.minUsage > 0) {
+    const usagePct = getUsagePercent(player);
+    if (!Number.isFinite(Number(usagePct)) || Number(usagePct) < minimums.minUsage) return false;
+  }
+
+  if (minimums.minMinutes > 0) {
+    const minutes = getEffectiveMinutes(player);
+    if (!Number.isFinite(Number(minutes)) || Number(minutes) < minimums.minMinutes) return false;
+  }
+
+  if (minimums.minLeverageTier > 1 && getLeverageTierRank(player) < minimums.minLeverageTier) return false;
+  if (minimums.minSignal > 1 && getSignalRank(player) < minimums.minSignal) return false;
+  return true;
 };
 
 const isMatchupBoostSignal = (player: Player): boolean => {
@@ -650,12 +811,26 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     return input < today;
   };
 
-  const [config, setConfig] = useState({
+  const [config, setConfig] = useState<OptimizerConfigState>({
     numLineups: 20,
     salaryCap: 50000,
     minExposure: 0,
     maxExposure: 50,
-    site: 'DraftKings'
+    site: 'DraftKings',
+    optimizerMode: 'max_projection',
+    upsideDelta: 8,
+    enableStatConstraints: true,
+    statConstraintMode: 'gpp',
+    deltaFromBestProjection: 8,
+    upsideWeights: {
+      wLev: 1.0,
+      wOwn: 0.6,
+      wMin: 0.05,
+      wUsage: 0.08,
+      wMatch: 0.4,
+      wForm: 0.3,
+    },
+    enforceUpsideStructureConstraints: true,
   });
 
   const [generatedLineups, setGeneratedLineups] = useState<Lineup[]>([]);
@@ -665,6 +840,10 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
   const [error, setError] = useState<string | null>(null);
   const [lineupSort, setLineupSort] = useState<SortConfig>({ key: 'projection', dir: 'desc' });
   const [exposureSort, setExposureSort] = useState<SortConfig>({ key: 'exposure', dir: 'desc' });
+  const [savedLineupSets, setSavedLineupSets] = useState<SavedLineupSet[]>([]);
+  const [showSaveLineupsModal, setShowSaveLineupsModal] = useState(false);
+  const [saveLineupName, setSaveLineupName] = useState('');
+  const [showSavedLineupsModal, setShowSavedLineupsModal] = useState(false);
 
   const isHistorical = useMemo(() => {
     if (!slateDate) return false;
@@ -677,11 +856,16 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     return base && isDateBeforeToday(slateDate);
   }, [slateDate, showActualsProp]);
 
+  useEffect(() => {
+    setSavedLineupSets(loadSavedLineupSets());
+  }, []);
+
   const [expandedLineupId, setExpandedLineupId] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [lockedIds, setLockedIds] = useState<string[]>([]);
   const [selectedMatchups, setSelectedMatchups] = useState<string[]>([]);
   const [selectedTeams, setSelectedTeams] = useState<string[]>([]);
+  const [advancedMinimums, setAdvancedMinimums] = useState<AdvancedMinimumSettings>(DEFAULT_ADVANCED_MINIMUMS);
   const [playerOverrides, setPlayerOverrides] = useState<Record<string, { minutes?: number; projection?: number; minExposure?: number; maxExposure?: number; exclude?: boolean }>>({});
   const [poolSearch, setPoolSearch] = useState('');
   const [showPoolFilterBuilder, setShowPoolFilterBuilder] = useState(false);
@@ -717,6 +901,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       if (Array.isArray(parsed.lockedIds)) setLockedIds(parsed.lockedIds);
       if (Array.isArray(parsed.selectedMatchups)) setSelectedMatchups(parsed.selectedMatchups);
       if (Array.isArray(parsed.selectedTeams)) setSelectedTeams(parsed.selectedTeams);
+      if (parsed.advancedMinimums && typeof parsed.advancedMinimums === 'object') {
+        setAdvancedMinimums(sanitizeAdvancedMinimums(parsed.advancedMinimums));
+      }
       if (parsed.playerOverrides && typeof parsed.playerOverrides === 'object') {
         setPlayerOverrides(parsed.playerOverrides);
       }
@@ -733,17 +920,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     setGeneratedLineups([]);
 
     try {
-      const matchupTeamMap = new Map<string, Set<string>>();
-      games.forEach((game) => {
-        const teams = new Set([game.teamA.teamId, game.teamB.teamId]);
-        matchupTeamMap.set(game.matchupKey, teams);
-      });
-
       // Prepare player pool (only active players with salary and projection)
       const pool = players
-        .filter(p => p.salary > 0 && p.projection > 0)
-        .filter(p => !isNegativeOrWorseLeverageTier(p))
-        .filter((player) => !(playerOverrides[player.id]?.exclude))
+        .filter((p) => p.salary > 0 && p.projection > 0)
         .map((player) => {
           const overrides = playerOverrides[player.id] || {};
           const minExposureVal = Number(overrides.minExposure);
@@ -754,37 +933,27 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             minutesProjection: Number.isFinite(Number(overrides.minutes)) ? Number(overrides.minutes) : player.minutesProjection,
           };
 
-          let optimizerBonus = 0;
-          if (lockedIds.includes(player.id)) optimizerBonus += 3;
-          if (selectedTeams.includes(player.team)) optimizerBonus += 1;
-          for (const key of selectedMatchups) {
-            const teams = matchupTeamMap.get(key);
-            if (teams && teams.has(player.team)) {
-              optimizerBonus += 1;
-              break;
-            }
-          }
-
           const locked = lockedIds.includes(player.id);
           return {
             ...merged,
-            optimizerPriority: computeOptimizerPriority(merged, games),
-            optimizerBonus,
             optimizerLocked: locked,
-            optimizerMinExposure: locked ? 100 : (Number.isFinite(minExposureVal) && minExposureVal > 0 ? minExposureVal : undefined),
-            optimizerMaxExposure: locked ? 100 : (Number.isFinite(maxExposureVal) && maxExposureVal > 0 ? maxExposureVal : undefined),
+            optimizerExcluded: Boolean(overrides.exclude),
+            optimizerMinExposure: locked ? 100 : (Number.isFinite(minExposureVal) && minExposureVal >= 0 ? minExposureVal : undefined),
+            optimizerMaxExposure: locked ? 100 : (Number.isFinite(maxExposureVal) && maxExposureVal >= 0 ? maxExposureVal : undefined),
           };
-        });
+        })
+        .filter((player) => !Boolean((player as any).optimizerExcluded))
+        .filter((player) => Boolean((player as any).optimizerLocked) || passesAdvancedMinimums(player, advancedMinimums));
 
       if (pool.length < DK_SLOTS.length) {
-        setError(`Optimizer pool too small (${pool.length} players) after filters. Relax DvP/Leverage/usage-minute rules.`);
+        setError(`Optimizer pool too small (${pool.length} players) after filters/minimums.`);
         setIsOptimizing(false);
         return;
       }
 
       const missingSlot = DK_SLOTS.find((slot) => !pool.some((player) => canFitDK(player, slot)));
       if (missingSlot) {
-        setError(`No eligible players for ${missingSlot} after filters. Relax DvP/Leverage/usage-minute rules.`);
+        setError(`No eligible players for ${missingSlot} after filters.`);
         setIsOptimizing(false);
         return;
       }
@@ -911,6 +1080,67 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       }))
       .sort((a, b) => b.exposure - a.exposure);
   }, [generatedLineups, players]);
+
+  const slateSavedLineupSets = useMemo(() => {
+    if (!slateDate) return savedLineupSets;
+    return savedLineupSets.filter((set) => set.slateDate === slateDate);
+  }, [savedLineupSets, slateDate]);
+
+  const persistSavedLineupSets = useCallback((nextSets: SavedLineupSet[]) => {
+    setSavedLineupSets(nextSets);
+    saveSavedLineupSets(nextSets);
+  }, []);
+
+  const saveGeneratedLineups = useCallback(() => {
+    const trimmedName = saveLineupName.trim();
+    if (!trimmedName) {
+      setError('Please provide a save name.');
+      return;
+    }
+    if (generatedLineups.length === 0) {
+      setError('No generated lineups to save.');
+      return;
+    }
+    const now = Date.now();
+    const normalizedLineups: Lineup[] = generatedLineups.map((lineup, idx) => ({
+      id: lineup.id || `saved_${now}_${idx + 1}`,
+      playerIds: [...lineup.playerIds],
+      totalSalary: Number.isFinite(Number(lineup.totalSalary)) ? Number(lineup.totalSalary) : 0,
+      totalProjection: Number.isFinite(Number(lineup.totalProjection)) ? Number(lineup.totalProjection) : 0,
+      lineupSource: 'optimizer',
+    }));
+    const savedSet: SavedLineupSet = {
+      id: `saved_${now}_${Math.random().toString(36).slice(2, 8)}`,
+      name: trimmedName,
+      slateDate: slateDate || '',
+      salaryCap: config.salaryCap,
+      createdAt: now,
+      lineups: normalizedLineups,
+    };
+    const nextSets = [savedSet, ...savedLineupSets];
+    persistSavedLineupSets(nextSets);
+    setShowSaveLineupsModal(false);
+    setSaveLineupName('');
+    setError(null);
+  }, [config.salaryCap, generatedLineups, persistSavedLineupSets, saveLineupName, savedLineupSets, slateDate]);
+
+  const loadSavedLineupSet = useCallback((savedSet: SavedLineupSet) => {
+    setGeneratedLineups(savedSet.lineups.map((lineup, idx) => ({
+      ...lineup,
+      id: lineup.id || `loaded_${savedSet.id}_${idx + 1}`,
+      lineupSource: 'optimizer',
+    })));
+    if (Number.isFinite(Number(savedSet.salaryCap)) && Number(savedSet.salaryCap) > 0) {
+      setConfig((prev) => ({ ...prev, salaryCap: Number(savedSet.salaryCap) }));
+    }
+    setShowSavedLineupsModal(false);
+    setError(null);
+  }, []);
+
+  const deleteSavedLineupSet = useCallback((setId: string) => {
+    const nextSets = savedLineupSets.filter((savedSet) => savedSet.id !== setId);
+    persistSavedLineupSets(nextSets);
+  }, [persistSavedLineupSets, savedLineupSets]);
 
   const playerById = useMemo(() => {
     return new Map(players.map((p) => [p.id, p]));
@@ -1076,6 +1306,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       lockedIds,
       selectedMatchups,
       selectedTeams,
+      advancedMinimums,
       playerOverrides,
     };
     localStorage.setItem('optimizerAdvancedSettings', JSON.stringify(payload));
@@ -1087,8 +1318,37 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     setLockedIds([]);
     setSelectedMatchups([]);
     setSelectedTeams([]);
+    setAdvancedMinimums(DEFAULT_ADVANCED_MINIMUMS);
     setPlayerOverrides({});
   };
+
+  const handleDeepDiveExposureChange = useCallback((playerId: string, minExposure?: number, maxExposure?: number) => {
+    setPlayerOverrides((prev) => {
+      const existing = prev[playerId] || {};
+      const nextForPlayer = {
+        ...existing,
+        minExposure,
+        maxExposure,
+      };
+
+      if (
+        nextForPlayer.minutes === undefined &&
+        nextForPlayer.projection === undefined &&
+        nextForPlayer.minExposure === undefined &&
+        nextForPlayer.maxExposure === undefined &&
+        nextForPlayer.exclude !== true
+      ) {
+        const { [playerId]: omitted, ...rest } = prev;
+        void omitted;
+        return rest;
+      }
+
+      return {
+        ...prev,
+        [playerId]: nextForPlayer,
+      };
+    });
+  }, []);
 
   const visiblePoolIds = filteredPoolPlayers.map((p) => p.id);
   const visibleLockableIds = filteredPoolPlayers
@@ -1110,6 +1370,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           depthCharts={undefined}
           injuryLookup={injuryLookup}
           startingLineupLookup={startingLineupLookup}
+          onOptimizerExposureChange={handleDeepDiveExposureChange}
         />
       )}
       <div className="bg-white/40 backdrop-blur-sm rounded-sm border border-ink/10 p-4 shadow-sm">
@@ -1124,7 +1385,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
               <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Lineups</label>
               <select
                 value={config.numLineups}
-                onChange={(e) => setConfig({ ...config, numLineups: parseInt(e.target.value, 10) })}
+                onChange={(e) => setConfig({ ...config, numLineups: Number.parseInt(e.target.value, 10) || 1 })}
                 className="w-full bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
               >
                 {[1, 10, 20, 50, 100, 150, 250, 500, 1000].map((val) => (
@@ -1140,11 +1401,30 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                 <input 
                   type="number" 
                   value={config.salaryCap}
-                  onChange={(e) => setConfig({...config, salaryCap: parseInt(e.target.value)})}
+                  onChange={(e) => setConfig({ ...config, salaryCap: Number.parseInt(e.target.value, 10) || 50000 })}
                   className="w-full bg-white/60 border border-ink/20 rounded-sm pl-7 pr-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
                 />
               </div>
             </div>
+
+            {config.optimizerMode === 'upside_max' && (
+              <div className="space-y-1.5 md:col-span-2">
+                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">
+                  Upside Delta (Projection Floor)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step={0.5}
+                  value={config.upsideDelta}
+                  onChange={(e) => setConfig({ ...config, upsideDelta: Number.parseFloat(e.target.value) || 0 })}
+                  className="w-full bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                />
+                <p className="text-[9px] text-ink/50 font-mono">
+                  Stage 2 enforces total projection {'>='} best projection minus delta.
+                </p>
+              </div>
+            )}
           </div>
 
           <div className="pt-3 border-t border-ink/10 grid grid-cols-1 md:grid-cols-[1fr,1.4fr] gap-2.5">
@@ -1187,16 +1467,37 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             <div className="flex items-center gap-2">
               <Activity className="w-4 h-4 text-drafting-orange" />
               <h3 className="text-[12px] font-black uppercase tracking-widest text-ink/60">Generated Lineups</h3>
+              {slateSavedLineupSets.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowSavedLineupsModal(true)}
+                  className="px-2 py-1 rounded-sm border border-ink/20 text-[10px] font-black uppercase tracking-widest text-ink/60 hover:border-drafting-orange/40 hover:text-ink transition-all"
+                >
+                  Saved Lineups
+                </button>
+              )}
             </div>
             <div className="flex items-center gap-3">
               <span className="text-[12px] font-mono font-bold text-ink/40">{generatedLineups.length} Found</span>
               {generatedLineups.length > 0 && !isOptimizing && (
-                <button 
-                  onClick={exportToCSV}
-                  className="flex items-center gap-2 px-3 py-1.5 bg-emerald-600 text-white rounded-sm text-[11px] font-black uppercase hover:opacity-90 transition-all shadow-lg shadow-emerald-600/20"
-                >
-                  <Download className="w-3 h-3" /> Export
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSaveLineupName('');
+                      setShowSaveLineupsModal(true);
+                    }}
+                    className="flex items-center gap-2 px-3 py-1.5 border border-ink/20 text-ink/70 rounded-sm text-[11px] font-black uppercase hover:border-drafting-orange/40 hover:text-ink transition-all"
+                  >
+                    <Save className="w-3 h-3" /> Save Lineups
+                  </button>
+                  <button
+                    onClick={exportToCSV}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-emerald-600 text-white rounded-sm text-[11px] font-black uppercase hover:opacity-90 transition-all shadow-lg shadow-emerald-600/20"
+                  >
+                    <Download className="w-3 h-3" /> Export
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -1508,6 +1809,92 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             </div>
 
             <div className="flex-1 min-h-0 flex flex-col gap-4 overflow-hidden">
+              <div className="border border-ink/10 rounded-sm p-3 bg-white/60">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-ink/50">Minimum Thresholds</h4>
+                  <span className="text-[9px] font-mono text-ink/40">Locked players bypass thresholds</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black uppercase tracking-widest text-ink/40">MIN. USAGE</label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={advancedMinimums.minUsage}
+                      onChange={(e) => {
+                        const value = Number.parseFloat(e.target.value);
+                        setAdvancedMinimums((prev) => ({
+                          ...prev,
+                          minUsage: Number.isFinite(value) ? Math.max(0, value) : 0,
+                        }));
+                      }}
+                      className="w-full bg-white/70 border border-ink/20 rounded-sm px-2 py-1 text-[11px] font-bold font-mono text-ink focus:border-drafting-orange outline-none"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black uppercase tracking-widest text-ink/40">MIN. MINUTES</label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={advancedMinimums.minMinutes}
+                      onChange={(e) => {
+                        const value = Number.parseFloat(e.target.value);
+                        setAdvancedMinimums((prev) => ({
+                          ...prev,
+                          minMinutes: Number.isFinite(value) ? Math.max(0, value) : 0,
+                        }));
+                      }}
+                      className="w-full bg-white/70 border border-ink/20 rounded-sm px-2 py-1 text-[11px] font-bold font-mono text-ink focus:border-drafting-orange outline-none"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black uppercase tracking-widest text-ink/40">MIN. LEV TIER</label>
+                    <select
+                      value={advancedMinimums.minLeverageTier}
+                      onChange={(e) => {
+                        const value = Number.parseInt(e.target.value, 10);
+                        setAdvancedMinimums((prev) => ({
+                          ...prev,
+                          minLeverageTier: Number.isFinite(value) ? Math.max(1, Math.min(5, value)) : 1,
+                        }));
+                      }}
+                      className="w-full bg-white/70 border border-ink/20 rounded-sm px-2 py-1 text-[11px] font-bold uppercase tracking-wider text-ink focus:border-drafting-orange outline-none"
+                    >
+                      {LEVERAGE_TIER_RANK_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-black uppercase tracking-widest text-ink/40">MIN. SIGNAL</label>
+                    <select
+                      value={advancedMinimums.minSignal}
+                      onChange={(e) => {
+                        const value = Number.parseInt(e.target.value, 10);
+                        setAdvancedMinimums((prev) => ({
+                          ...prev,
+                          minSignal: Number.isFinite(value) ? Math.max(1, Math.min(5, value)) : 1,
+                        }));
+                      }}
+                      className="w-full bg-white/70 border border-ink/20 rounded-sm px-2 py-1 text-[11px] font-bold uppercase tracking-wider text-ink focus:border-drafting-orange outline-none"
+                    >
+                      {SIGNAL_RANK_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
               <div className="border border-ink/10 rounded-sm p-3 bg-white/60 overflow-hidden flex flex-col flex-1 min-h-0">
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-[12px] font-black uppercase tracking-widest text-ink/50">Player Pool</h4>
@@ -1918,6 +2305,100 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                   Save
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSaveLineupsModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md bg-white border border-ink/10 rounded-sm shadow-xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-[11px] font-black uppercase tracking-widest text-ink/70">Save Lineups</h3>
+              <button
+                type="button"
+                onClick={() => setShowSaveLineupsModal(false)}
+                className="text-[10px] font-black uppercase tracking-widest text-ink/50 hover:text-ink"
+              >
+                Close
+              </button>
+            </div>
+            <label className="text-[9px] font-black uppercase tracking-widest text-ink/40 block mb-1">
+              Save Name
+            </label>
+            <input
+              type="text"
+              value={saveLineupName}
+              onChange={(e) => setSaveLineupName(e.target.value)}
+              placeholder="e.g. Main Slate Core 1"
+              className="w-full bg-white border border-ink/20 rounded-sm px-2.5 py-2 text-[11px] font-bold text-ink outline-none focus:border-drafting-orange"
+            />
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowSaveLineupsModal(false)}
+                className="px-3 py-1.5 border border-ink/20 rounded-sm text-[10px] font-black uppercase tracking-widest text-ink/60 hover:text-ink"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveGeneratedLineups}
+                className="px-3 py-1.5 bg-drafting-orange text-white rounded-sm text-[10px] font-black uppercase tracking-widest hover:opacity-90"
+              >
+                Save Lineups
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSavedLineupsModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-ink/50 backdrop-blur-sm p-4">
+          <div className="w-full max-w-2xl bg-white border border-ink/10 rounded-sm shadow-xl overflow-hidden">
+            <div className="p-4 border-b border-ink/10 flex items-center justify-between">
+              <h3 className="text-[11px] font-black uppercase tracking-widest text-ink/70">Saved Lineups</h3>
+              <button
+                type="button"
+                onClick={() => setShowSavedLineupsModal(false)}
+                className="text-[10px] font-black uppercase tracking-widest text-ink/50 hover:text-ink"
+              >
+                Close
+              </button>
+            </div>
+            <div className="max-h-[60vh] overflow-y-auto no-scrollbar divide-y divide-ink/10">
+              {slateSavedLineupSets.length === 0 ? (
+                <div className="p-6 text-center text-[10px] font-black uppercase tracking-widest text-ink/40">
+                  No saved lineups for this slate
+                </div>
+              ) : (
+                slateSavedLineupSets.map((savedSet) => (
+                  <div key={savedSet.id} className="p-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[12px] font-black text-ink truncate">{savedSet.name}</div>
+                      <div className="text-[9px] font-mono uppercase tracking-widest text-ink/50 mt-1">
+                        {savedSet.lineups.length} lineups • {new Date(savedSet.createdAt).toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => loadSavedLineupSet(savedSet)}
+                        className="px-3 py-1.5 bg-drafting-orange text-white rounded-sm text-[10px] font-black uppercase tracking-widest hover:opacity-90"
+                      >
+                        Load
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteSavedLineupSet(savedSet.id)}
+                        className="px-3 py-1.5 border border-red-600/30 text-red-600 rounded-sm text-[10px] font-black uppercase tracking-widest hover:bg-red-600/10"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>

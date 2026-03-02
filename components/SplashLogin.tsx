@@ -69,6 +69,12 @@ export const SplashLogin: React.FC = () => {
             <h1 className="font-black text-xl tracking-tighter leading-none italic uppercase">SLATE<span className="text-accent"> SIM</span></h1>
           </div>
           <div className="flex items-center gap-2">
+            <a
+              href="/preview"
+              className="px-4 py-2 border border-ink/20 hover:border-drafting-orange/40 text-ink text-xs font-black uppercase rounded-lg transition-colors"
+            >
+              Preview
+            </a>
             <SignInButton mode="modal">
               <button className="px-4 py-2 bg-accent hover:opacity-90 text-black text-xs font-black uppercase rounded-lg transition-colors flex items-center gap-2">
                 <LogIn className="w-4 h-4" /> Log In

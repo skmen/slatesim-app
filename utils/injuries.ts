@@ -140,6 +140,30 @@ const extractPlayerId = (entry: any): string => {
   return canonical || toStringValue(idRaw);
 };
 
+const tokenizeStatus = (status: string): string[] => {
+  return String(status || '')
+    .toLowerCase()
+    .split(/[^a-z]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+};
+
+export const isUnavailableInjuryStatus = (status: string | undefined | null): boolean => {
+  if (!status) return false;
+  const tokens = tokenizeStatus(status);
+  if (tokens.length === 0) return false;
+
+  if (tokens.includes('doubtful')) return true;
+  if (tokens.includes('out')) return true;
+  if (tokens.length === 1 && (tokens[0] === 'o' || tokens[0] === 'd')) return true;
+  return false;
+};
+
+export const shouldExcludePlayerForInjury = (info: InjuryInfo | undefined | null): boolean => {
+  if (!info) return false;
+  return isUnavailableInjuryStatus(info.status);
+};
+
 export const buildInjuryLookup = (payload: any): InjuryLookup => {
   const entries = extractEntries(payload);
   const lookup: InjuryLookup = new Map();

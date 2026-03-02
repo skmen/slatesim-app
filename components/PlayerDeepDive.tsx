@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Player, HistoricalGame, GameInfo, Slot } from '../types';
 import { X, TrendingUp, Activity, BarChart3, Zap, TrendingDown, Plus, Minus } from 'lucide-react';
 import { Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Line, ComposedChart, Cell } from 'recharts';
@@ -15,9 +15,11 @@ interface Props {
   onClose: () => void;
   isHistorical: boolean;
   showActuals: boolean;
+  previewMode?: boolean;
   depthCharts?: any | null;
   injuryLookup?: InjuryLookup | null;
   startingLineupLookup?: StartingLineupLookup | null;
+  onOptimizerExposureChange?: (playerId: string, minExposure?: number, maxExposure?: number) => void;
 }
 
 type TabKey = 'dfs' | 'stats' | 'matchup' | 'synergy' | 'depth';
@@ -27,6 +29,23 @@ interface SortConfig {
   key: string;
   dir: SortDir;
 }
+
+interface OptimizerPlayerOverride {
+  minutes?: number;
+  projection?: number;
+  minExposure?: number;
+  maxExposure?: number;
+  exclude?: boolean;
+}
+
+interface OptimizerAdvancedSettings {
+  lockedIds?: string[];
+  selectedMatchups?: string[];
+  selectedTeams?: string[];
+  playerOverrides?: Record<string, OptimizerPlayerOverride>;
+}
+
+const OPTIMIZER_SETTINGS_KEY = 'optimizerAdvancedSettings';
 
 const parsePositions = (position: string): string[] => {
   return String(position || '')
@@ -64,6 +83,39 @@ const readByKeys = (obj: any, keys: string[]): any => {
 
 const AST_KEYS = ['AST', 'assists', 'assist', 'A', 'ASTS', 'APG'];
 
+const SEASON_STAT_THRESHOLDS: Record<'PG' | 'SG' | 'SF' | 'PF' | 'C', Partial<Record<string, number>>> = {
+  PG: {
+    AST: 8,
+    FGA: 15,
+    FTA: 5,
+    'AST%': 35,
+    'USG%': 28,
+  },
+  SG: {
+    FGA: 16,
+    '3PA': 8,
+    FTA: 6,
+    'USG%': 28,
+  },
+  SF: {
+    FGA: 16,
+    REB: 7,
+    'USG%': 28,
+  },
+  PF: {
+    REB: 9,
+    FTA: 6,
+    'USG%': 27,
+  },
+  C: {
+    REB: 11,
+    BLK: 2,
+    'USG%': 27,
+    'OREB%': 10,
+    'REB%': 22,
+  },
+};
+
 const toSeasonLabel = (dateStr: string): string => {
   const parsed = new Date(dateStr);
   const year = Number.isFinite(parsed.getTime()) ? parsed.getFullYear() : new Date().getFullYear();
@@ -85,6 +137,79 @@ const formatMetric = (val: number | undefined | null, decimals = 2): string => {
   return Number(val).toFixed(decimals);
 };
 
+const PIE_KEYS = [
+  'pie',
+  'PIE',
+  'PIE%',
+  'PIE_PCT',
+  'PIEPCT',
+  'piePct',
+  'pie_pct',
+  'piePercent',
+  'pie_percent',
+  'playerImpactEstimate',
+  'player_impact_estimate',
+  'playerimpactestimate',
+  'playerImpactEstimatePct',
+  'playerImpactEstimatePercent',
+  'player_impact_estimate_pct',
+  'player_impact_estimate_percent',
+  'PLAYER_IMPACT_ESTIMATE',
+  'PLAYERIMPACTESTIMATE',
+  'PLAYER_IMPACT_ESTIMATE_PCT',
+  'PLAYER_IMPACT_ESTIMATE_PERCENT',
+];
+
+const normalizePieNumber = (raw: any): number | undefined => {
+  if (raw === null || raw === undefined || raw === '') return undefined;
+  const normalizedRaw =
+    typeof raw === 'string'
+      ? raw.trim().replace('%', '')
+      : raw;
+  const value = Number(normalizedRaw);
+  if (!Number.isFinite(value)) return undefined;
+  // PIE is often serialized as 0..1 in raw feeds; present as 0..100 like other percent columns.
+  return value <= 1 ? value * 100 : value;
+};
+
+const readPieFromBoxscoreGame = (game: any): any => {
+  const sources = [
+    game,
+    game?._stats,
+    game?.stats,
+    game?.advanced,
+    game?.advancedStats,
+    game?.advanced_stats,
+    game?.boxscore,
+    game?.boxScore,
+    game?.boxScore?.advanced,
+    game?.boxscore?.advanced,
+    game?.boxscoreStats,
+    game?.boxscore_stats,
+    game?.boxScoreAdvanced,
+    game?.box_score_advanced,
+    game?.gameStats,
+    game?.game_stats,
+    game?.stats?.advanced,
+    game?.stats?.advancedStats,
+  ];
+
+  for (const source of sources) {
+    const value = readByKeys(source, PIE_KEYS);
+    if (value !== undefined && value !== null && value !== '') {
+      if (typeof value === 'object') {
+        const nested = readByKeys(value, ['value', 'pct', 'percent', ...PIE_KEYS]);
+        const nestedNumeric = normalizePieNumber(nested);
+        if (nestedNumeric !== undefined) return nestedNumeric;
+      }
+      const numeric = normalizePieNumber(value);
+      if (numeric !== undefined) return numeric;
+      return value;
+    }
+  }
+  return undefined;
+};
+
 const compareValues = (a: any, b: any): number => {
   const aEmpty = a === null || a === undefined || a === '';
   const bEmpty = b === null || b === undefined || b === '';
@@ -97,6 +222,34 @@ const compareValues = (a: any, b: any): number => {
   const sA = String(a ?? '');
   const sB = String(b ?? '');
   return sA.localeCompare(sB);
+};
+
+const getPrimaryPosition = (position: string): 'PG' | 'SG' | 'SF' | 'PF' | 'C' => {
+  const parsed = parsePositions(position);
+  const primary = parsed[0];
+  if (primary === 'PG' || primary === 'SG' || primary === 'SF' || primary === 'PF' || primary === 'C') return primary;
+  return 'PG';
+};
+
+const normalizeStatForThreshold = (column: string, raw: any): number | null => {
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return null;
+  if (column.includes('%') && num <= 1) return num * 100;
+  return num;
+};
+
+const getSeasonStatThreshold = (position: string, column: string): number | null => {
+  const primary = getPrimaryPosition(position);
+  const threshold = SEASON_STAT_THRESHOLDS[primary][column];
+  return Number.isFinite(Number(threshold)) ? Number(threshold) : null;
+};
+
+const isSeasonStatAtThreshold = (position: string, column: string, raw: any): boolean => {
+  const threshold = getSeasonStatThreshold(position, column);
+  if (!Number.isFinite(Number(threshold))) return false;
+  const value = normalizeStatForThreshold(column, raw);
+  if (!Number.isFinite(Number(value))) return false;
+  return Number(value) >= Number(threshold);
 };
 
 const dvpStatClass = (position: string, stat: 'pts' | 'reb' | 'ast' | 'blk' | '3pm', value: number | null): string => {
@@ -146,7 +299,77 @@ const nextSort = (current: SortConfig | null, key: string, defaultDir: SortDir =
   return { key, dir: defaultDir };
 };
 
-export const PlayerDeepDive: React.FC<Props> = ({ player, players, games, onClose, isHistorical, showActuals, depthCharts, injuryLookup, startingLineupLookup }) => {
+const readOptimizerAdvancedSettings = (): OptimizerAdvancedSettings => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(OPTIMIZER_SETTINGS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const saveOptimizerExposureForPlayer = (playerId: string, minExposure?: number, maxExposure?: number): void => {
+  if (typeof window === 'undefined') return;
+  const settings = readOptimizerAdvancedSettings();
+  const playerOverrides = settings.playerOverrides && typeof settings.playerOverrides === 'object'
+    ? { ...settings.playerOverrides }
+    : {};
+
+  const current = playerOverrides[playerId] && typeof playerOverrides[playerId] === 'object'
+    ? { ...playerOverrides[playerId] }
+    : {};
+
+  if (minExposure === undefined) {
+    delete current.minExposure;
+  } else {
+    current.minExposure = minExposure;
+  }
+
+  if (maxExposure === undefined) {
+    delete current.maxExposure;
+  } else {
+    current.maxExposure = maxExposure;
+  }
+
+  if (Object.keys(current).length === 0) {
+    delete playerOverrides[playerId];
+  } else {
+    playerOverrides[playerId] = current;
+  }
+
+  window.localStorage.setItem(
+    OPTIMIZER_SETTINGS_KEY,
+    JSON.stringify({
+      ...settings,
+      playerOverrides,
+    }),
+  );
+};
+
+const parseExposureInput = (value: string): number | undefined => {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const numeric = Number(trimmed);
+  if (!Number.isFinite(numeric)) return undefined;
+  return Math.max(0, Math.min(100, numeric));
+};
+
+export const PlayerDeepDive: React.FC<Props> = ({
+  player,
+  players,
+  games,
+  onClose,
+  isHistorical,
+  showActuals,
+  previewMode = false,
+  depthCharts,
+  injuryLookup,
+  startingLineupLookup,
+  onOptimizerExposureChange,
+}) => {
   const [activeTab, setActiveTab] = useState<TabKey>('dfs');
   const [traditionalHover, setTraditionalHover] = useState<{ row: number; col: number } | null>(null);
   const [advancedHover, setAdvancedHover] = useState<{ row: number; col: number } | null>(null);
@@ -155,6 +378,9 @@ export const PlayerDeepDive: React.FC<Props> = ({ player, players, games, onClos
   const [traditionalSort, setTraditionalSort] = useState<SortConfig | null>(null);
   const [advancedSort, setAdvancedSort] = useState<SortConfig | null>(null);
   const [synergySort, setSynergySort] = useState<SortConfig>({ key: 'combinedProj', dir: 'desc' });
+  const [minExposureInput, setMinExposureInput] = useState('');
+  const [maxExposureInput, setMaxExposureInput] = useState('');
+  const [exposureStatus, setExposureStatus] = useState<string | null>(null);
   const { slots, addPlayer, removePlayer, isPlayerInLineup } = useLineup();
   const startingInfo = useMemo(
     () => getPlayerStartingLineupInfo(player, startingLineupLookup),
@@ -418,13 +644,22 @@ export const PlayerDeepDive: React.FC<Props> = ({ player, players, games, onClos
     if (player.history && player.history.length > 0) {
       const enriched = player.history.map((game) => ({
         ...game,
-        projection:
-          game.projection ??
-          ((player.averageFppm && game.minutes)
-            ? player.averageFppm * game.minutes
-            : ((player.minutesProjection && game.minutes)
-              ? player.projection * (game.minutes / player.minutesProjection)
-              : player.projection)),
+        projection: (() => {
+          const fallbackProjection =
+            ((player.averageFppm && game.minutes)
+              ? player.averageFppm * game.minutes
+              : ((player.minutesProjection && game.minutes)
+                ? player.projection * (game.minutes / player.minutesProjection)
+                : player.projection));
+          const projectionNum = Number(game.projection);
+          const actualNum = Number(game.fpts);
+          const projectionMatchesActual =
+            Number.isFinite(projectionNum) &&
+            Number.isFinite(actualNum) &&
+            Math.abs(projectionNum - actualNum) < 0.001;
+          if (Number.isFinite(projectionNum) && !projectionMatchesActual) return projectionNum;
+          return fallbackProjection;
+        })(),
       }));
       return sortByDateDesc(enriched).slice(0, 10);
     }
@@ -436,13 +671,21 @@ export const PlayerDeepDive: React.FC<Props> = ({ player, players, games, onClos
           const chunks = Array.isArray(game?.chunks) ? game.chunks : [];
           const minutes = chunks.reduce((sum: number, c: any) => sum + (Number(c?.minutesPlayed) || 0), 0);
           const fpts = chunks.reduce((sum: number, c: any) => sum + (Number(c?.fantasyPoints) || 0), 0);
-          const projection = Number(game?.projection ?? game?.projectedFantasyPoints ?? player.projection);
+          const projectionCandidate = Number(game?.projection ?? game?.projectedFantasyPoints);
+          const projectionMatchesActual =
+            Number.isFinite(projectionCandidate) &&
+            Number.isFinite(fpts) &&
+            Math.abs(projectionCandidate - fpts) < 0.001;
+          const projection =
+            Number.isFinite(projectionCandidate) && !projectionMatchesActual
+              ? projectionCandidate
+              : player.projection;
           return {
             date: String(game?.date || ''),
             opponent: String(game?.opponentTeamId || '--'),
             minutes,
             fpts,
-            projection: Number.isFinite(projection) ? projection : player.projection,
+            projection,
           } as HistoricalGame;
         })
         .filter((g) => !!g.date);
@@ -683,6 +926,7 @@ export const PlayerDeepDive: React.FC<Props> = ({ player, players, games, onClos
   const traditionalRows = useMemo(() => {
     const avg = player.statsProfile || {};
     const avgRow: Record<string, any> = {
+      __isSeasonAvg: true,
       DATE: toSeasonLabel(history[0]?.date || String((player as any).slateDate || new Date().toISOString())),
       OPP: '--',
       MIN: readByKeys(avg, ['MIN']),
@@ -711,6 +955,7 @@ export const PlayerDeepDive: React.FC<Props> = ({ player, players, games, onClos
     };
 
     const gameRows = latestRawLogs.map((g) => ({
+      __isSeasonAvg: false,
       DATE: String(g?._date ?? g?.date ?? g?.gameDate ?? '--'),
       OPP: String(g?._opp ?? g?.opponentTeamId ?? g?.opponent ?? g?.opp ?? '--'),
       MIN: readByKeys(g, ['minutes','MIN']) ?? readByKeys(g?._stats, ['minutes','MIN']),
@@ -754,6 +999,7 @@ export const PlayerDeepDive: React.FC<Props> = ({ player, players, games, onClos
   const advancedRows = useMemo(() => {
     const avg = player.statsProfile || {};
     const avgRow: Record<string, any> = {
+      __isSeasonAvg: true,
       DATE: toSeasonLabel(history[0]?.date || String((player as any).slateDate || new Date().toISOString())),
       OPP: '--',
       MIN: readByKeys(avg, ['MIN']),
@@ -771,10 +1017,11 @@ export const PlayerDeepDive: React.FC<Props> = ({ player, players, games, onClos
       'TS%': readByKeys(avg, ['TS%','TSPCT']),
       'USG%': readByKeys(avg, ['USG%','USGPCT']),
       PACE: readByKeys(avg, ['PACE']),
-      PIE: readByKeys(avg, ['PIE']),
+      PIE: readPieFromBoxscoreGame(avg),
     };
 
     const gameRows = latestRawLogs.map((g) => ({
+      __isSeasonAvg: false,
       DATE: String(g?._date ?? g?.date ?? g?.gameDate ?? '--'),
       OPP: String(g?._opp ?? g?.opponentTeamId ?? g?.opponent ?? g?.opp ?? '--'),
       MIN: readByKeys(g, ['minutes','MIN']) ?? readByKeys(g?._stats, ['minutes','MIN']),
@@ -792,7 +1039,7 @@ export const PlayerDeepDive: React.FC<Props> = ({ player, players, games, onClos
       'TS%': readByKeys(g, ['ts%','TS%','TSPCT']) ?? readByKeys(g?._stats, ['ts%','TS%','TSPCT']),
       'USG%': readByKeys(g, ['usg%','USG%','USGPCT']) ?? readByKeys(g?._stats, ['usg%','USG%','USGPCT']),
       PACE: readByKeys(g, ['pace','PACE']) ?? readByKeys(g?._stats, ['pace','PACE']),
-      PIE: readByKeys(g, ['pie','PIE']) ?? readByKeys(g?._stats, ['pie','PIE']),
+      PIE: readPieFromBoxscoreGame(g),
     }));
 
     return [avgRow, ...gameRows];
@@ -852,10 +1099,60 @@ export const PlayerDeepDive: React.FC<Props> = ({ player, players, games, onClos
   const tabs: Array<{ key: TabKey; label: string }> = [
     { key: 'dfs', label: 'DFS' },
     { key: 'stats', label: 'Stats' },
-    { key: 'matchup', label: 'Matchup' },
-    { key: 'synergy', label: 'Synergy' },
+    ...(!previewMode ? [{ key: 'matchup' as TabKey, label: 'Matchup' }] : []),
+    ...(!previewMode ? [{ key: 'synergy' as TabKey, label: 'Synergy' }] : []),
     { key: 'depth', label: 'Depth Chart' },
   ];
+
+  useEffect(() => {
+    if (previewMode && (activeTab === 'matchup' || activeTab === 'synergy')) {
+      setActiveTab('dfs');
+    }
+  }, [activeTab, previewMode]);
+
+  useEffect(() => {
+    const settings = readOptimizerAdvancedSettings();
+    const override = settings.playerOverrides?.[player.id];
+    const min = override?.minExposure;
+    const max = override?.maxExposure;
+    setMinExposureInput(Number.isFinite(Number(min)) ? String(min) : '');
+    setMaxExposureInput(Number.isFinite(Number(max)) ? String(max) : '');
+    setExposureStatus(null);
+  }, [player.id]);
+
+  const applyExposureSettings = () => {
+    const minExposure = parseExposureInput(minExposureInput);
+    const maxExposure = parseExposureInput(maxExposureInput);
+
+    const minProvided = minExposureInput.trim() !== '';
+    const maxProvided = maxExposureInput.trim() !== '';
+    if (minProvided && minExposure === undefined) {
+      setExposureStatus('Min exposure must be a valid number (0-100).');
+      return;
+    }
+    if (maxProvided && maxExposure === undefined) {
+      setExposureStatus('Max exposure must be a valid number (0-100).');
+      return;
+    }
+    if (minExposure !== undefined && maxExposure !== undefined && minExposure > maxExposure) {
+      setExposureStatus('Min exposure cannot be greater than max exposure.');
+      return;
+    }
+
+    saveOptimizerExposureForPlayer(player.id, minExposure, maxExposure);
+    onOptimizerExposureChange?.(player.id, minExposure, maxExposure);
+    setExposureStatus('Exposure saved to optimizer advanced settings.');
+    setMinExposureInput(minExposure === undefined ? '' : String(minExposure));
+    setMaxExposureInput(maxExposure === undefined ? '' : String(maxExposure));
+  };
+
+  const clearExposureSettings = () => {
+    saveOptimizerExposureForPlayer(player.id, undefined, undefined);
+    onOptimizerExposureChange?.(player.id, undefined, undefined);
+    setMinExposureInput('');
+    setMaxExposureInput('');
+    setExposureStatus('Exposure cleared from optimizer advanced settings.');
+  };
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-vellum/80 backdrop-blur-sm animate-in fade-in duration-200" onClick={onClose}>
@@ -890,6 +1187,48 @@ export const PlayerDeepDive: React.FC<Props> = ({ player, players, games, onClos
                   <span className="text-xs font-mono font-bold text-ink/60">
                     ACTUAL FPTS: <span className="text-emerald-600">{modalActualFpts !== null ? modalActualFpts.toFixed(2) : '--'}</span>
                   </span>
+                )}
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span className="text-[9px] font-black uppercase tracking-widest text-ink/50">Optimizer Exposure</span>
+                <span className="text-[9px] font-black uppercase tracking-widest text-ink/40">Min</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={minExposureInput}
+                  onChange={(e) => setMinExposureInput(e.target.value)}
+                  className="w-16 bg-white/70 border border-ink/20 rounded-sm px-2 py-1 text-[10px] font-bold font-mono text-ink outline-none focus:border-drafting-orange"
+                  placeholder="0"
+                />
+                <span className="text-[9px] font-black uppercase tracking-widest text-ink/40">Max</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={maxExposureInput}
+                  onChange={(e) => setMaxExposureInput(e.target.value)}
+                  className="w-16 bg-white/70 border border-ink/20 rounded-sm px-2 py-1 text-[10px] font-bold font-mono text-ink outline-none focus:border-drafting-orange"
+                  placeholder="100"
+                />
+                <button
+                  type="button"
+                  onClick={applyExposureSettings}
+                  className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-sm border border-drafting-orange/30 text-drafting-orange hover:bg-drafting-orange/10 transition-colors"
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  onClick={clearExposureSettings}
+                  className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-sm border border-ink/20 text-ink/70 hover:bg-ink/5 transition-colors"
+                >
+                  Clear
+                </button>
+                {exposureStatus && (
+                  <span className="text-[9px] font-bold text-ink/60">{exposureStatus}</span>
                 )}
               </div>
             </div>
@@ -1188,14 +1527,19 @@ export const PlayerDeepDive: React.FC<Props> = ({ player, players, games, onClos
                       {sortedTraditionalRows.map((row, idx) => (
                         <tr key={`trad-row-${idx}`} className="border-b border-ink/5">
                           {traditionalColumns.map((col, colIndex) => {
-                            const isActiveRow = traditionalHover?.row === idx;
-                            const isActiveCol = traditionalHover?.col === colIndex;
-                            const highlightClass = isActiveRow || isActiveCol ? 'ring-1 ring-ink/25 ring-inset' : '';
-                            const textClass = isActiveCol ? 'text-ink' : 'text-ink/70';
+                            const isHoveredCell = traditionalHover?.row === idx && traditionalHover?.col === colIndex;
+                            const highlightClass = isHoveredCell ? 'ring-1 ring-ink/25 ring-inset' : '';
+                            const isSeasonAvgRow = Boolean((row as any).__isSeasonAvg);
+                            const meetsSeasonThreshold = isSeasonAvgRow && isSeasonStatAtThreshold(player.position, col, row[col]);
+                            const textClass = meetsSeasonThreshold
+                              ? 'bg-emerald-100 text-emerald-700 font-black'
+                              : (isHoveredCell ? 'text-ink' : 'text-ink/70');
+                            const threshold = meetsSeasonThreshold ? getSeasonStatThreshold(player.position, col) : null;
                             return (
                               <td
                                 key={`trad-cell-${idx}-${col}`}
                                 onMouseEnter={() => setTraditionalHover({ row: idx, col: colIndex })}
+                                title={meetsSeasonThreshold && Number.isFinite(Number(threshold)) ? `Threshold ${threshold}` : undefined}
                                 className={`px-3 py-2 text-right ${textClass} ${highlightClass}`}
                               >
                                 {formatStatValue(row[col])}
@@ -1235,14 +1579,19 @@ export const PlayerDeepDive: React.FC<Props> = ({ player, players, games, onClos
                       {sortedAdvancedRows.map((row, idx) => (
                         <tr key={`adv-row-${idx}`} className="border-b border-ink/5">
                           {advancedColumns.map((col, colIndex) => {
-                            const isActiveRow = advancedHover?.row === idx;
-                            const isActiveCol = advancedHover?.col === colIndex;
-                            const highlightClass = isActiveRow || isActiveCol ? 'ring-1 ring-ink/25 ring-inset' : '';
-                            const textClass = isActiveCol ? 'text-ink' : 'text-ink/70';
+                            const isHoveredCell = advancedHover?.row === idx && advancedHover?.col === colIndex;
+                            const highlightClass = isHoveredCell ? 'ring-1 ring-ink/25 ring-inset' : '';
+                            const isSeasonAvgRow = Boolean((row as any).__isSeasonAvg);
+                            const meetsSeasonThreshold = isSeasonAvgRow && isSeasonStatAtThreshold(player.position, col, row[col]);
+                            const textClass = meetsSeasonThreshold
+                              ? 'bg-emerald-100 text-emerald-700 font-black'
+                              : (isHoveredCell ? 'text-ink' : 'text-ink/70');
+                            const threshold = meetsSeasonThreshold ? getSeasonStatThreshold(player.position, col) : null;
                             return (
                               <td
                                 key={`adv-cell-${idx}-${col}`}
                                 onMouseEnter={() => setAdvancedHover({ row: idx, col: colIndex })}
+                                title={meetsSeasonThreshold && Number.isFinite(Number(threshold)) ? `Threshold ${threshold}` : undefined}
                                 className={`px-3 py-2 text-right ${textClass} ${highlightClass}`}
                               >
                                 {formatStatValue(row[col])}

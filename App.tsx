@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { BarChart2, List, LogOut, Cpu, Lock, Zap } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { BarChart2, ChevronLeft, ChevronRight, List, LogOut, Cpu, Lock, Zap } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import { useUser, ClerkProvider, useAuth as useClerkAuth } from "@clerk/clerk-react"; 
 import { AppState, ViewState, ContestInput, ContestDerived, Entitlement, GameInfo } from './types';
 import { parseProjections, parsePipelineJson, parseOptimizerLineups, parseUserLineupsRows, canonicalizeId, normalizeName } from './utils/csvParser';
-import { buildInjuryLookup, InjuryLookup } from './utils/injuries';
+import { buildInjuryLookup, getPlayerInjuryInfo, InjuryLookup, shouldExcludePlayerForInjury } from './utils/injuries';
 import { buildStartingLineupLookup, StartingLineupLookup } from './utils/startingLineups';
 import { DashboardView } from './components/DashboardView';
 import { OptimizerView } from './components/OptimizerView';
@@ -17,6 +17,25 @@ import { SplashLogin } from './components/SplashLogin';
 import { PricingPage } from './components/PricingPage';
 import { LineupDrawer } from './components/LineupDrawer';
 import DKEntryManager from './components/DKEntryManager';
+import ReportView from './components/ReportView';
+
+// Simple error boundary to prevent report page from blanking the UI
+class ErrorBoundary extends React.Component<{ fallback: React.ReactNode }, { hasError: boolean }> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(err: any) {
+    console.error('ErrorBoundary caught error', err);
+  }
+  render() {
+    if (this.state.hasError) return this.props.fallback as any;
+    return this.props.children as any;
+  }
+}
 
 // ... (Keep existing INITIAL_STATE, IntegrityFooter, AppContent unchanged) ...
 // TO SAVE SPACE, I AM RE-USING YOUR EXISTING APP LOGIC BELOW
@@ -47,6 +66,8 @@ const INITIAL_STATE: AppState = {
   lastUpdated: 0,
 };
 
+const ENTRY_MANAGER_SESSION_KEY = 'slatesim.entryManager.session.v1';
+
 const IntegrityFooter: React.FC = () => {
   const [time, setTime] = useState(new Date().toLocaleTimeString());
   useEffect(() => {
@@ -74,16 +95,22 @@ const getLocalDateStr = (date: Date) => {
     return `${y}-${m}-${d}`;
   };
 
-const isDateBeforeToday = (dateStr: string): boolean => {
+const parseLocalDate = (dateStr: string): Date | null => {
   const parts = String(dateStr || '').split('-');
-  if (parts.length !== 3) return false;
+  if (parts.length !== 3) return null;
   const y = Number(parts[0]);
   const m = Number(parts[1]);
   const d = Number(parts[2]);
-  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return false;
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null;
+  const parsed = new Date(y, m - 1, d);
+  if (!Number.isFinite(parsed.getTime())) return null;
+  parsed.setHours(0, 0, 0, 0);
+  return parsed;
+};
 
-  const input = new Date(y, m - 1, d);
-  input.setHours(0, 0, 0, 0);
+const isDateBeforeToday = (dateStr: string): boolean => {
+  const input = parseLocalDate(dateStr);
+  if (!input) return false;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   return input < today;
@@ -261,13 +288,17 @@ const normalizeHistoricalLogs = (logs: any[], fallbackProjection: number): any[]
         game?.proj ??
         readByNormalizedKey(game, ['projection', 'projectedfantasypoints', 'proj']);
       const projectionNum = Number(projectionRaw);
+      const projectionMatchesActual =
+        Number.isFinite(projectionNum) &&
+        Number.isFinite(fpts) &&
+        Math.abs(projectionNum - fpts) < 0.001;
 
       return {
         date,
         opponent,
         minutes,
         fpts,
-        projection: Number.isFinite(projectionNum) ? projectionNum : fallbackProjection,
+        projection: Number.isFinite(projectionNum) && !projectionMatchesActual ? projectionNum : fallbackProjection,
       };
     })
     .filter((game): game is any => game !== null);
@@ -400,20 +431,62 @@ const NavItem = ({ label, icon: Icon, targetView, entitlement, setView, view, ha
   );
 };
 
-const AppContent: React.FC = () => {
+const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }) => {
   const { user, logout, hasEntitlement } = useAuth();
   const [state, setState] = useState<AppState>(INITIAL_STATE);
   const [view, setView] = useState<ViewState>(ViewState.RESEARCH);
   const [loading, setLoading] = useState(false);
   const [isHistorical, setIsHistorical] = useState(false);
   const [selectedDate, setSelectedDate] = useState(getLocalDateStr(new Date()));
+  const previousSelectedDateRef = useRef(selectedDate);
   const [showActuals, setShowActuals] = useState(true);
   const [injuryLookup, setInjuryLookup] = useState<InjuryLookup>(new Map());
   const [dataLastModified, setDataLastModified] = useState<string | null>(null);
   const [depthCharts, setDepthCharts] = useState<any | null>(null);
   const [startingLineupLookup, setStartingLineupLookup] = useState<StartingLineupLookup>(new Map());
+  const todayStr = useMemo(() => getLocalDateStr(new Date()), []);
+  const previewMaxDate = useMemo(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - 1);
+    return getLocalDateStr(d);
+  }, []);
+  const previewMinDate = useMemo(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - 7);
+    return getLocalDateStr(d);
+  }, []);
+  const clampPreviewDate = useCallback((dateStr: string): string => {
+    if (!previewMode) return dateStr;
+    const parsed = parseLocalDate(dateStr);
+    const minDate = parseLocalDate(previewMinDate);
+    const maxDate = parseLocalDate(previewMaxDate);
+    if (!parsed || !minDate || !maxDate) return previewMaxDate;
+    if (parsed < minDate) return previewMinDate;
+    if (parsed > maxDate) return previewMaxDate;
+    return getLocalDateStr(parsed);
+  }, [previewMode, previewMaxDate, previewMinDate]);
+  const shiftSelectedDate = useCallback((deltaDays: number) => {
+    setSelectedDate((prev) => {
+      const base = parseLocalDate(prev);
+      if (!base) return prev;
+      const next = new Date(base);
+      next.setDate(next.getDate() + deltaDays);
+      const nextStr = getLocalDateStr(next);
+      return clampPreviewDate(nextStr);
+    });
+  }, [clampPreviewDate]);
   const allowHistoricalActuals = useMemo(() => isDateBeforeToday(selectedDate), [selectedDate]);
   const effectiveShowActuals = showActuals && allowHistoricalActuals;
+  const canShiftPrev = useMemo(() => {
+    if (!previewMode) return true;
+    return selectedDate > previewMinDate;
+  }, [previewMode, previewMinDate, selectedDate]);
+  const canShiftNext = useMemo(() => {
+    if (!previewMode) return true;
+    return selectedDate < previewMaxDate;
+  }, [previewMaxDate, previewMode, selectedDate]);
   const formattedLastModified = useMemo(() => {
     if (!dataLastModified) return null;
     const parsed = new Date(dataLastModified);
@@ -429,6 +502,20 @@ const AppContent: React.FC = () => {
     }
     return '—';
   }, [formattedLastModified, state.lastUpdated]);
+
+  useEffect(() => {
+    const previousDate = previousSelectedDateRef.current;
+    if (previousDate && previousDate !== selectedDate) {
+      localStorage.removeItem(ENTRY_MANAGER_SESSION_KEY);
+    }
+    previousSelectedDateRef.current = selectedDate;
+  }, [selectedDate]);
+
+  useEffect(() => {
+    if (!previewMode) return;
+    setSelectedDate((prev) => clampPreviewDate(prev));
+    setView(ViewState.RESEARCH);
+  }, [previewMode, clampPreviewDate]);
 
   useEffect(() => {
     const initApp = async () => {
@@ -499,12 +586,18 @@ const AppContent: React.FC = () => {
         contestState = { input: savedContest, derived: deriveContest(savedContest) };
       }
 
+      const nextInjuryLookup = buildInjuryLookup(loadResult.data.injuries);
+      const filteredPlayers = refPlayers.filter((player) => {
+        const injuryInfo = getPlayerInjuryInfo(player, nextInjuryLookup);
+        return !shouldExcludePlayerForInjury(injuryInfo);
+      });
+
       setState(prev => ({
         ...prev,
         slate: {
           date: selectedDate,
           games,
-          players: refPlayers,
+          players: filteredPlayers,
           lineups: finalLineups,
         },
         historicalRotations: loadResult.data.history?.rotations ?? null,
@@ -513,7 +606,7 @@ const AppContent: React.FC = () => {
         contestState: contestState || { input: DEFAULT_CONTEST, derived: deriveContest(DEFAULT_CONTEST) },
         lastUpdated: Date.now(),
       }));
-      setInjuryLookup(buildInjuryLookup(loadResult.data.injuries));
+      setInjuryLookup(nextInjuryLookup);
       setDataLastModified(loadResult.lastModified?.latest ?? null);
       setDepthCharts(loadResult.data.depthCharts ?? null);
       setStartingLineupLookup(buildStartingLineupLookup(loadResult.data.startingLineups));
@@ -645,12 +738,34 @@ const AppContent: React.FC = () => {
             </div>
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-black text-ink/60 uppercase tracking-widest">Slate Date</span>
+              <button
+                type="button"
+                onClick={() => shiftSelectedDate(-1)}
+                disabled={previewMode && !canShiftPrev}
+                className="inline-flex items-center justify-center bg-vellum border border-ink/20 rounded-sm w-7 h-7 text-ink/70 hover:text-drafting-orange hover:border-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                aria-label="Previous day"
+                title="Previous day"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
               <input
                 type="date"
                 value={selectedDate}
-                onChange={(e) => setSelectedDate(e.target.value)}
+                min={previewMode ? previewMinDate : undefined}
+                max={previewMode ? previewMaxDate : undefined}
+                onChange={(e) => setSelectedDate(clampPreviewDate(e.target.value))}
                 className="bg-vellum border border-ink/20 rounded-sm px-2 py-1 text-xs font-bold text-ink outline-none focus:border-drafting-orange"
               />
+              <button
+                type="button"
+                onClick={() => shiftSelectedDate(1)}
+                disabled={previewMode && !canShiftNext}
+                className="inline-flex items-center justify-center bg-vellum border border-ink/20 rounded-sm w-7 h-7 text-ink/70 hover:text-drafting-orange hover:border-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                aria-label="Next day"
+                title="Next day"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
               <button
                 onClick={() => setShowActuals((prev) => !prev)}
                 disabled={!allowHistoricalActuals}
@@ -661,23 +776,39 @@ const AppContent: React.FC = () => {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <div className="flex flex-col items-end mr-2">
-              <span className="text-[10px] font-bold text-ink uppercase tracking-tighter">{user?.username}</span>
-              <span className="text-[9px] font-bold text-ink/70 uppercase tracking-widest">
-                Updated: {displayedUpdated}
-              </span>
-              <span className="text-[8px] font-black text-drafting-orange uppercase opacity-80">{user?.role}</span>
-            </div>
-            {hasEntitlement('admin_panel') && (
+            {!previewMode && (
+              <div className="flex flex-col items-end mr-2">
+                <span className="text-[10px] font-bold text-ink uppercase tracking-tighter">{user?.username}</span>
+                <span className="text-[9px] font-bold text-ink/70 uppercase tracking-widest">
+                  Updated: {displayedUpdated}
+                </span>
+                <span className="text-[8px] font-black text-drafting-orange uppercase opacity-80">{user?.role}</span>
+              </div>
+            )}
+            {previewMode && (
+              <div className="text-[9px] font-black uppercase tracking-widest text-ink/50">
+                Preview • Last 7 Days
+              </div>
+            )}
+            {!previewMode && hasEntitlement('admin_panel') && (
               <button onClick={() => setView(ViewState.LOAD)} className="text-[9px] font-black text-drafting-orange border border-drafting-orange/20 px-2 py-1 rounded uppercase tracking-widest hover:bg-drafting-orange/10 transition-all font-mono">UPDATE_DATA</button>
             )}
-            <button onClick={logout} className="p-2 rounded-full hover:bg-red-500/10 text-ink/40 hover:text-red-600 transition-colors"><LogOut className="w-5 h-5" /></button>
+            {previewMode ? (
+              <a
+                href="/"
+                className="px-3 py-1.5 rounded-sm border border-ink/20 text-[10px] font-black uppercase tracking-widest text-ink/60 hover:border-drafting-orange/40 hover:text-ink transition-all"
+              >
+                Back
+              </a>
+            ) : (
+              <button onClick={logout} className="p-2 rounded-full hover:bg-red-500/10 text-ink/40 hover:text-red-600 transition-colors"><LogOut className="w-5 h-5" /></button>
+            )}
           </div>
         </div>
       </header>
 
       <main className="flex-1 max-w-7xl mx-auto px-4 py-6 w-full">
-        {view === ViewState.LOAD && hasEntitlement('admin_panel') && (
+        {!previewMode && view === ViewState.LOAD && hasEntitlement('admin_panel') && (
           <div className="max-w-xl mx-auto space-y-8 mt-6 pb-24">
             <div {...getRootProps()} className={`border-2 border-dashed rounded-2xl p-12 text-center transition-all cursor-pointer ${isDragActive ? 'border-drafting-orange bg-drafting-orange/5' : 'border-ink/20 hover:border-drafting-orange bg-white/40'}`}>
               <input {...getInputProps()} />
@@ -697,9 +828,11 @@ const AppContent: React.FC = () => {
             injuryLookup={injuryLookup}
             depthCharts={depthCharts}
             startingLineupLookup={startingLineupLookup}
+            previewMode={previewMode}
+            hideSignalColumn={previewMode}
           />
         )}
-        {view === ViewState.OPTIMIZER && (
+        {!previewMode && view === ViewState.OPTIMIZER && (
           <OptimizerView
             players={state.slate.players}
             games={state.slate.games}
@@ -709,23 +842,36 @@ const AppContent: React.FC = () => {
             startingLineupLookup={startingLineupLookup}
           />
         )}
-        {view === ViewState.ENTRY_MANAGER && selectedDate === getLocalDateStr(new Date()) && (
-          <DKEntryManager players={state.slate.players} games={state.slate.games} showActuals={effectiveShowActuals} />
+        {!previewMode && view === ViewState.ENTRY_MANAGER && selectedDate === getLocalDateStr(new Date()) && (
+          <DKEntryManager
+            players={state.slate.players}
+            games={state.slate.games}
+            showActuals={effectiveShowActuals}
+            slateDate={state.slate.date}
+          />
+        )}
+        {!previewMode && view === ViewState.REPORT && (
+          <ErrorBoundary fallback={<div className="p-4 text-ink">Report unavailable: component error.</div>}>
+            <ReportView players={state.slate.players || []} games={state.slate.games || []} />
+          </ErrorBoundary>
         )}
       </main>
 
       <IntegrityFooter />
-      <LineupDrawer players={state.slate.players} showActuals={effectiveShowActuals} />
+      {!previewMode && <LineupDrawer players={state.slate.players} showActuals={effectiveShowActuals} />}
 
-      <nav className="fixed bottom-0 left-0 right-0 bg-white/80 border-t border-ink/10 px-6 py-2 pb-safe z-40 shadow-2xl backdrop-blur-md">
-           <div className="flex justify-around items-center max-w-lg mx-auto">
-              <NavItem label="Research" icon={BarChart2} targetView={ViewState.RESEARCH} setView={setView} view={view} hasEntitlement={hasEntitlement} />
-              <NavItem label="Optimizer" icon={Zap} targetView={ViewState.OPTIMIZER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
-              {selectedDate === getLocalDateStr(new Date()) && (
-                <NavItem label="Entry Manager" icon={List} targetView={ViewState.ENTRY_MANAGER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
-              )}
-           </div>
-      </nav>
+      {!previewMode && (
+        <nav className="fixed bottom-0 left-0 right-0 bg-white/80 border-t border-ink/10 px-6 py-2 pb-safe z-40 shadow-2xl backdrop-blur-md">
+          <div className="flex justify-around items-center max-w-lg mx-auto">
+            <NavItem label="Research" icon={BarChart2} targetView={ViewState.RESEARCH} setView={setView} view={view} hasEntitlement={hasEntitlement} />
+            <NavItem label="Optimizer" icon={Zap} targetView={ViewState.OPTIMIZER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
+            {selectedDate === getLocalDateStr(new Date()) && (
+              <NavItem label="Entry Manager" icon={List} targetView={ViewState.ENTRY_MANAGER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
+            )}
+            <NavItem label="Report" icon={BarChart2} targetView={ViewState.REPORT} setView={setView} view={view} hasEntitlement={hasEntitlement} />
+          </div>
+        </nav>
+      )}
 
       {loading && (
         <div className="fixed inset-0 bg-vellum/60 flex items-center justify-center z-[100] backdrop-blur-md">
@@ -744,6 +890,17 @@ const AppContent: React.FC = () => {
 const AuthShell: React.FC = () => {
   const { isLoaded, isSignedIn } = useUser();
   const isPricingRoute = typeof window !== 'undefined' && window.location.pathname === '/pricing';
+  const isPreviewRoute = typeof window !== 'undefined' && window.location.pathname === '/preview';
+
+  // Public pricing page (no auth required)
+  if (isPricingRoute) {
+    return <PricingPage />;
+  }
+
+  // Public preview route (research only, last 7 days)
+  if (isPreviewRoute) {
+    return <AppContent previewMode />;
+  }
 
   if (!isLoaded) {
     return (
@@ -754,11 +911,6 @@ const AuthShell: React.FC = () => {
         </p>
       </div>
     );
-  }
-
-  // Public pricing page (no auth required)
-  if (isPricingRoute) {
-    return <PricingPage />;
   }
 
   if (isSignedIn) {

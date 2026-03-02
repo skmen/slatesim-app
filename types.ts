@@ -101,6 +101,7 @@ export enum ViewState {
   OPTIMIZER = 'optimizer',
   LOAD = 'load',
   ENTRY_MANAGER = 'entry_manager',
+  REPORT = 'report',
 }
 
 // --- CONTEST & SLATE ---
