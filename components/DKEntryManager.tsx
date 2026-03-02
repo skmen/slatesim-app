@@ -254,59 +254,8 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
   }
 
   const runLateSwap = () => {
-    const worker = new Worker(new URL('../../src/workers/optimizer.worker.ts', import.meta.url));
-
-    worker.onmessage = (e) => {
-      if (e.data.type === 'result') {
-        const optimizedLineups = e.data.lineups as Lineup[];
-        setEntries(prev => {
-          return prev.map((entry, index) => {
-            const optimizedLineup = optimizedLineups[index % optimizedLineups.length];
-            if (!optimizedLineup) return entry;
-            
-            const newSlots: Record<Slot, string> = { ...entry.slots };
-            const playerIds = optimizedLineup.playerIds;
-            const lineupPlayers = playerIds.map(id => players.find(p => p.id === id)).filter(Boolean) as Player[];
-
-            SLOT_ORDER.forEach(slot => {
-              if(!isPlayerLocked(entry.slots[slot])) {
-                const playerIndex = lineupPlayers.findIndex(p => p.position.includes(slot.toString()));
-                if(playerIndex > -1) {
-                  const player = lineupPlayers[playerIndex];
-                  newSlots[slot] = `${player.name} (${player.id})`;
-                  lineupPlayers.splice(playerIndex, 1);
-                }
-              }
-            });
-
-            let currentPoints = 0;
-            let projectedPoints = 0;
-            let salary = 0;
-            SLOT_ORDER.forEach(slot => {
-                const player = getPlayerFromString(newSlots[slot]);
-                if(player) {
-                    salary += player.salary;
-                    const score = playerScores[player.id] || player.projection || 0;
-                    if (isPlayerLocked(newSlots[slot])) {
-                        currentPoints += score;
-                    }
-                    projectedPoints += score;
-                }
-            });
-
-            return { ...entry, slots: newSlots, projectedPoints, currentPoints, remainingSalary: SALARY_CAP - salary };
-          });
-        });
-        worker.terminate();
-      }
-    };
-
-    const unlockedPlayers = players.filter(p => !isPlayerLocked(`${p.name} (${p.id})`));
-
-    worker.postMessage({
-      players: unlockedPlayers,
-      config: { salaryCap: SALARY_CAP, numLineups: entries.length, maxExposure: 1 },
-    });
+    // Placeholder: integrate with backend optimizer; avoid bundling worker in this component
+    alert('Late Swap optimizer not available in this build. Wire this to your backend API.');
   };
 
   return (
