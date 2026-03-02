@@ -357,7 +357,7 @@ export const ProjectionsView: React.FC<Props> = ({ players, referencePlayers, be
                 const inLineup = isPlayerInLineup(p.id);
                 
                 return (
-                  <tr key={p.id} onClick={() => setSelectedPlayerId(p.id === selectedPlayerId ? null : p.id)} className={`cursor-pointer transition-colors group ${selectedPlayerId === p.id ? 'bg-drafting-orange/5' : 'hover:bg-white/40'}`}>
+                  <tr key={p.id} onClick={() => setSelectedPlayerId(p.id === selectedPlayerId ? null : p.id)} className="cursor-pointer transition-colors group hover:bg-white/40">
                     <td className="p-4 border-r border-ink/5">
                       <button 
                         onClick={(e) => {
