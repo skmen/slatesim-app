@@ -721,7 +721,9 @@ const AppContent: React.FC = () => {
            <div className="flex justify-around items-center max-w-lg mx-auto">
               <NavItem label="Research" icon={BarChart2} targetView={ViewState.RESEARCH} setView={setView} view={view} hasEntitlement={hasEntitlement} />
               <NavItem label="Optimizer" icon={Zap} targetView={ViewState.OPTIMIZER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
-              <NavItem label="Entry Manager" icon={List} targetView={ViewState.ENTRY_MANAGER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
+              {selectedDate === getLocalDateStr(new Date()) && (
+                <NavItem label="Entry Manager" icon={List} targetView={ViewState.ENTRY_MANAGER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
+              )}
            </div>
       </nav>
 
