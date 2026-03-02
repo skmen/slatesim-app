@@ -4,6 +4,7 @@ import { Upload, Lock, Unlock, Download, Save, Zap, ShieldCheck, ShieldAlert, X 
 import { Player, GameInfo, Lineup } from '../types';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { SavedLineupSet, loadSavedLineupSets } from '../utils/savedLineups';
+import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260302-priorityreset2';
 
 type Slot = 'PG' | 'SG' | 'SF' | 'PF' | 'C' | 'G' | 'F' | 'UTIL';
 
@@ -67,6 +68,21 @@ const getPlayerPositions = (player: Player): string[] => {
     .split('/')
     .map((pos) => pos.trim().toUpperCase())
     .filter(Boolean);
+};
+
+const canPlayerFitSlot = (player: Player, slot: Slot): boolean => {
+  const positions = getPlayerPositions(player);
+  switch (slot) {
+    case 'PG': return positions.includes('PG');
+    case 'SG': return positions.includes('SG');
+    case 'SF': return positions.includes('SF');
+    case 'PF': return positions.includes('PF');
+    case 'C': return positions.includes('C');
+    case 'G': return positions.includes('PG') || positions.includes('SG');
+    case 'F': return positions.includes('SF') || positions.includes('PF');
+    case 'UTIL': return true;
+    default: return false;
+  }
 };
 
 const takeFirstEligible = (pool: Player[], predicate: (player: Player) => boolean): Player | null => {
@@ -156,6 +172,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
   const [sessionSavedAt, setSessionSavedAt] = useState<number | null>(null);
   const [showImportLineupsModal, setShowImportLineupsModal] = useState(false);
   const [savedLineupSets, setSavedLineupSets] = useState<SavedLineupSet[]>([]);
+  const [isLateSwapRunning, setIsLateSwapRunning] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const playerRefs = useRef<Record<string, HTMLDivElement>>({});
 
@@ -385,6 +402,156 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     setShowImportLineupsModal(false);
   };
 
+  const runSingleLineupOptimization = (pool: Player[]): Promise<Lineup | null> => {
+    return new Promise((resolve) => {
+      const worker = new OptimizerWorker();
+      let finished = false;
+
+      const finish = (lineup: Lineup | null) => {
+        if (finished) return;
+        finished = true;
+        worker.terminate();
+        resolve(lineup);
+      };
+
+      worker.onmessage = (event: MessageEvent) => {
+        const msg = event.data;
+        if (msg?.type === 'result') {
+          const lineup = Array.isArray(msg.lineups) && msg.lineups.length > 0 ? msg.lineups[0] : null;
+          finish(lineup);
+          return;
+        }
+        if (msg?.type === 'error') {
+          finish(null);
+        }
+      };
+
+      worker.onerror = () => finish(null);
+      worker.postMessage({
+        players: pool,
+        config: {
+          numLineups: 1,
+          salaryCap: SALARY_CAP,
+          maxExposure: 100,
+        },
+      });
+    });
+  };
+
+  const buildLateSwapPool = (entry: Entry): Player[] => {
+    const lockedPlayerIds = new Set<string>();
+    SLOT_ORDER.forEach((slot) => {
+      const playerStr = entry.slots[slot];
+      if (!playerStr || !isPlayerLocked(playerStr)) return;
+      const player = getPlayerFromString(playerStr);
+      if (player?.id) lockedPlayerIds.add(player.id);
+    });
+
+    const lockedTeams = new Set<string>();
+    games.forEach((game) => {
+      const isLockedGame =
+        isGameStarted(game.teamA.abbreviation) ||
+        isGameStarted(game.teamB.abbreviation) ||
+        isGameManuallyLocked(game);
+      if (!isLockedGame) return;
+      lockedTeams.add(String(game.teamA.abbreviation || '').toUpperCase());
+      lockedTeams.add(String(game.teamB.abbreviation || '').toUpperCase());
+    });
+
+    return players
+      .filter((player) => Number(player.salary) > 0 && Number(player.projection) > 0)
+      .map((player) => {
+        const playerTeam = String(player.team || '').toUpperCase();
+        const isLockedPlayer = lockedPlayerIds.has(player.id);
+        const isExcluded = !isLockedPlayer && lockedTeams.has(playerTeam);
+        return {
+          ...player,
+          optimizerLocked: isLockedPlayer,
+          optimizerExcluded: isExcluded,
+        };
+      });
+  };
+
+  const assignOptimizedLineupToEntry = (entry: Entry, optimized: Lineup): Record<Slot, string> | null => {
+    const optimizedPlayers = (optimized.playerIds || [])
+      .map((id) => playerMap.get(id))
+      .filter((player): player is Player => Boolean(player));
+    if (optimizedPlayers.length === 0) return null;
+
+    const nextSlots: Record<Slot, string> = { ...entry.slots };
+    const lockedSlots = new Set<Slot>();
+    const usedPlayerIds = new Set<string>();
+
+    SLOT_ORDER.forEach((slot) => {
+      const existing = entry.slots[slot];
+      const existingPlayer = getPlayerFromString(existing);
+      if (existing && isPlayerLocked(existing) && existingPlayer) {
+        nextSlots[slot] = existing;
+        lockedSlots.add(slot);
+        usedPlayerIds.add(existingPlayer.id);
+      } else {
+        nextSlots[slot] = '';
+      }
+    });
+
+    const unlockedSlots = SLOT_ORDER.filter((slot) => !lockedSlots.has(slot));
+    if (unlockedSlots.length === 0) return nextSlots;
+
+    const optimizedById = new Map<string, Player>();
+    optimizedPlayers.forEach((player) => {
+      if (!usedPlayerIds.has(player.id)) {
+        optimizedById.set(player.id, player);
+      }
+    });
+
+    const fallbackPlayers: Player[] = unlockedSlots
+      .map((slot) => getPlayerFromString(entry.slots[slot]))
+      .filter((player): player is Player => Boolean(player))
+      .filter((player) => !usedPlayerIds.has(player.id));
+
+    const candidateOrder = [
+      ...Array.from(optimizedById.values()),
+      ...fallbackPlayers.filter((player) => !optimizedById.has(player.id)),
+    ];
+
+    const currentAssignment = new Map<Slot, Player>();
+    const assignmentUsedIds = new Set<string>(usedPlayerIds);
+
+    const backtrack = (slotIndex: number): boolean => {
+      if (slotIndex >= unlockedSlots.length) return true;
+      const slot = unlockedSlots[slotIndex];
+      const eligibleCandidates = candidateOrder
+        .filter((player) => !assignmentUsedIds.has(player.id))
+        .filter((player) => canPlayerFitSlot(player, slot))
+        .sort((a, b) => {
+          const aFromOptimized = optimizedById.has(a.id) ? 1 : 0;
+          const bFromOptimized = optimizedById.has(b.id) ? 1 : 0;
+          if (aFromOptimized !== bFromOptimized) return bFromOptimized - aFromOptimized;
+          return Number(b.projection || 0) - Number(a.projection || 0);
+        });
+
+      for (const player of eligibleCandidates) {
+        currentAssignment.set(slot, player);
+        assignmentUsedIds.add(player.id);
+        if (backtrack(slotIndex + 1)) return true;
+        assignmentUsedIds.delete(player.id);
+        currentAssignment.delete(slot);
+      }
+
+      return false;
+    };
+
+    const assigned = backtrack(0);
+    if (!assigned) return null;
+
+    unlockedSlots.forEach((slot) => {
+      const player = currentAssignment.get(slot);
+      nextSlots[slot] = player ? playerLabel(player) : '';
+    });
+
+    return nextSlots;
+  };
+
   const openSwapModal = (entryIdx: number, slot: Slot) => {
     const current = entries[entryIdx]?.slots[slot] || '';
     if (current && isPlayerLocked(current)) return;
@@ -452,9 +619,42 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     });
   }
 
-  const runLateSwap = () => {
-    // Placeholder: integrate with backend optimizer; avoid bundling worker in this component
-    alert('Late Swap optimizer not available in this build. Wire this to your backend API.');
+  const runLateSwap = async () => {
+    if (isLateSwapRunning || entries.length === 0) return;
+    setIsLateSwapRunning(true);
+
+    try {
+      const nextEntries: Entry[] = [];
+      let optimizedCount = 0;
+
+      for (const entry of entries) {
+        const pool = buildLateSwapPool(entry);
+        const optimized = await runSingleLineupOptimization(pool);
+        if (!optimized) {
+          nextEntries.push(entry);
+          continue;
+        }
+
+        const reassignedSlots = assignOptimizedLineupToEntry(entry, optimized);
+        if (!reassignedSlots) {
+          nextEntries.push(entry);
+          continue;
+        }
+
+        nextEntries.push(hydrateEntry({ ...entry, slots: reassignedSlots }));
+        optimizedCount += 1;
+      }
+
+      setEntries(nextEntries);
+      if (optimizedCount === 0) {
+        alert('No entries were updated. Check locks/constraints for feasibility.');
+      }
+    } catch (error) {
+      console.error('Late swap optimization failed', error);
+      alert('Late swap optimization failed. Please try again.');
+    } finally {
+      setIsLateSwapRunning(false);
+    }
   };
 
   return (
@@ -478,9 +678,13 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
           </button>
         </div>
         <div className="flex items-center gap-4 ml-auto">
-          <button onClick={runLateSwap} className="px-5 py-2 rounded-lg bg-drafting-orange text-white font-bold text-sm uppercase tracking-widest shadow hover:brightness-110 transition-all">
+          <button
+            onClick={runLateSwap}
+            disabled={isLateSwapRunning || entries.length === 0}
+            className="px-5 py-2 rounded-lg bg-drafting-orange text-white font-bold text-sm uppercase tracking-widest shadow hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          >
             <Zap className="inline-block w-4 h-4 mr-2"/>
-            Run Late Swap
+            {isLateSwapRunning ? 'Optimizing...' : 'Run Late Swap'}
           </button>
         </div>
       </div>
@@ -594,21 +798,25 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
                                         <div
                                           key={slot}
                                           onClick={() => !locked && openSwapModal(idx, slot)}
-                                          className={`flex items-center justify-between rounded border px-2 py-2 ${locked ? 'bg-ink/5 border-ink/10' : 'bg-vellum border-ink/10 hover:border-drafting-orange cursor-pointer'}`}
+                                          className={`relative flex items-center justify-between rounded border px-2 py-1.5 ${locked ? 'bg-ink/5 border-ink/10' : 'bg-vellum border-ink/10 hover:border-drafting-orange cursor-pointer'}`}
                                         >
                                           <div className="flex items-center gap-3 w-full">
                                             <span className="text-[10px] font-black uppercase text-black/60 min-w-[28px]">{slot}</span>
                                             {player ? (
-                                              <div className="flex items-center w-full gap-3">
-                                                <span className={`text-sm font-bold text-black truncate ${locked ? 'opacity-70' : ''}`}>{formatPlayerName(player.name)}</span>
-                                                <span className="text-sm text-black/70 font-mono whitespace-nowrap">{salaryK}</span>
-                                                <span className="text-sm text-black/70 font-mono ml-auto whitespace-nowrap">{locked ? 'Current' : 'Proj'}: {proj.toFixed(2)}</span>
+                                              <div className="flex items-center w-full min-w-0 gap-2">
+                                                <span className={`text-[11px] font-bold text-black truncate flex-1 min-w-0 ${locked ? 'opacity-70' : ''}`}>{formatPlayerName(player.name)}</span>
+                                                <span className="text-[11px] text-black/70 font-mono whitespace-nowrap">{salaryK}</span>
+                                                <span className="text-[11px] text-black/70 font-mono ml-auto whitespace-nowrap">{locked ? 'Current' : 'Proj'}: {proj.toFixed(2)}</span>
                                               </div>
                                             ) : (
-                                              <span className="text-black/40 text-sm font-mono flex-1">Empty</span>
+                                              <span className="text-black/40 text-[11px] font-mono flex-1">Empty</span>
                                             )}
                                           </div>
-                                          {locked && <Lock className="w-4 h-4 text-black/50 shrink-0" />}
+                                          {locked && (
+                                            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                                              <Lock className="w-4 h-4 text-black/55" />
+                                            </div>
+                                          )}
                                         </div>
                                     );
                                 })}
