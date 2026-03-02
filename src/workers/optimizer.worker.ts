@@ -73,6 +73,8 @@ interface BuildContext {
   lineupIndex: number;
   previousLineups: number[][];
   statSettings: StatConstraintSettings;
+  forcedExposureInclude: Set<number>;
+  forcedExposureExclude: Set<number>;
 }
 
 interface StatConstraintSettings {
@@ -299,6 +301,97 @@ const getStatConstraintSettings = (config: Required<Pick<OptimizerConfig, 'numLi
     ),
     lowMinutesCutoff: Math.max(0, safeNumber(config.lowMinutesCutoff ?? config.low_minutes_cutoff, 20)),
   };
+};
+
+const toExposurePercent = (raw: unknown, fallback: number): number => {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return fallback;
+  return clamp(value, 0, 100);
+};
+
+const buildExposureLimits = (
+  players: Player[],
+  totalLineups: number,
+): { minRequiredByPlayer: number[]; maxAllowedByPlayer: number[] } => {
+  const minRequiredByPlayer = new Array<number>(players.length).fill(0);
+  const maxAllowedByPlayer = new Array<number>(players.length).fill(totalLineups);
+
+  players.forEach((player, idx) => {
+    const isLocked = Boolean((player as any).optimizerLocked);
+    const isExcluded = Boolean((player as any).optimizerExcluded || (player as any).excluded);
+
+    if (isExcluded) {
+      minRequiredByPlayer[idx] = 0;
+      maxAllowedByPlayer[idx] = 0;
+      return;
+    }
+
+    if (isLocked) {
+      minRequiredByPlayer[idx] = totalLineups;
+      maxAllowedByPlayer[idx] = totalLineups;
+      return;
+    }
+
+    const minPct = toExposurePercent((player as any).optimizerMinExposure, 0);
+    const maxPct = toExposurePercent((player as any).optimizerMaxExposure, 100);
+    if (minPct > maxPct) {
+      throw new Error(`Exposure settings invalid for ${player.name}: min exposure exceeds max exposure.`);
+    }
+
+    const minReq = Math.ceil((minPct / 100) * totalLineups);
+    const maxAllowed = Math.floor((maxPct / 100) * totalLineups);
+    if (minReq > maxAllowed) {
+      throw new Error(`Exposure settings infeasible for ${player.name}.`);
+    }
+
+    minRequiredByPlayer[idx] = minReq;
+    maxAllowedByPlayer[idx] = maxAllowed;
+  });
+
+  return { minRequiredByPlayer, maxAllowedByPlayer };
+};
+
+const getExposureStepForLineup = (
+  players: Player[],
+  exposureCounts: number[],
+  minRequiredByPlayer: number[],
+  maxAllowedByPlayer: number[],
+  lineupIndex: number,
+  totalLineups: number,
+): { forceInclude: Set<number>; forceExclude: Set<number> } => {
+  const remainingIncludingCurrent = totalLineups - lineupIndex;
+  const forceInclude = new Set<number>();
+  const forceExclude = new Set<number>();
+
+  players.forEach((player, idx) => {
+    const count = exposureCounts[idx] || 0;
+    const minReq = minRequiredByPlayer[idx] || 0;
+    const maxAllowed = maxAllowedByPlayer[idx] ?? totalLineups;
+
+    if (count > maxAllowed) {
+      throw new Error(`Exposure limit exceeded for ${player.name}.`);
+    }
+    if (count + remainingIncludingCurrent < minReq) {
+      throw new Error(`Min exposure infeasible for ${player.name}.`);
+    }
+
+    if (count >= maxAllowed) {
+      forceExclude.add(idx);
+    }
+
+    if (count + (remainingIncludingCurrent - 1) < minReq) {
+      forceInclude.add(idx);
+    }
+  });
+
+  forceInclude.forEach((idx) => {
+    if (forceExclude.has(idx)) {
+      const playerName = players[idx]?.name || `Player ${idx}`;
+      throw new Error(`Exposure infeasible for ${playerName}.`);
+    }
+  });
+
+  return { forceInclude, forceExclude };
 };
 
 const getHighsModule = async (): Promise<any> => {
@@ -934,6 +1027,24 @@ const getForcedSets = (context: BuildContext): { forceInclude: Set<number>; forc
     }
   });
 
+  context.forcedExposureInclude.forEach((idx) => {
+    forceInclude.add(idx);
+  });
+  context.forcedExposureExclude.forEach((idx) => {
+    forceExclude.add(idx);
+  });
+
+  forceExclude.forEach((idx) => {
+    if (forceInclude.has(idx)) {
+      const playerName = players[idx]?.name || `Player ${idx}`;
+      throw new Error(`Exposure/lock conflict for ${playerName}.`);
+    }
+  });
+
+  if (forceInclude.size > DK_SLOTS.length) {
+    throw new Error(`Too many forced players (${forceInclude.size}) for ${DK_SLOTS.length} roster slots.`);
+  }
+
   return { forceInclude, forceExclude };
 };
 
@@ -1119,18 +1230,30 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
 
   const lineups: Lineup[] = [];
   const previousLineups: number[][] = [];
+  const exposureCounts = new Array<number>(players.length).fill(0);
+  const { minRequiredByPlayer, maxAllowedByPlayer } = buildExposureLimits(players, config.numLineups);
   let attempts = 0;
   const maxAttempts = Math.max(config.numLineups * 8, 80);
   let lastSolveError = '';
   while (lineups.length < config.numLineups && attempts < maxAttempts) {
     attempts += 1;
     const lineupIndex = lineups.length;
+    const exposureStep = getExposureStepForLineup(
+      players,
+      exposureCounts,
+      minRequiredByPlayer,
+      maxAllowedByPlayer,
+      lineupIndex,
+      config.numLineups,
+    );
     const context: BuildContext = {
       players,
       config,
       lineupIndex,
       previousLineups,
       statSettings,
+      forcedExposureInclude: exposureStep.forceInclude,
+      forcedExposureExclude: exposureStep.forceExclude,
     };
 
     let solved: { lineup: Lineup; selectedIndexes: number[] } | null = null;
@@ -1149,6 +1272,9 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
 
     lineups.push(solved.lineup);
     previousLineups.push([...solved.selectedIndexes]);
+    solved.selectedIndexes.forEach((idx) => {
+      exposureCounts[idx] = (exposureCounts[idx] || 0) + 1;
+    });
 
     workerScope.postMessage({
       type: 'progress',
@@ -1160,6 +1286,24 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
 
   if (lineups.length === 0 && lastSolveError) {
     throw new Error(lastSolveError);
+  }
+
+  if (lineups.length < config.numLineups) {
+    const unmetMinExposure = players
+      .map((player, idx) => ({
+        name: player.name,
+        got: exposureCounts[idx] || 0,
+        required: minRequiredByPlayer[idx] || 0,
+      }))
+      .filter((item) => item.required > 0 && item.got < item.required)
+      .slice(0, 5);
+
+    if (unmetMinExposure.length > 0) {
+      throw new Error(
+        `Unable to satisfy min exposures with current constraints (${lineups.length}/${config.numLineups} lineups). ` +
+          unmetMinExposure.map((item) => `${item.name} ${item.got}/${item.required}`).join('; '),
+      );
+    }
   }
 
   return lineups;
