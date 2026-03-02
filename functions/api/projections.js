@@ -62,7 +62,14 @@ export const onRequest = async ({ request, env }) => {
     const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
 
     const targetUrl = buildUrl(env.PROJECTIONS_URL || `${DEFAULT_DATA_BASE_URL}/{date}/slate.json`, date);
-    const key = await importAesKey(env.ENCRYPTION_KEY || '');
+    let key = null;
+    try {
+      key = await importAesKey(env.ENCRYPTION_KEY || '');
+    } catch (e) {
+      console.error('Missing or invalid ENCRYPTION_KEY');
+      // allow plain JSON fallback
+      key = null;
+    }
 
     const resp = await fetch(targetUrl, { cache: 'no-cache' });
     if (!resp.ok) {
@@ -81,6 +88,9 @@ export const onRequest = async ({ request, env }) => {
 
     // If payload is encrypted, decrypt; otherwise return as-is (supports plain JSON fallback)
     if (parsed?.iv && parsed?.payload) {
+      if (!key) {
+        return new Response(JSON.stringify({ error: 'Missing ENCRYPTION_KEY for encrypted payload' }), { status: 500, headers });
+      }
       const decrypted = await decryptPayload(key, parsed);
       return new Response(JSON.stringify(decrypted), { status: 200, headers });
     }
