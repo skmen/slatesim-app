@@ -63,6 +63,10 @@ const formatPlayerName = (name: string) => {
 
 const playerLabel = (player: Player): string => `${player.name} (${player.id})`;
 
+const stripLockedTag = (value: string): string => {
+  return String(value || '').replace(/\s*\(LOCKED\)\s*$/i, '').trim();
+};
+
 const getPlayerPositions = (player: Player): string[] => {
   return String(player.position || '')
     .split('/')
@@ -193,11 +197,30 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     players.forEach(p => {
       map.set(p.id, p);
       map.set(`${p.name} (${p.id})`, p);
+      map.set(`${p.name} (${p.id})`.toLowerCase(), p);
+      map.set(p.name.toLowerCase(), p);
     });
     return map;
   }, [players]);
 
-  const getPlayerFromString = (playerStr: string): Player | undefined => playerMap.get(playerStr);
+  const getPlayerFromString = (playerStr: string): Player | undefined => {
+    const raw = String(playerStr || '').trim();
+    if (!raw) return undefined;
+
+    const normalized = stripLockedTag(raw);
+    const idMatch = normalized.match(/\((\d+)\)/);
+    if (idMatch?.[1]) {
+      const byId = playerMap.get(idMatch[1]);
+      if (byId) return byId;
+    }
+
+    const direct = playerMap.get(normalized) || playerMap.get(normalized.toLowerCase());
+    if (direct) return direct;
+
+    const nameOnly = normalized.replace(/\(\d+\)/g, '').trim().toLowerCase();
+    if (!nameOnly) return undefined;
+    return playerMap.get(nameOnly);
+  };
 
   const isGameStarted = (teamAbbr: string): boolean => !!gameStartedCache.get(teamAbbr.toUpperCase());
 
@@ -205,6 +228,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     manualLocks.has(game.teamA.abbreviation) || manualLocks.has(game.teamB.abbreviation);
 
   const isPlayerLocked = (playerString: string): boolean => {
+    if (/\(LOCKED\)/i.test(String(playerString || ''))) return true;
     const player = getPlayerFromString(playerString);
     if (!player) return false;
     if (isGameStarted(player.team)) return true;
