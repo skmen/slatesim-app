@@ -96,6 +96,20 @@ const getLocalDateStr = (date: Date) => {
     return `${y}-${m}-${d}`;
   };
 
+const getPreviewMaxDateStr = (): string => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - 1);
+  return getLocalDateStr(d);
+};
+
+const getPreviewMinDateStr = (): string => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - 7);
+  return getLocalDateStr(d);
+};
+
 const parseLocalDate = (dateStr: string): Date | null => {
   const parts = String(dateStr || '').split('-');
   if (parts.length !== 3) return null;
@@ -438,26 +452,19 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
   const [view, setView] = useState<ViewState>(ViewState.RESEARCH);
   const [loading, setLoading] = useState(false);
   const [isHistorical, setIsHistorical] = useState(false);
-  const [selectedDate, setSelectedDate] = useState(getLocalDateStr(new Date()));
+  const [selectedDate, setSelectedDate] = useState(() => (
+    previewMode ? getPreviewMaxDateStr() : getLocalDateStr(new Date())
+  ));
   const previousSelectedDateRef = useRef(selectedDate);
+  const latestInitRequestRef = useRef(0);
   const [showActuals, setShowActuals] = useState(true);
   const [injuryLookup, setInjuryLookup] = useState<InjuryLookup>(new Map());
   const [dataLastModified, setDataLastModified] = useState<string | null>(null);
   const [depthCharts, setDepthCharts] = useState<any | null>(null);
   const [startingLineupLookup, setStartingLineupLookup] = useState<StartingLineupLookup>(new Map());
   const todayStr = useMemo(() => getLocalDateStr(new Date()), []);
-  const previewMaxDate = useMemo(() => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    d.setDate(d.getDate() - 1);
-    return getLocalDateStr(d);
-  }, []);
-  const previewMinDate = useMemo(() => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    d.setDate(d.getDate() - 7);
-    return getLocalDateStr(d);
-  }, []);
+  const previewMaxDate = useMemo(() => getPreviewMaxDateStr(), []);
+  const previewMinDate = useMemo(() => getPreviewMinDateStr(), []);
   const clampPreviewDate = useCallback((dateStr: string): string => {
     if (!previewMode) return dateStr;
     const parsed = parseLocalDate(dateStr);
@@ -520,6 +527,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
 
   useEffect(() => {
     const initApp = async () => {
+      const requestId = ++latestInitRequestRef.current;
       setLoading(true);
       const savedContest = loadContestInput();
       
@@ -527,11 +535,13 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
         targetDate: selectedDate,
         includeHistory: true,
       });
+      if (requestId !== latestInitRequestRef.current) return;
       if (loadResult.errors) {
         console.warn('Slate ecosystem load warnings:', loadResult.errors, loadResult.loadedFrom);
       }
 
       if (!loadResult.ok || !loadResult.data?.slate) {
+        if (requestId !== latestInitRequestRef.current) return;
         alert(`No slate data found in database for ${selectedDate}`);
         // Reset state but preserve user and view
         setState(prev => ({
@@ -592,6 +602,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
         const injuryInfo = getPlayerInjuryInfo(player, nextInjuryLookup);
         return !shouldExcludePlayerForInjury(injuryInfo);
       });
+      if (requestId !== latestInitRequestRef.current) return;
 
       setState(prev => ({
         ...prev,
@@ -612,11 +623,12 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
       setDepthCharts(loadResult.data.depthCharts ?? null);
       setStartingLineupLookup(buildStartingLineupLookup(loadResult.data.startingLineups));
 
+      if (requestId !== latestInitRequestRef.current) return;
       setLoading(false);
     };
 
     initApp();
-  }, [selectedDate, allowHistoricalActuals]);
+  }, [selectedDate]);
 
   useEffect(() => {
     setIsHistorical(isDateBeforeToday(state.slate.date));
