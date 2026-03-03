@@ -67,6 +67,10 @@ const stripLockedTag = (value: string): string => {
   return String(value || '').replace(/\s*\(LOCKED\)\s*$/i, '').trim();
 };
 
+const isEntryUnassigned = (entry: Entry): boolean => {
+  return SLOT_ORDER.every((slot) => stripLockedTag(entry.slots[slot] || '') === '');
+};
+
 const getPlayerPositions = (player: Player): string[] => {
   return String(player.position || '')
     .split('/')
@@ -414,14 +418,25 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
 
   const applySavedLineupSetToEntries = (savedSet: SavedLineupSet) => {
     if (!entries.length || savedSet.lineups.length === 0) return;
-    const nextEntries = entries.map((entry, idx) => {
-      const sourceLineup = savedSet.lineups[idx % savedSet.lineups.length];
+    const unassignedEntryIndexes = entries
+      .map((entry, idx) => (isEntryUnassigned(entry) ? idx : -1))
+      .filter((idx) => idx >= 0);
+    const targetIndexes = unassignedEntryIndexes.length > 0
+      ? unassignedEntryIndexes
+      : entries.map((_, idx) => idx);
+    const applyCount = Math.min(savedSet.lineups.length, targetIndexes.length);
+    if (applyCount <= 0) return;
+
+    const nextEntries = [...entries];
+    for (let lineupIdx = 0; lineupIdx < applyCount; lineupIdx += 1) {
+      const entryIdx = targetIndexes[lineupIdx];
+      const sourceLineup = savedSet.lineups[lineupIdx];
       const slots = lineupToSlots(sourceLineup, playerMap);
-      return hydrateEntry({
-        ...entry,
+      nextEntries[entryIdx] = hydrateEntry({
+        ...nextEntries[entryIdx],
         slots,
       });
-    });
+    }
     setEntries(nextEntries);
     setShowImportLineupsModal(false);
   };

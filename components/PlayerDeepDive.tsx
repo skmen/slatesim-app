@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Player, HistoricalGame, GameInfo, Slot } from '../types';
-import { X, TrendingUp, Activity, BarChart3, Zap, TrendingDown, Plus, Minus } from 'lucide-react';
+import { X, TrendingUp, Activity, BarChart3, Zap, TrendingDown, Plus, Minus, Lock } from 'lucide-react';
 import { Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Line, ComposedChart, Cell } from 'recharts';
 import { RotationVisualizer } from './RotationVisualizer';
 import { useLineup } from '../context/LineupContext';
@@ -19,7 +19,10 @@ interface Props {
   depthCharts?: any | null;
   injuryLookup?: InjuryLookup | null;
   startingLineupLookup?: StartingLineupLookup | null;
+  optimizerSettingsKey?: string;
   onOptimizerExposureChange?: (playerId: string, minExposure?: number, maxExposure?: number) => void;
+  onOptimizerLockChange?: (playerId: string, locked: boolean) => void;
+  onOptimizerExcludeChange?: (playerId: string, excluded: boolean) => void;
 }
 
 type TabKey = 'dfs' | 'stats' | 'matchup' | 'synergy' | 'depth';
@@ -46,6 +49,19 @@ interface OptimizerAdvancedSettings {
 }
 
 const OPTIMIZER_SETTINGS_KEY = 'optimizerAdvancedSettings';
+
+const sanitizeOptimizerSettings = (raw: any): OptimizerAdvancedSettings => {
+  if (!raw || typeof raw !== 'object') return {};
+  const settings = raw as OptimizerAdvancedSettings;
+  return {
+    lockedIds: Array.isArray(settings.lockedIds) ? settings.lockedIds : [],
+    selectedMatchups: Array.isArray(settings.selectedMatchups) ? settings.selectedMatchups : [],
+    selectedTeams: Array.isArray(settings.selectedTeams) ? settings.selectedTeams : [],
+    playerOverrides: settings.playerOverrides && typeof settings.playerOverrides === 'object'
+      ? settings.playerOverrides
+      : {},
+  };
+};
 
 const parsePositions = (position: string): string[] => {
   return String(position || '')
@@ -301,21 +317,43 @@ const nextSort = (current: SortConfig | null, key: string, defaultDir: SortDir =
   return { key, dir: defaultDir };
 };
 
-const readOptimizerAdvancedSettings = (): OptimizerAdvancedSettings => {
+const readOptimizerAdvancedSettings = (settingsKey?: string): OptimizerAdvancedSettings => {
   if (typeof window === 'undefined') return {};
-  try {
-    const raw = window.localStorage.getItem(OPTIMIZER_SETTINGS_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
+  const key = settingsKey || OPTIMIZER_SETTINGS_KEY;
+
+  const parseForKey = (targetKey: string): OptimizerAdvancedSettings | null => {
+    try {
+      const raw = window.localStorage.getItem(targetKey);
+      if (!raw) return null;
+      return sanitizeOptimizerSettings(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  };
+
+  const preferred = parseForKey(key);
+  if (preferred) return preferred;
+  if (key !== OPTIMIZER_SETTINGS_KEY) {
+    const legacy = parseForKey(OPTIMIZER_SETTINGS_KEY);
+    if (legacy) return legacy;
   }
+  return {};
 };
 
-const saveOptimizerExposureForPlayer = (playerId: string, minExposure?: number, maxExposure?: number): void => {
+const writeOptimizerAdvancedSettings = (settings: OptimizerAdvancedSettings, settingsKey?: string): void => {
   if (typeof window === 'undefined') return;
-  const settings = readOptimizerAdvancedSettings();
+  const key = settingsKey || OPTIMIZER_SETTINGS_KEY;
+  window.localStorage.setItem(key, JSON.stringify(settings));
+};
+
+const saveOptimizerExposureForPlayer = (
+  playerId: string,
+  minExposure?: number,
+  maxExposure?: number,
+  settingsKey?: string,
+): void => {
+  if (typeof window === 'undefined') return;
+  const settings = readOptimizerAdvancedSettings(settingsKey);
   const playerOverrides = settings.playerOverrides && typeof settings.playerOverrides === 'object'
     ? { ...settings.playerOverrides }
     : {};
@@ -342,12 +380,63 @@ const saveOptimizerExposureForPlayer = (playerId: string, minExposure?: number, 
     playerOverrides[playerId] = current;
   }
 
-  window.localStorage.setItem(
-    OPTIMIZER_SETTINGS_KEY,
-    JSON.stringify({
+  writeOptimizerAdvancedSettings(
+    {
       ...settings,
       playerOverrides,
-    }),
+    },
+    settingsKey,
+  );
+};
+
+const saveOptimizerPlayerPoolState = (
+  playerId: string,
+  nextState: { locked?: boolean; excluded?: boolean },
+  settingsKey?: string,
+): void => {
+  if (typeof window === 'undefined') return;
+  const settings = readOptimizerAdvancedSettings(settingsKey);
+  const lockedSet = new Set(Array.isArray(settings.lockedIds) ? settings.lockedIds : []);
+  const playerOverrides = settings.playerOverrides && typeof settings.playerOverrides === 'object'
+    ? { ...settings.playerOverrides }
+    : {};
+  const current = playerOverrides[playerId] && typeof playerOverrides[playerId] === 'object'
+    ? { ...playerOverrides[playerId] }
+    : {};
+
+  if (nextState.excluded === true) {
+    lockedSet.delete(playerId);
+    current.exclude = true;
+    delete current.minExposure;
+    delete current.maxExposure;
+  } else if (nextState.excluded === false) {
+    delete current.exclude;
+  }
+
+  if (nextState.locked === true) {
+    lockedSet.add(playerId);
+    delete current.exclude;
+    current.minExposure = 100;
+    current.maxExposure = 100;
+  } else if (nextState.locked === false) {
+    lockedSet.delete(playerId);
+    delete current.minExposure;
+    delete current.maxExposure;
+  }
+
+  if (Object.keys(current).length === 0) {
+    delete playerOverrides[playerId];
+  } else {
+    playerOverrides[playerId] = current;
+  }
+
+  writeOptimizerAdvancedSettings(
+    {
+      ...settings,
+      lockedIds: Array.from(lockedSet),
+      playerOverrides,
+    },
+    settingsKey,
   );
 };
 
@@ -370,7 +459,10 @@ export const PlayerDeepDive: React.FC<Props> = ({
   depthCharts,
   injuryLookup,
   startingLineupLookup,
+  optimizerSettingsKey,
   onOptimizerExposureChange,
+  onOptimizerLockChange,
+  onOptimizerExcludeChange,
 }) => {
   const [activeTab, setActiveTab] = useState<TabKey>('dfs');
   const [traditionalHover, setTraditionalHover] = useState<{ row: number; col: number } | null>(null);
@@ -383,6 +475,8 @@ export const PlayerDeepDive: React.FC<Props> = ({
   const [minExposureInput, setMinExposureInput] = useState('');
   const [maxExposureInput, setMaxExposureInput] = useState('');
   const [exposureStatus, setExposureStatus] = useState<string | null>(null);
+  const [isOptimizerLocked, setIsOptimizerLocked] = useState(false);
+  const [isOptimizerExcluded, setIsOptimizerExcluded] = useState(false);
   const { slots, addPlayer, removePlayer, isPlayerInLineup } = useLineup();
   const startingInfo = useMemo(
     () => getPlayerStartingLineupInfo(player, startingLineupLookup),
@@ -1113,14 +1207,18 @@ export const PlayerDeepDive: React.FC<Props> = ({
   }, [activeTab, previewMode]);
 
   useEffect(() => {
-    const settings = readOptimizerAdvancedSettings();
+    const settings = readOptimizerAdvancedSettings(optimizerSettingsKey);
     const override = settings.playerOverrides?.[player.id];
     const min = override?.minExposure;
     const max = override?.maxExposure;
+    const locked = Array.isArray(settings.lockedIds) && settings.lockedIds.includes(player.id);
+    const excluded = Boolean(override?.exclude);
     setMinExposureInput(Number.isFinite(Number(min)) ? String(min) : '');
     setMaxExposureInput(Number.isFinite(Number(max)) ? String(max) : '');
+    setIsOptimizerLocked(Boolean(locked));
+    setIsOptimizerExcluded(excluded);
     setExposureStatus(null);
-  }, [player.id]);
+  }, [player.id, optimizerSettingsKey]);
 
   const applyExposureSettings = () => {
     const minExposure = parseExposureInput(minExposureInput);
@@ -1141,7 +1239,7 @@ export const PlayerDeepDive: React.FC<Props> = ({
       return;
     }
 
-    saveOptimizerExposureForPlayer(player.id, minExposure, maxExposure);
+    saveOptimizerExposureForPlayer(player.id, minExposure, maxExposure, optimizerSettingsKey);
     onOptimizerExposureChange?.(player.id, minExposure, maxExposure);
     setExposureStatus('Exposure saved to optimizer advanced settings.');
     setMinExposureInput(minExposure === undefined ? '' : String(minExposure));
@@ -1149,11 +1247,56 @@ export const PlayerDeepDive: React.FC<Props> = ({
   };
 
   const clearExposureSettings = () => {
-    saveOptimizerExposureForPlayer(player.id, undefined, undefined);
+    saveOptimizerExposureForPlayer(player.id, undefined, undefined, optimizerSettingsKey);
     onOptimizerExposureChange?.(player.id, undefined, undefined);
     setMinExposureInput('');
     setMaxExposureInput('');
     setExposureStatus('Exposure cleared from optimizer advanced settings.');
+  };
+
+  const toggleOptimizerLock = () => {
+    const nextLocked = !isOptimizerLocked;
+    saveOptimizerPlayerPoolState(
+      player.id,
+      { locked: nextLocked, excluded: nextLocked ? false : undefined },
+      optimizerSettingsKey,
+    );
+    onOptimizerLockChange?.(player.id, nextLocked);
+    if (nextLocked) {
+      onOptimizerExcludeChange?.(player.id, false);
+      onOptimizerExposureChange?.(player.id, 100, 100);
+      setMinExposureInput('100');
+      setMaxExposureInput('100');
+      setIsOptimizerExcluded(false);
+      setExposureStatus('Player locked in optimizer pool.');
+    } else {
+      onOptimizerExposureChange?.(player.id, undefined, undefined);
+      setMinExposureInput('');
+      setMaxExposureInput('');
+      setExposureStatus('Player unlocked in optimizer pool.');
+    }
+    setIsOptimizerLocked(nextLocked);
+  };
+
+  const toggleOptimizerExclude = () => {
+    const nextExcluded = !isOptimizerExcluded;
+    saveOptimizerPlayerPoolState(
+      player.id,
+      { excluded: nextExcluded, locked: nextExcluded ? false : undefined },
+      optimizerSettingsKey,
+    );
+    onOptimizerExcludeChange?.(player.id, nextExcluded);
+    if (nextExcluded) {
+      onOptimizerLockChange?.(player.id, false);
+      onOptimizerExposureChange?.(player.id, undefined, undefined);
+      setIsOptimizerLocked(false);
+      setMinExposureInput('');
+      setMaxExposureInput('');
+      setExposureStatus('Player removed from optimizer pool.');
+    } else {
+      setExposureStatus('Player restored to optimizer pool.');
+    }
+    setIsOptimizerExcluded(nextExcluded);
   };
 
   return (
@@ -1193,6 +1336,30 @@ export const PlayerDeepDive: React.FC<Props> = ({
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <span className="text-[9px] font-black uppercase tracking-widest text-ink/50">Optimizer Exposure</span>
+                <button
+                  type="button"
+                  onClick={toggleOptimizerLock}
+                  title={isOptimizerLocked ? 'Unlock player' : 'Lock player'}
+                  className={`inline-flex items-center justify-center w-6 h-6 rounded-sm border transition-colors ${
+                    isOptimizerLocked
+                      ? 'bg-drafting-orange text-white border-drafting-orange'
+                      : 'text-ink/60 border-ink/20 hover:border-drafting-orange/40 hover:text-drafting-orange'
+                  }`}
+                >
+                  <Lock className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleOptimizerExclude}
+                  title={isOptimizerExcluded ? 'Include player in pool' : 'Remove player from pool'}
+                  className={`inline-flex items-center justify-center w-6 h-6 rounded-sm border transition-colors ${
+                    isOptimizerExcluded
+                      ? 'bg-red-600 text-white border-red-600'
+                      : 'text-ink/60 border-ink/20 hover:border-red-600/40 hover:text-red-600'
+                  }`}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
                 <span className="text-[9px] font-black uppercase tracking-widest text-ink/40">Min</span>
                 <input
                   type="number"
@@ -1201,6 +1368,7 @@ export const PlayerDeepDive: React.FC<Props> = ({
                   step={1}
                   value={minExposureInput}
                   onChange={(e) => setMinExposureInput(e.target.value)}
+                  disabled={isOptimizerExcluded}
                   className="w-16 bg-white/70 border border-ink/20 rounded-sm px-2 py-1 text-[10px] font-bold font-mono text-ink outline-none focus:border-drafting-orange"
                   placeholder="0"
                 />
@@ -1212,6 +1380,7 @@ export const PlayerDeepDive: React.FC<Props> = ({
                   step={1}
                   value={maxExposureInput}
                   onChange={(e) => setMaxExposureInput(e.target.value)}
+                  disabled={isOptimizerExcluded}
                   className="w-16 bg-white/70 border border-ink/20 rounded-sm px-2 py-1 text-[10px] font-bold font-mono text-ink outline-none focus:border-drafting-orange"
                   placeholder="100"
                 />

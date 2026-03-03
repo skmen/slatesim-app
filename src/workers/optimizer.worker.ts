@@ -4,7 +4,6 @@ import highsLoader from 'highs';
 import highsWasmUrl from 'highs/runtime?url';
 
 const DK_SLOTS = ['PG', 'SG', 'SF', 'PF', 'C', 'G', 'F', 'UTIL'] as const;
-const MAX_REMAINING_SALARY = 500;
 const workerScope = self as any;
 
 type Slot = (typeof DK_SLOTS)[number];
@@ -564,6 +563,17 @@ const buildBaseModel = (context: BuildContext): ModelBlueprint => {
     }
   });
 
+  // Merge dynamic exposure requirements for this lineup iteration.
+  context.forcedExposureInclude.forEach((idx) => forceInclude.add(idx));
+  context.forcedExposureExclude.forEach((idx) => forceExclude.add(idx));
+
+  forceExclude.forEach((idx) => {
+    if (forceInclude.has(idx)) {
+      const playerName = players[idx]?.name || `Player ${idx}`;
+      throw new Error(`Exposure/lock conflict for ${playerName}.`);
+    }
+  });
+
   if (forceInclude.size > DK_SLOTS.length) {
     throw new Error(`Locked players exceed ${DK_SLOTS.length} roster slots.`);
   }
@@ -593,17 +603,6 @@ const buildBaseModel = (context: BuildContext): ModelBlueprint => {
     })),
     '<=',
     config.salaryCap,
-  );
-
-  addConstraint(
-    constraints,
-    'salary_floor',
-    assignmentVars.map((variable) => ({
-      varName: variable.name,
-      coeff: Math.max(0, safeNumber(players[variable.playerIndex].salary, 0)),
-    })),
-    '>=',
-    Math.max(0, config.salaryCap - MAX_REMAINING_SALARY),
   );
 
   context.previousLineups.forEach((prevLineup, lineupIdx) => {
@@ -1199,7 +1198,6 @@ const searchFallbackLineup = (
   statRules: StatConstraintRule[] = [],
 ): { lineup: Lineup; selectedIndexes: number[] } | null => {
   const { players, config, lineupIndex } = context;
-  const minTotalSalary = Math.max(0, config.salaryCap - MAX_REMAINING_SALARY);
   const { forceInclude, forceExclude } = getForcedSets(context);
   const previousSignatures = new Set(context.previousLineups.map((lineup) => buildLineupSignature(lineup)));
 
@@ -1269,7 +1267,6 @@ const searchFallbackLineup = (
       const selectedIndexes = DK_SLOTS.map((slot) => slotToPlayer.get(slot)).filter((idx): idx is number => idx !== undefined);
       if (selectedIndexes.length !== DK_SLOTS.length) return false;
       if (totalSalary > config.salaryCap) return false;
-      if (totalSalary < minTotalSalary) return false;
       if (totalProjection < projectionFloor) return false;
       if (previousSignatures.has(buildLineupSignature(selectedIndexes))) return false;
       if (statRules.length > 0) {

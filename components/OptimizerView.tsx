@@ -134,6 +134,7 @@ const POOL_FILTER_COLUMNS = [
   { key: 'opponent', label: 'Opp' },
   { key: 'salary', label: 'Salary' },
   { key: 'value', label: 'Value' },
+  { key: 'usage', label: 'USG' },
   { key: 'minutes', label: 'Min' },
   { key: 'projection', label: 'FPTS' },
   { key: 'leverageScore', label: 'Lev Score' },
@@ -1020,12 +1021,19 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
               if (excludedOverrideCount > 0) diagnostics.push(`${excludedOverrideCount} excluded`);
               if (minExposureOverrideCount > 0) diagnostics.push(`${minExposureOverrideCount} min-exp caps`);
               if (maxExposureOverrideCount > 0) diagnostics.push(`${maxExposureOverrideCount} max-exp caps`);
-              const detail = diagnostics.length > 0
+              if (poolFilters.length > 0) diagnostics.push(`${poolFilters.length} pool filters`);
+              if (poolSearch.trim()) diagnostics.push('pool search active');
+
+              const hasUserConstraints = diagnostics.length > 0;
+              const detail = hasUserConstraints
                 ? ` Active constraints detected: ${diagnostics.join(', ')}.`
-                : '';
+                : ' No explicit advanced constraints detected; feasible unique lineups were exhausted by salary/position/uniqueness limits in the current pool.';
+              const suggestion = hasUserConstraints
+                ? ' Try clearing advanced settings or relaxing pool filters/exposure caps for more combinations.'
+                : ' Try expanding the player pool to increase valid unique combinations.';
               setError(
                 `Generated ${msg.lineups.length}/${config.numLineups} feasible unique lineups before exhaustion.` +
-                `${detail} Try clearing advanced settings or relaxing pool filters/exposure caps for more combinations.`,
+                `${detail}${suggestion}`,
               );
             }
             worker.terminate();
@@ -1298,6 +1306,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         case 'opponent': return player.opponent;
         case 'salary': return player.salary;
         case 'value': return displayValue;
+        case 'usage': return getUsagePercent(player);
         case 'minutes': return displayMinutes;
         case 'projection': return displayProjection;
         case 'leverageScore': return getLeverageScore(player) ?? '';
@@ -1395,6 +1404,75 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     });
   }, []);
 
+  const handleDeepDiveLockChange = useCallback((playerId: string, locked: boolean) => {
+    setLockedIds((prev) => {
+      if (locked) {
+        return prev.includes(playerId) ? prev : [...prev, playerId];
+      }
+      return prev.filter((id) => id !== playerId);
+    });
+
+    setPlayerOverrides((prev) => {
+      const existing = prev[playerId] || {};
+      const nextForPlayer = {
+        ...existing,
+        exclude: locked ? undefined : existing.exclude,
+        minExposure: locked ? 100 : undefined,
+        maxExposure: locked ? 100 : undefined,
+      };
+
+      if (
+        nextForPlayer.minutes === undefined &&
+        nextForPlayer.projection === undefined &&
+        nextForPlayer.minExposure === undefined &&
+        nextForPlayer.maxExposure === undefined &&
+        nextForPlayer.exclude !== true
+      ) {
+        const { [playerId]: omitted, ...rest } = prev;
+        void omitted;
+        return rest;
+      }
+
+      return {
+        ...prev,
+        [playerId]: nextForPlayer,
+      };
+    });
+  }, []);
+
+  const handleDeepDiveExcludeChange = useCallback((playerId: string, excluded: boolean) => {
+    if (excluded) {
+      setLockedIds((prev) => prev.filter((id) => id !== playerId));
+    }
+
+    setPlayerOverrides((prev) => {
+      const existing = prev[playerId] || {};
+      const nextForPlayer = {
+        ...existing,
+        exclude: excluded ? true : undefined,
+        minExposure: excluded ? undefined : existing.minExposure,
+        maxExposure: excluded ? undefined : existing.maxExposure,
+      };
+
+      if (
+        nextForPlayer.minutes === undefined &&
+        nextForPlayer.projection === undefined &&
+        nextForPlayer.minExposure === undefined &&
+        nextForPlayer.maxExposure === undefined &&
+        nextForPlayer.exclude !== true
+      ) {
+        const { [playerId]: omitted, ...rest } = prev;
+        void omitted;
+        return rest;
+      }
+
+      return {
+        ...prev,
+        [playerId]: nextForPlayer,
+      };
+    });
+  }, []);
+
   const visiblePoolIds = filteredPoolPlayers.map((p) => p.id);
   const visibleLockableIds = filteredPoolPlayers
     .filter((p) => !playerOverrides[p.id]?.exclude)
@@ -1415,7 +1493,10 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           depthCharts={depthCharts}
           injuryLookup={injuryLookup}
           startingLineupLookup={startingLineupLookup}
+          optimizerSettingsKey={getAdvancedSettingsStorageKey(slateDate)}
           onOptimizerExposureChange={handleDeepDiveExposureChange}
+          onOptimizerLockChange={handleDeepDiveLockChange}
+          onOptimizerExcludeChange={handleDeepDiveExcludeChange}
         />
       )}
       <div className="bg-white/40 backdrop-blur-sm rounded-sm border border-ink/10 p-4 shadow-sm">
@@ -1964,6 +2045,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                         <th className="px-2 py-2">Opp</th>
                         <th className="px-2 py-2 text-right">Salary</th>
                         <th className="px-2 py-2 text-right">Value</th>
+                        <th className="px-2 py-2 text-right">USG</th>
                         <th className="px-2 py-2 text-right">Lev Score</th>
                         <th className="px-2 py-2 text-right">Min</th>
                         <th className="px-2 py-2 text-right">FPTS</th>
@@ -1983,6 +2065,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                         const displayValue = player.salary > 0 && displayProjection !== undefined
                           ? displayProjection / (player.salary / 1000)
                           : undefined;
+                        const usagePct = getUsagePercent(player);
                         const isLocked = lockedIds.includes(player.id);
                         return (
                           <tr key={player.id} className="border-b border-ink/5">
@@ -2048,6 +2131,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                             </td>
                             <td className="px-2 py-1.5 text-right text-ink/60">
                               {displayValue !== undefined ? displayValue.toFixed(2) : '--'}
+                            </td>
+                            <td className="px-2 py-1.5 text-right text-ink/60">
+                              {Number.isFinite(Number(usagePct)) ? `${Number(usagePct).toFixed(1)}%` : '--'}
                             </td>
                             <td className="px-2 py-1.5 text-right text-ink/70 uppercase">
                               {getLeverageScore(player) !== null ? Number(getLeverageScore(player)).toFixed(2) : '--'}
@@ -2117,7 +2203,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                       })}
                       {filteredPoolPlayers.length === 0 && (
                         <tr>
-                          <td colSpan={12} className="px-2 py-6 text-center text-[12px] text-ink/40 font-black uppercase tracking-widest">
+                          <td colSpan={13} className="px-2 py-6 text-center text-[12px] text-ink/40 font-black uppercase tracking-widest">
                             No players found
                           </td>
                         </tr>
