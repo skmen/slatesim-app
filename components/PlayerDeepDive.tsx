@@ -55,6 +55,8 @@ const parsePositions = (position: string): string[] => {
 };
 
 const normalizeKeyToken = (key: string): string => String(key || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const isFiniteNumeric = (value: any): value is number =>
+  value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
 
 const isPercentKey = (key: string): boolean => /%|PCT|PERCENT/i.test(String(key || ''));
 
@@ -232,8 +234,8 @@ const getPrimaryPosition = (position: string): 'PG' | 'SG' | 'SF' | 'PF' | 'C' =
 };
 
 const normalizeStatForThreshold = (column: string, raw: any): number | null => {
+  if (!isFiniteNumeric(raw)) return null;
   const num = Number(raw);
-  if (!Number.isFinite(num)) return null;
   if (column.includes('%') && num <= 1) return num * 100;
   return num;
 };
@@ -241,14 +243,14 @@ const normalizeStatForThreshold = (column: string, raw: any): number | null => {
 const getSeasonStatThreshold = (position: string, column: string): number | null => {
   const primary = getPrimaryPosition(position);
   const threshold = SEASON_STAT_THRESHOLDS[primary][column];
-  return Number.isFinite(Number(threshold)) ? Number(threshold) : null;
+  return isFiniteNumeric(threshold) ? Number(threshold) : null;
 };
 
 const isSeasonStatAtThreshold = (position: string, column: string, raw: any): boolean => {
   const threshold = getSeasonStatThreshold(position, column);
-  if (!Number.isFinite(Number(threshold))) return false;
+  if (!isFiniteNumeric(threshold)) return false;
   const value = normalizeStatForThreshold(column, raw);
-  if (!Number.isFinite(Number(value))) return false;
+  if (!isFiniteNumeric(value)) return false;
   return Number(value) >= Number(threshold);
 };
 
@@ -1539,7 +1541,7 @@ export const PlayerDeepDive: React.FC<Props> = ({
                               <td
                                 key={`trad-cell-${idx}-${col}`}
                                 onMouseEnter={() => setTraditionalHover({ row: idx, col: colIndex })}
-                                title={meetsSeasonThreshold && Number.isFinite(Number(threshold)) ? `Threshold ${threshold}` : undefined}
+                                title={meetsSeasonThreshold && isFiniteNumeric(threshold) ? `Threshold ${threshold}` : undefined}
                                 className={`px-3 py-2 text-right ${textClass} ${highlightClass}`}
                               >
                                 {formatStatValue(row[col])}
@@ -1591,7 +1593,7 @@ export const PlayerDeepDive: React.FC<Props> = ({
                               <td
                                 key={`adv-cell-${idx}-${col}`}
                                 onMouseEnter={() => setAdvancedHover({ row: idx, col: colIndex })}
-                                title={meetsSeasonThreshold && Number.isFinite(Number(threshold)) ? `Threshold ${threshold}` : undefined}
+                                title={meetsSeasonThreshold && isFiniteNumeric(threshold) ? `Threshold ${threshold}` : undefined}
                                 className={`px-3 py-2 text-right ${textClass} ${highlightClass}`}
                               >
                                 {formatStatValue(row[col])}

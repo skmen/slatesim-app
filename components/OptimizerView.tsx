@@ -13,14 +13,15 @@ import {
   Filter,
   X,
   Trash2,
-  PlusCircle
+  PlusCircle,
+  Lock
 } from 'lucide-react';
 import { Player, Lineup, GameInfo } from '../types';
 import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
-import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260302-priorityreset2';
+import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260303-lineupdiagnostics1';
 
 interface Props {
   players: Player[];
@@ -28,6 +29,7 @@ interface Props {
   slateDate?: string;
   showActuals?: boolean;
   injuryLookup?: InjuryLookup | null;
+  depthCharts?: any | null;
   startingLineupLookup?: StartingLineupLookup | null;
 }
 
@@ -86,6 +88,9 @@ const DEFAULT_ADVANCED_MINIMUMS: AdvancedMinimumSettings = {
   minSignal: 1,
 };
 
+const getAdvancedSettingsStorageKey = (slateDate?: string): string =>
+  `optimizerAdvancedSettings:${slateDate || 'unspecified'}`;
+
 const LEVERAGE_TIER_RANK_OPTIONS = [
   { value: 1, label: '1. TOXIC' },
   { value: 2, label: '2. NEGATIVE' },
@@ -131,8 +136,7 @@ const POOL_FILTER_COLUMNS = [
   { key: 'value', label: 'Value' },
   { key: 'minutes', label: 'Min' },
   { key: 'projection', label: 'FPTS' },
-  { key: 'signal', label: 'Signal' },
-  { key: 'leverageTier', label: 'Lev Tier' },
+  { key: 'leverageScore', label: 'Lev Score' },
   { key: 'minExposure', label: 'Min Exp' },
   { key: 'maxExposure', label: 'Max Exp' },
   { key: 'locked', label: 'Locked' },
@@ -281,6 +285,17 @@ const getLeverageTier = (player: Player): string | null => {
   ]);
   if (!raw) return null;
   return raw.trim().toLowerCase();
+};
+
+const getLeverageScore = (player: Player): number | null => {
+  const raw = readStatNumber(player, [
+    'LEVERAGE_SCORE',
+    'leverageScore',
+    'leverage_score',
+    'signalLeverageScore',
+    'signal_leverage_score',
+  ]);
+  return Number.isFinite(Number(raw)) ? Number(raw) : null;
 };
 
 const isNegativeOrWorseLeverageTier = (player: Player): boolean => {
@@ -800,7 +815,7 @@ const computeOptimizerPriority = (player: Player, games: GameInfo[]): number => 
   return 0;
 };
 
-export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, showActuals: showActualsProp, injuryLookup, startingLineupLookup }) => {
+export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, showActuals: showActualsProp, injuryLookup, depthCharts, startingLineupLookup }) => {
   const isDateBeforeToday = (dateStr: string): boolean => {
     if (!dateStr) return false;
     const input = new Date(dateStr);
@@ -865,7 +880,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
   const [lockedIds, setLockedIds] = useState<string[]>([]);
   const [selectedMatchups, setSelectedMatchups] = useState<string[]>([]);
   const [selectedTeams, setSelectedTeams] = useState<string[]>([]);
-  const [advancedMinimums, setAdvancedMinimums] = useState<AdvancedMinimumSettings>(DEFAULT_ADVANCED_MINIMUMS);
   const [playerOverrides, setPlayerOverrides] = useState<Record<string, { minutes?: number; projection?: number; minExposure?: number; maxExposure?: number; exclude?: boolean }>>({});
   const [poolSearch, setPoolSearch] = useState('');
   const [showPoolFilterBuilder, setShowPoolFilterBuilder] = useState(false);
@@ -894,23 +908,25 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
   }, [slateDate, players]);
 
   useEffect(() => {
-    const raw = localStorage.getItem('optimizerAdvancedSettings');
+    const raw = localStorage.getItem(getAdvancedSettingsStorageKey(slateDate));
     if (!raw) return;
     try {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed.lockedIds)) setLockedIds(parsed.lockedIds);
+      const playerIdSet = new Set(players.map((p) => p.id));
+      if (Array.isArray(parsed.lockedIds)) {
+        setLockedIds(parsed.lockedIds.filter((id: string) => playerIdSet.has(id)));
+      }
       if (Array.isArray(parsed.selectedMatchups)) setSelectedMatchups(parsed.selectedMatchups);
       if (Array.isArray(parsed.selectedTeams)) setSelectedTeams(parsed.selectedTeams);
-      if (parsed.advancedMinimums && typeof parsed.advancedMinimums === 'object') {
-        setAdvancedMinimums(sanitizeAdvancedMinimums(parsed.advancedMinimums));
-      }
       if (parsed.playerOverrides && typeof parsed.playerOverrides === 'object') {
-        setPlayerOverrides(parsed.playerOverrides);
+        const prunedEntries = Object.entries(parsed.playerOverrides)
+          .filter(([id]) => playerIdSet.has(id));
+        setPlayerOverrides(Object.fromEntries(prunedEntries));
       }
     } catch {
       // Ignore malformed stored settings
     }
-  }, []);
+  }, [slateDate, players]);
 
   const startOptimization = () => {
     if (isOptimizing) return;
@@ -920,6 +936,26 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     setGeneratedLineups([]);
 
     try {
+      const activeOverrideEntries = Object.entries(playerOverrides).filter(([, overrides]) => {
+        if (!overrides) return false;
+        return (
+          overrides.minutes !== undefined ||
+          overrides.projection !== undefined ||
+          overrides.minExposure !== undefined ||
+          overrides.maxExposure !== undefined ||
+          overrides.exclude === true
+        );
+      });
+      const excludedOverrideCount = activeOverrideEntries.filter(([, overrides]) => overrides?.exclude === true).length;
+      const minExposureOverrideCount = activeOverrideEntries.filter(([, overrides]) => {
+        const val = Number(overrides?.minExposure);
+        return Number.isFinite(val) && val > 0;
+      }).length;
+      const maxExposureOverrideCount = activeOverrideEntries.filter(([, overrides]) => {
+        const val = Number(overrides?.maxExposure);
+        return Number.isFinite(val) && val < 100;
+      }).length;
+
       // Prepare player pool (only active players with salary and projection)
       const pool = players
         .filter((p) => p.salary > 0 && p.projection > 0)
@@ -942,11 +978,10 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             optimizerMaxExposure: locked ? 100 : (Number.isFinite(maxExposureVal) && maxExposureVal >= 0 ? maxExposureVal : undefined),
           };
         })
-        .filter((player) => !Boolean((player as any).optimizerExcluded))
-        .filter((player) => Boolean((player as any).optimizerLocked) || passesAdvancedMinimums(player, advancedMinimums));
+        .filter((player) => !Boolean((player as any).optimizerExcluded));
 
       if (pool.length < DK_SLOTS.length) {
-        setError(`Optimizer pool too small (${pool.length} players) after filters/minimums.`);
+        setError(`Optimizer pool too small (${pool.length} players) after filters/exclusions.`);
         setIsOptimizing(false);
         return;
       }
@@ -979,6 +1014,19 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             setProgress(100);
             if (!msg.lineups || msg.lineups.length === 0) {
               setError('No valid lineups could be generated with the current filters.');
+            } else if (msg.lineups.length < config.numLineups) {
+              const diagnostics: string[] = [];
+              if (lockedIds.length > 0) diagnostics.push(`${lockedIds.length} locked`);
+              if (excludedOverrideCount > 0) diagnostics.push(`${excludedOverrideCount} excluded`);
+              if (minExposureOverrideCount > 0) diagnostics.push(`${minExposureOverrideCount} min-exp caps`);
+              if (maxExposureOverrideCount > 0) diagnostics.push(`${maxExposureOverrideCount} max-exp caps`);
+              const detail = diagnostics.length > 0
+                ? ` Active constraints detected: ${diagnostics.join(', ')}.`
+                : '';
+              setError(
+                `Generated ${msg.lineups.length}/${config.numLineups} feasible unique lineups before exhaustion.` +
+                `${detail} Try clearing advanced settings or relaxing pool filters/exposure caps for more combinations.`,
+              );
             }
             worker.terminate();
             break;
@@ -1252,8 +1300,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         case 'value': return displayValue;
         case 'minutes': return displayMinutes;
         case 'projection': return displayProjection;
-        case 'signal': return getSignalLabel(player);
-        case 'leverageTier': return getLeverageTier(player) ?? '';
+        case 'leverageScore': return getLeverageScore(player) ?? '';
         case 'minExposure': return overrides.minExposure ?? '';
         case 'maxExposure': return overrides.maxExposure ?? '';
         case 'locked': return lockedIds.includes(player.id);
@@ -1306,19 +1353,17 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       lockedIds,
       selectedMatchups,
       selectedTeams,
-      advancedMinimums,
       playerOverrides,
     };
-    localStorage.setItem('optimizerAdvancedSettings', JSON.stringify(payload));
+    localStorage.setItem(getAdvancedSettingsStorageKey(slateDate), JSON.stringify(payload));
     setShowAdvanced(false);
   };
 
   const clearAdvancedSettings = () => {
-    localStorage.removeItem('optimizerAdvancedSettings');
+    localStorage.removeItem(getAdvancedSettingsStorageKey(slateDate));
     setLockedIds([]);
     setSelectedMatchups([]);
     setSelectedTeams([]);
-    setAdvancedMinimums(DEFAULT_ADVANCED_MINIMUMS);
     setPlayerOverrides({});
   };
 
@@ -1367,7 +1412,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           onClose={() => setSelectedPlayer(null)}
           isHistorical={isHistorical}
           showActuals={showActuals}
-          depthCharts={undefined}
+          depthCharts={depthCharts}
           injuryLookup={injuryLookup}
           startingLineupLookup={startingLineupLookup}
           onOptimizerExposureChange={handleDeepDiveExposureChange}
@@ -1564,12 +1609,12 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                               <span className="text-right">Team</span>
                               <span className="text-right">Pos</span>
                               <span className="text-right">Salary</span>
-                              <span className="text-right">Lev Tier</span>
+                              <span className="text-right">Lev Score</span>
                               <span className="text-right">Proj</span>
                               {showActuals && <span className="text-right">Actual</span>}
                             </div>
                             {lineupPlayers.map((player) => {
-                              const levTier = getLeverageTier(player);
+                              const levScore = getLeverageScore(player);
                               const injuryInfo = getPlayerInjuryInfo(player, injuryLookup);
                               const startingInfo = getPlayerStartingLineupInfo(player, startingLineupLookup);
                               const showQuestionable = injuryInfo?.isQuestionable;
@@ -1614,7 +1659,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                                     <span className="text-right">{(player.team || '--').toUpperCase()}</span>
                                     <span className="text-right">{player.position}</span>
                                     <span className="text-right">${player.salary.toLocaleString()}</span>
-                                    <span className="text-right">{levTier ? levTier.toUpperCase() : '--'}</span>
+                                    <span className="text-right">{levScore !== null ? levScore.toFixed(2) : '--'}</span>
                                     <span className="text-right">
                                       {Number.isFinite(Number(player.projection)) ? Number(player.projection).toFixed(2) : '--'}
                                     </span>
@@ -1809,92 +1854,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             </div>
 
             <div className="flex-1 min-h-0 flex flex-col gap-4 overflow-hidden">
-              <div className="border border-ink/10 rounded-sm p-3 bg-white/60">
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-[10px] font-black uppercase tracking-widest text-ink/50">Minimum Thresholds</h4>
-                  <span className="text-[9px] font-mono text-ink/40">Locked players bypass thresholds</span>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-black uppercase tracking-widest text-ink/40">MIN. USAGE</label>
-                    <input
-                      type="number"
-                      min={0}
-                      step={0.5}
-                      value={advancedMinimums.minUsage}
-                      onChange={(e) => {
-                        const value = Number.parseFloat(e.target.value);
-                        setAdvancedMinimums((prev) => ({
-                          ...prev,
-                          minUsage: Number.isFinite(value) ? Math.max(0, value) : 0,
-                        }));
-                      }}
-                      className="w-full bg-white/70 border border-ink/20 rounded-sm px-2 py-1 text-[11px] font-bold font-mono text-ink focus:border-drafting-orange outline-none"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-black uppercase tracking-widest text-ink/40">MIN. MINUTES</label>
-                    <input
-                      type="number"
-                      min={0}
-                      step={0.5}
-                      value={advancedMinimums.minMinutes}
-                      onChange={(e) => {
-                        const value = Number.parseFloat(e.target.value);
-                        setAdvancedMinimums((prev) => ({
-                          ...prev,
-                          minMinutes: Number.isFinite(value) ? Math.max(0, value) : 0,
-                        }));
-                      }}
-                      className="w-full bg-white/70 border border-ink/20 rounded-sm px-2 py-1 text-[11px] font-bold font-mono text-ink focus:border-drafting-orange outline-none"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-black uppercase tracking-widest text-ink/40">MIN. LEV TIER</label>
-                    <select
-                      value={advancedMinimums.minLeverageTier}
-                      onChange={(e) => {
-                        const value = Number.parseInt(e.target.value, 10);
-                        setAdvancedMinimums((prev) => ({
-                          ...prev,
-                          minLeverageTier: Number.isFinite(value) ? Math.max(1, Math.min(5, value)) : 1,
-                        }));
-                      }}
-                      className="w-full bg-white/70 border border-ink/20 rounded-sm px-2 py-1 text-[11px] font-bold uppercase tracking-wider text-ink focus:border-drafting-orange outline-none"
-                    >
-                      {LEVERAGE_TIER_RANK_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-black uppercase tracking-widest text-ink/40">MIN. SIGNAL</label>
-                    <select
-                      value={advancedMinimums.minSignal}
-                      onChange={(e) => {
-                        const value = Number.parseInt(e.target.value, 10);
-                        setAdvancedMinimums((prev) => ({
-                          ...prev,
-                          minSignal: Number.isFinite(value) ? Math.max(1, Math.min(5, value)) : 1,
-                        }));
-                      }}
-                      className="w-full bg-white/70 border border-ink/20 rounded-sm px-2 py-1 text-[11px] font-bold uppercase tracking-wider text-ink focus:border-drafting-orange outline-none"
-                    >
-                      {SIGNAL_RANK_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              </div>
-
               <div className="border border-ink/10 rounded-sm p-3 bg-white/60 overflow-hidden flex flex-col flex-1 min-h-0">
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-[12px] font-black uppercase tracking-widest text-ink/50">Player Pool</h4>
@@ -1923,89 +1882,89 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                   <table className="w-full text-left border-collapse">
                     <thead className="sticky top-0 bg-white/80 z-10 border-b border-ink/10">
                       <tr className="text-[11px] font-black text-ink/40 uppercase tracking-widest">
-                        <th className="px-2 py-2">
-                          <label className="inline-flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              className="accent-drafting-orange"
-                              checked={allVisibleLocked}
-                              onChange={(e) => {
-                                const checked = e.target.checked;
-                                if (visibleLockableIds.length === 0) return;
-                                if (checked) {
-                                  setLockedIds((prev) => {
-                                    const next = new Set(prev);
-                                    visibleLockableIds.forEach((id) => next.add(id));
-                                    return Array.from(next);
-                                  });
-                                  setPlayerOverrides((prev) => {
-                                    const next = { ...prev };
-                                    visibleLockableIds.forEach((id) => {
-                                      next[id] = {
-                                        ...next[id],
-                                        minExposure: 100,
-                                        maxExposure: 100,
-                                      };
-                                    });
-                                    return next;
-                                  });
-                                } else {
-                                  setLockedIds((prev) => prev.filter((id) => !visibleLockableIds.includes(id)));
-                                  setPlayerOverrides((prev) => {
-                                    const next = { ...prev };
-                                    visibleLockableIds.forEach((id) => {
-                                      if (next[id]) {
-                                        next[id] = {
-                                          ...next[id],
-                                          minExposure: undefined,
-                                          maxExposure: undefined,
-                                        };
-                                      }
-                                    });
-                                    return next;
-                                  });
-                                }
-                              }}
-                            />
-                            Lock
-                          </label>
-                        </th>
-                        <th className="px-2 py-2">
-                          <label className="inline-flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              className="accent-drafting-orange"
-                              checked={allVisibleExcluded}
-                              onChange={(e) => {
-                                const checked = e.target.checked;
-                                if (visiblePoolIds.length === 0) return;
+                        <th className="px-2 py-2 text-center">
+                          <button
+                            type="button"
+                            title={allVisibleLocked ? 'Unlock visible players' : 'Lock visible players'}
+                            onClick={() => {
+                              if (visibleLockableIds.length === 0) return;
+                              if (!allVisibleLocked) {
+                                setLockedIds((prev) => {
+                                  const next = new Set(prev);
+                                  visibleLockableIds.forEach((id) => next.add(id));
+                                  return Array.from(next);
+                                });
                                 setPlayerOverrides((prev) => {
                                   const next = { ...prev };
-                                  visiblePoolIds.forEach((id) => {
+                                  visibleLockableIds.forEach((id) => {
                                     next[id] = {
                                       ...next[id],
-                                      exclude: checked,
-                                      minExposure: checked ? undefined : next[id]?.minExposure,
-                                      maxExposure: checked ? undefined : next[id]?.maxExposure,
+                                      minExposure: 100,
+                                      maxExposure: 100,
                                     };
                                   });
                                   return next;
                                 });
-                                if (checked) {
-                                  setLockedIds((prev) => prev.filter((id) => !visiblePoolIds.includes(id)));
-                                }
-                              }}
-                            />
-                            Exclude
-                          </label>
+                                return;
+                              }
+                              setLockedIds((prev) => prev.filter((id) => !visibleLockableIds.includes(id)));
+                              setPlayerOverrides((prev) => {
+                                const next = { ...prev };
+                                visibleLockableIds.forEach((id) => {
+                                  if (next[id]) {
+                                    next[id] = {
+                                      ...next[id],
+                                      minExposure: undefined,
+                                      maxExposure: undefined,
+                                    };
+                                  }
+                                });
+                                return next;
+                              });
+                            }}
+                            className={`p-1 rounded-sm transition-colors ${
+                              allVisibleLocked ? 'bg-drafting-orange text-white' : 'text-ink/50 hover:text-drafting-orange hover:bg-drafting-orange/10'
+                            }`}
+                          >
+                            <Lock className="w-3.5 h-3.5" />
+                          </button>
+                        </th>
+                        <th className="px-2 py-2 text-center">
+                          <button
+                            type="button"
+                            title={allVisibleExcluded ? 'Include visible players' : 'Exclude visible players'}
+                            onClick={() => {
+                              if (visiblePoolIds.length === 0) return;
+                              const shouldExclude = !allVisibleExcluded;
+                              setPlayerOverrides((prev) => {
+                                const next = { ...prev };
+                                visiblePoolIds.forEach((id) => {
+                                  next[id] = {
+                                    ...next[id],
+                                    exclude: shouldExclude,
+                                    minExposure: shouldExclude ? undefined : next[id]?.minExposure,
+                                    maxExposure: shouldExclude ? undefined : next[id]?.maxExposure,
+                                  };
+                                });
+                                return next;
+                              });
+                              if (shouldExclude) {
+                                setLockedIds((prev) => prev.filter((id) => !visiblePoolIds.includes(id)));
+                              }
+                            }}
+                            className={`p-1 rounded-sm transition-colors ${
+                              allVisibleExcluded ? 'bg-red-600 text-white' : 'text-ink/50 hover:text-red-600 hover:bg-red-50'
+                            }`}
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
                         </th>
                         <th className="px-2 py-2">Player</th>
                         <th className="px-2 py-2">Team</th>
                         <th className="px-2 py-2">Opp</th>
                         <th className="px-2 py-2 text-right">Salary</th>
                         <th className="px-2 py-2 text-right">Value</th>
-                        <th className="px-2 py-2 text-right">Signal</th>
-                        <th className="px-2 py-2 text-right">Lev Tier</th>
+                        <th className="px-2 py-2 text-right">Lev Score</th>
                         <th className="px-2 py-2 text-right">Min</th>
                         <th className="px-2 py-2 text-right">FPTS</th>
                         <th className="px-2 py-2 text-right">Min Exp</th>
@@ -2028,11 +1987,11 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                         return (
                           <tr key={player.id} className="border-b border-ink/5">
                             <td className="px-2 py-1.5 text-center">
-                              <input
-                                type="checkbox"
-                                checked={isLocked}
-                                onChange={(e) => {
-                                  const checked = e.target.checked;
+                              <button
+                                type="button"
+                                title={isLocked ? 'Unlock player' : 'Lock player'}
+                                onClick={() => {
+                                  const checked = !isLocked;
                                   if (overrides.exclude) return;
                                   setLockedIds((prev) => checked
                                     ? [...prev, player.id]
@@ -2048,15 +2007,19 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                                   }));
                                 }}
                                 disabled={Boolean(overrides.exclude)}
-                                className="accent-drafting-orange disabled:opacity-50"
-                              />
+                                className={`p-1 rounded-sm transition-colors disabled:opacity-50 ${
+                                  isLocked ? 'bg-drafting-orange text-white' : 'text-ink/50 hover:text-drafting-orange hover:bg-drafting-orange/10'
+                                }`}
+                              >
+                                <Lock className="w-3.5 h-3.5" />
+                              </button>
                             </td>
                             <td className="px-2 py-1.5 text-center">
-                              <input
-                                type="checkbox"
-                                checked={Boolean(overrides.exclude)}
-                                onChange={(e) => {
-                                  const checked = e.target.checked;
+                              <button
+                                type="button"
+                                title={Boolean(overrides.exclude) ? 'Include player' : 'Exclude player'}
+                                onClick={() => {
+                                  const checked = !Boolean(overrides.exclude);
                                   if (checked) {
                                     setLockedIds((prev) => prev.filter((id) => id !== player.id));
                                   }
@@ -2070,8 +2033,12 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                                     },
                                   }));
                                 }}
-                                className="accent-drafting-orange"
-                              />
+                                className={`p-1 rounded-sm transition-colors ${
+                                  Boolean(overrides.exclude) ? 'bg-red-600 text-white' : 'text-ink/50 hover:text-red-600 hover:bg-red-50'
+                                }`}
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
                             </td>
                             <td className="px-2 py-1.5 text-ink/70 truncate max-w-[160px]">{player.name}</td>
                             <td className="px-2 py-1.5 text-ink/50">{player.team || '--'}</td>
@@ -2082,11 +2049,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                             <td className="px-2 py-1.5 text-right text-ink/60">
                               {displayValue !== undefined ? displayValue.toFixed(2) : '--'}
                             </td>
-                            <td className="px-2 py-1.5 text-right text-ink/70">
-                              {getSignalLabel(player)}
-                            </td>
                             <td className="px-2 py-1.5 text-right text-ink/70 uppercase">
-                              {getLeverageTier(player) ?? '--'}
+                              {getLeverageScore(player) !== null ? Number(getLeverageScore(player)).toFixed(2) : '--'}
                             </td>
                             <td className="px-2 py-1.5 text-right">
                               <input
@@ -2153,7 +2117,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                       })}
                       {filteredPoolPlayers.length === 0 && (
                         <tr>
-                          <td colSpan={13} className="px-2 py-6 text-center text-[12px] text-ink/40 font-black uppercase tracking-widest">
+                          <td colSpan={12} className="px-2 py-6 text-center text-[12px] text-ink/40 font-black uppercase tracking-widest">
                             No players found
                           </td>
                         </tr>

@@ -42,15 +42,16 @@ const FILTER_COLUMNS = [
   { key: 'position', label: 'Pos' },
   { key: 'salary', label: 'Salary' },
   { key: 'value', label: 'Value' },
-  { key: 'leverageTier', label: 'Lev Tier' },
   { key: 'ownership', label: 'Own%' },
   { key: 'usageRate', label: 'Usage' },
   { key: 'minutesProjection', label: 'Min' },
-  { key: 'signal', label: 'Signal' },
   { key: 'projection', label: 'Proj' },
   { key: 'ceiling', label: 'Ceiling' },
   { key: 'floor', label: 'Floor' },
   { key: 'actual', label: 'Actual' },
+  { key: 'leverageScore', label: 'Lev Score' },
+  { key: 'boom', label: 'Boom%' },
+  { key: 'bust', label: 'Bust%' },
 ] as const;
 
 const parsePositions = (position: string): string[] => {
@@ -85,13 +86,26 @@ const readByKeys = (obj: any, keys: string[]): any => {
 const AST_KEYS = ['AST', 'assists', 'assist', 'A', 'ASTS', 'APG'];
 
 const readStatNumber = (player: Player, keys: string[]): number | undefined => {
-  const fromAdvanced = readByKeys(player.advancedMetrics as any, keys);
-  const fromSlate = readByKeys(player.slateData as any, keys);
+  const slateData = (player as any)?.slateData ?? {};
+  const slateAdvanced = slateData?.advancedMetrics ?? slateData?.advancedmetrics ?? slateData?.advanced_metrics ?? {};
+  const playerAdvanced = (player as any)?.advancedMetrics ?? (player as any)?.advancedmetrics ?? (player as any)?.advanced_metrics ?? {};
+  const fromAdvanced = readByKeys(playerAdvanced as any, keys);
+  const fromSlateAdvanced = readByKeys(slateAdvanced as any, keys);
+  const fromSlate = readByKeys(slateData as any, keys);
   const fromProfile = readByKeys(player.statsProfile as any, keys);
   const fromPlayer = readByKeys(player as any, keys);
   const raw = fromAdvanced !== undefined
     ? fromAdvanced
-    : (fromSlate !== undefined ? fromSlate : (fromProfile !== undefined ? fromProfile : fromPlayer));
+    : (fromSlateAdvanced !== undefined
+      ? fromSlateAdvanced
+      : (fromSlate !== undefined ? fromSlate : (fromProfile !== undefined ? fromProfile : fromPlayer)));
+  if (raw && typeof raw === 'object') {
+    const nested = readByKeys(raw as any, ['value', 'val', 'mean', 'score', 'pct', 'percent', 'prob', 'probability']);
+    if (nested !== undefined && nested !== null && nested !== '') {
+      const nestedNum = Number(typeof nested === 'string' ? nested.replace(/[%,]/g, '') : nested);
+      if (Number.isFinite(nestedNum)) return nestedNum;
+    }
+  }
   const num = Number(raw);
   return Number.isFinite(num) ? num : undefined;
 };
@@ -109,14 +123,28 @@ const readStatString = (player: Player, keys: string[]): string | undefined => {
 };
 
 const readPercentLike = (player: Player, keys: string[]): number | undefined => {
-  const fromAdvanced = readByKeys(player.advancedMetrics as any, keys);
-  const fromSlate = readByKeys(player.slateData as any, keys);
+  const slateData = (player as any)?.slateData ?? {};
+  const slateAdvanced = slateData?.advancedMetrics ?? slateData?.advancedmetrics ?? slateData?.advanced_metrics ?? {};
+  const playerAdvanced = (player as any)?.advancedMetrics ?? (player as any)?.advancedmetrics ?? (player as any)?.advanced_metrics ?? {};
+  const fromAdvanced = readByKeys(playerAdvanced as any, keys);
+  const fromSlateAdvanced = readByKeys(slateAdvanced as any, keys);
+  const fromSlate = readByKeys(slateData as any, keys);
   const fromProfile = readByKeys(player.statsProfile as any, keys);
   const fromPlayer = readByKeys(player as any, keys);
   const raw = fromAdvanced !== undefined
     ? fromAdvanced
-    : (fromSlate !== undefined ? fromSlate : (fromProfile !== undefined ? fromProfile : fromPlayer));
+    : (fromSlateAdvanced !== undefined
+      ? fromSlateAdvanced
+      : (fromSlate !== undefined ? fromSlate : (fromProfile !== undefined ? fromProfile : fromPlayer)));
   if (raw === undefined || raw === null) return undefined;
+  if (typeof raw === 'object') {
+    const nested = readByKeys(raw as any, ['pct', 'percent', 'probability', 'prob', 'value', 'mean', 'score']);
+    if (nested !== undefined && nested !== null && nested !== '') {
+      const nestedNum = Number(String(nested).trim().replace(/[%,]/g, ''));
+      return Number.isFinite(nestedNum) ? nestedNum : undefined;
+    }
+    return undefined;
+  }
   if (typeof raw === 'number') return raw;
   const cleaned = String(raw).trim().replace('%', '');
   const num = Number(cleaned);
@@ -135,6 +163,68 @@ const getLeverageTier = (player: Player): string | undefined => {
     'leverage_tier_name',
   ]);
   return tier ? tier.trim() : undefined;
+};
+
+const normalizePctMaybe = (value: number | undefined): number | undefined => {
+  if (!Number.isFinite(Number(value))) return undefined;
+  const n = Number(value);
+  return n <= 1 ? n * 100 : n;
+};
+
+const getLeverageScore = (player: Player): number | undefined => {
+  return readStatNumber(player, [
+    'LEVERAGE_SCORE',
+    'leverageScore',
+    'leverage_score',
+    'signalLeverageScore',
+    'signal_leverage_score',
+  ]);
+};
+
+const getBoomPct = (player: Player): number | undefined => {
+  return normalizePctMaybe(readPercentLike(player, [
+    'BOOM%',
+    'BOOM_PCT',
+    'BOOMRATE',
+    'BOOM_RATE',
+    'boomPct',
+    'boom_pct',
+    'boomRate',
+    'boom_rate',
+    'BOOM',
+    'boom',
+    'boomScore',
+    'boom_score',
+    'boomProbability',
+    'boom_probability',
+    'BOOM_PROBABILITY',
+    'BOOM_PROB',
+    'boomProb',
+    'boom_prob',
+  ]));
+};
+
+const getBustPct = (player: Player): number | undefined => {
+  return normalizePctMaybe(readPercentLike(player, [
+    'BUST%',
+    'BUST_PCT',
+    'BUSTRATE',
+    'BUST_RATE',
+    'bustPct',
+    'bust_pct',
+    'bustRate',
+    'bust_rate',
+    'BUST',
+    'bust',
+    'bustScore',
+    'bust_score',
+    'bustProbability',
+    'bust_probability',
+    'BUST_PROBABILITY',
+    'BUST_PROB',
+    'bustProb',
+    'bust_prob',
+  ]));
 };
 
 const isMatchupBoostSignal = (player: Player): boolean => {
@@ -437,7 +527,6 @@ export const DashboardView: React.FC<Props> = ({
   depthCharts,
   startingLineupLookup,
   previewMode = false,
-  hideSignalColumn = false,
 }) => {
   const [search, setSearch] = useState('');
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
@@ -606,11 +695,12 @@ export const DashboardView: React.FC<Props> = ({
         case 'opponent': return teamAbbrevMap.get(player.opponent) || player.opponent || '';
         case 'salary': return player.salary;
         case 'value': return player.salary > 0 ? (player.projection / (player.salary / 1000)) : 0;
-        case 'leverageTier': return getLeverageTier(player) ?? '';
+        case 'leverageScore': return getLeverageScore(player) ?? -Infinity;
+        case 'boom': return getBoomPct(player) ?? -Infinity;
+        case 'bust': return getBustPct(player) ?? -Infinity;
         case 'ownership': return player.ownership ?? -Infinity;
         case 'usageRate': return player.usageRate ?? -Infinity;
         case 'minutesProjection': return player.minutesProjection ?? -Infinity;
-        case 'signal': return getSignalRank(player);
         case 'projection': return player.projection;
         case 'ceiling': return player.ceiling ?? -Infinity;
         case 'floor': return player.floor ?? -Infinity;
@@ -627,11 +717,12 @@ export const DashboardView: React.FC<Props> = ({
         case 'opponent': return teamAbbrevMap.get(player.opponent) || player.opponent || '';
         case 'salary': return player.salary;
         case 'value': return player.salary > 0 ? (player.projection / (player.salary / 1000)) : 0;
-        case 'leverageTier': return getLeverageTier(player) ?? '';
+        case 'leverageScore': return getLeverageScore(player);
+        case 'boom': return getBoomPct(player);
+        case 'bust': return getBustPct(player);
         case 'ownership': return player.ownership;
         case 'usageRate': return player.usageRate;
         case 'minutesProjection': return player.minutesProjection;
-        case 'signal': return getSignalLabel(player);
         case 'projection': return player.projection;
         case 'ceiling': return player.ceiling;
         case 'floor': return player.floor;
@@ -906,9 +997,6 @@ export const DashboardView: React.FC<Props> = ({
                     <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('value')}>
                       Value{sortIndicator('value')}
                     </th>
-                    <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('leverageTier')}>
-                      Lev Tier{sortIndicator('leverageTier')}
-                    </th>
                     <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('ownership')}>
                       Own{sortIndicator('ownership')}
                     </th>
@@ -918,11 +1006,6 @@ export const DashboardView: React.FC<Props> = ({
                     <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('minutesProjection')}>
                       Min{sortIndicator('minutesProjection')}
                     </th>
-                    {!hideSignalColumn && (
-                      <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('signal')}>
-                        Signal{sortIndicator('signal')}
-                      </th>
-                    )}
                     <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('projection')}>
                       Proj{sortIndicator('projection')}
                     </th>
@@ -937,6 +1020,15 @@ export const DashboardView: React.FC<Props> = ({
                     <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('floor')}>
                       Floor{sortIndicator('floor')}
                     </th>
+                    <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('leverageScore')}>
+                      Lev Score{sortIndicator('leverageScore')}
+                    </th>
+                    <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('boom')}>
+                      Boom{sortIndicator('boom')}
+                    </th>
+                    <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('bust')}>
+                      Bust{sortIndicator('bust')}
+                    </th>
                   </tr>
                 </thead>
               <tbody className="text-[13px] font-mono">
@@ -948,7 +1040,9 @@ export const DashboardView: React.FC<Props> = ({
                     const reasonText = injuryInfo?.reason || 'Questionable';
                     const startStatus = startingInfo?.status;
                     const showStarter = startStatus === 'confirmed' || startStatus === 'expected';
-                    const leverageTier = getLeverageTier(player);
+                    const leverageScore = getLeverageScore(player);
+                    const boomPct = getBoomPct(player);
+                    const bustPct = getBustPct(player);
 
                     return (
                     <tr
@@ -993,9 +1087,6 @@ export const DashboardView: React.FC<Props> = ({
                       <td className="px-3 py-2 text-right text-ink/60">
                         {player.salary > 0 ? (player.projection / (player.salary / 1000)).toFixed(2) : '--'}
                       </td>
-                      <td className="px-3 py-2 text-right text-ink/60 uppercase">
-                        {leverageTier ?? '--'}
-                      </td>
                       <td className="px-3 py-2 text-right text-ink/60">
                         {player.ownership !== undefined ? `${Number(player.ownership).toFixed(1)}%` : '--'}
                       </td>
@@ -1005,11 +1096,6 @@ export const DashboardView: React.FC<Props> = ({
                       <td className="px-3 py-2 text-right text-ink/60">
                         {player.minutesProjection !== undefined ? player.minutesProjection.toFixed(1) : '--'}
                       </td>
-                      {!hideSignalColumn && (
-                        <td className="px-3 py-2 text-right text-ink/60">
-                          {getSignalLabel(player)}
-                        </td>
-                      )}
                       <td className="px-3 py-2 text-right font-black text-drafting-orange">
                         {player.projection.toFixed(2)}
                       </td>
@@ -1032,13 +1118,22 @@ export const DashboardView: React.FC<Props> = ({
                       <td className="px-3 py-2 text-right text-ink/60">
                         {player.floor !== undefined ? Number(player.floor).toFixed(2) : '--'}
                       </td>
+                      <td className="px-3 py-2 text-right text-ink/60 uppercase">
+                        {leverageScore !== undefined ? leverageScore.toFixed(2) : '--'}
+                      </td>
+                      <td className="px-3 py-2 text-right text-emerald-600">
+                        {boomPct !== undefined ? `${boomPct.toFixed(1)}%` : '--'}
+                      </td>
+                      <td className="px-3 py-2 text-right text-red-600">
+                        {bustPct !== undefined ? `${bustPct.toFixed(1)}%` : '--'}
+                      </td>
                     </tr>
                     );
                   })
                 ) : (
                   <tr>
                     <td
-                      colSpan={(showActuals ? 15 : 14) - (hideSignalColumn ? 1 : 0)}
+                      colSpan={showActuals ? 16 : 15}
                       className="py-8 text-center text-[10px] font-black text-ink/40 uppercase tracking-widest"
                     >
                       No players matched the active search/filter criteria

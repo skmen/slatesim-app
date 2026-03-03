@@ -98,6 +98,7 @@ export interface Lineup {
 // App view state (add new pages here)
 export enum ViewState {
   RESEARCH = 'research',
+  COMPARE = 'compare',
   OPTIMIZER = 'optimizer',
   LOAD = 'load',
   ENTRY_MANAGER = 'entry_manager',

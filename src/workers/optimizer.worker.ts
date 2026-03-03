@@ -28,6 +28,18 @@ interface OptimizerConfig {
   max_count_low_minutes?: number;
   lowMinutesCutoff?: number;
   low_minutes_cutoff?: number;
+  enableRuleBoosts?: boolean;
+  enable_rule_boosts?: boolean;
+  topQuantile?: number;
+  top_quantile?: number;
+  midQuantile?: number;
+  mid_quantile?: number;
+  bonusR4?: number;
+  bonus_r4?: number;
+  bonusR1?: number;
+  bonus_r1?: number;
+  bonusR5?: number;
+  bonus_r5?: number;
 }
 
 interface RequestPayload {
@@ -100,7 +112,15 @@ interface RelaxedStatRule {
   available: number;
 }
 
+type RuleFlags = {
+  r1_leverage_top10: boolean;
+  r2_volatility_top10: boolean;
+  r4_leverage_or_vol_top10: boolean;
+  r5_leverage_and_minutes_top20: boolean;
+};
+
 let highsModulePromise: Promise<any> | null = null;
+const RULE_FLAGS_KEY = '__ruleFlags';
 
 const safeNumber = (value: unknown, fallback = 0): number => {
   const n = Number(value);
@@ -111,6 +131,18 @@ const clamp = (value: number, min: number, max: number): number => {
   if (value < min) return min;
   if (value > max) return max;
   return value;
+};
+
+const quantile = (values: number[], q: number): number | null => {
+  const clean = values.filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+  if (clean.length === 0) return null;
+  const qq = clamp(safeNumber(q, 0), 0, 1);
+  const pos = (clean.length - 1) * qq;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  const a = clean[base];
+  const b = clean[Math.min(base + 1, clean.length - 1)];
+  return a + rest * (b - a);
 };
 
 const normKey = (value: string): string => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -261,6 +293,13 @@ const withDefaultConfig = (config?: OptimizerConfig): Required<Pick<OptimizerCon
   const minCountCoreRaw = (config as any)?.minCountMinutesCore ?? (config as any)?.min_count_minutes_core;
   const maxLowRaw = (config as any)?.maxCountLowMinutes ?? (config as any)?.max_count_low_minutes;
   const lowCutoffRaw = (config as any)?.lowMinutesCutoff ?? (config as any)?.low_minutes_cutoff;
+  const enableRuleRaw = (config as any)?.enableRuleBoosts ?? (config as any)?.enable_rule_boosts;
+  const enableRuleBoosts = enableRuleRaw === undefined ? true : Boolean(enableRuleRaw);
+  const topQuantile = clamp(safeNumber((config as any)?.topQuantile ?? (config as any)?.top_quantile, 0.10), 0.01, 0.40);
+  const midQuantile = clamp(safeNumber((config as any)?.midQuantile ?? (config as any)?.mid_quantile, 0.20), 0.01, 0.50);
+  const bonusR4 = safeNumber((config as any)?.bonusR4 ?? (config as any)?.bonus_r4, 350000);
+  const bonusR1 = safeNumber((config as any)?.bonusR1 ?? (config as any)?.bonus_r1, 650000);
+  const bonusR5 = safeNumber((config as any)?.bonusR5 ?? (config as any)?.bonus_r5, 900000);
 
   return {
     numLineups: Math.max(1, Math.floor(safeNumber(config?.numLineups, 20))),
@@ -280,6 +319,18 @@ const withDefaultConfig = (config?: OptimizerConfig): Required<Pick<OptimizerCon
     max_count_low_minutes: Math.max(0, Math.floor(safeNumber(maxLowRaw, statMode === 'cash' ? 0 : 1))),
     lowMinutesCutoff: Math.max(0, safeNumber(lowCutoffRaw, 20)),
     low_minutes_cutoff: Math.max(0, safeNumber(lowCutoffRaw, 20)),
+    enableRuleBoosts,
+    enable_rule_boosts: enableRuleBoosts,
+    topQuantile,
+    top_quantile: topQuantile,
+    midQuantile,
+    mid_quantile: midQuantile,
+    bonusR4,
+    bonus_r4: bonusR4,
+    bonusR1,
+    bonus_r1: bonusR1,
+    bonusR5,
+    bonus_r5: bonusR5,
   };
 };
 
@@ -624,6 +675,21 @@ const getMinutesMaybe = (player: Player): number | undefined => {
   return readNumericMaybe(player, ['minutes', 'minutesProjection', 'projMinutes', 'projectedMinutes', 'min']);
 };
 
+const getLeverageScoreMaybe = (player: Player): number | null => {
+  const v = readNumericMaybe(player, ['LEVERAGE_SCORE', 'leverageScore', 'leverage_score', 'signalLeverageScore', 'signal_leverage_score']);
+  return Number.isFinite(Number(v)) ? Number(v) : null;
+};
+
+const getVolatilityMaybe = (player: Player): number | null => {
+  const v = readNumericMaybe(player, ['VOLATILITY', 'volatility', 'vol']);
+  return Number.isFinite(Number(v)) ? Number(v) : null;
+};
+
+const getMinutesProjMaybe = (player: Player): number | null => {
+  const v = readNumericMaybe(player, ['MINUTES_PROJ', 'minutesProj', 'minutes_proj', 'minutesProjection', 'minutes']);
+  return Number.isFinite(Number(v)) ? Number(v) : null;
+};
+
 const buildStatConstraintRules = (context: BuildContext): StatConstraintRule[] => {
   const { players, statSettings } = context;
   if (!statSettings.enable) return [];
@@ -931,7 +997,53 @@ const getValueTieBreaker = (player: Player): number => {
   return (Math.max(0, safeNumber(player.projection, 0)) / salary) * 1000;
 };
 
-const getPriorityScore = (player: Player): number => {
+const computeRuleFlags = (
+  players: Player[],
+  cfg: Required<Pick<OptimizerConfig, 'numLineups' | 'salaryCap' | 'maxExposure'>> & OptimizerConfig,
+) => {
+  const topQuantile = clamp(safeNumber(cfg.topQuantile ?? cfg.top_quantile, 0.10), 0.01, 0.40);
+  const midQuantile = clamp(safeNumber(cfg.midQuantile ?? cfg.mid_quantile, 0.20), 0.01, 0.50);
+
+  const topQ = 1 - topQuantile;
+  const midQ = 1 - midQuantile;
+
+  const leverageVals = players.map(getLeverageScoreMaybe).filter((x): x is number => x !== null);
+  const volVals = players.map(getVolatilityMaybe).filter((x): x is number => x !== null);
+  const minutesVals = players.map(getMinutesProjMaybe).filter((x): x is number => x !== null);
+
+  const levTop = quantile(leverageVals, topQ);
+  const volTop = quantile(volVals, topQ);
+  const levMid = quantile(leverageVals, midQ);
+  const minMid = quantile(minutesVals, midQ);
+
+  players.forEach((player) => {
+    const lev = getLeverageScoreMaybe(player);
+    const vol = getVolatilityMaybe(player);
+    const min = getMinutesProjMaybe(player);
+
+    const r1 = levTop !== null && lev !== null && lev >= levTop;
+    const r2 = volTop !== null && vol !== null && vol >= volTop;
+    const r4 = r1 || r2;
+    const r5 = levMid !== null && minMid !== null && lev !== null && min !== null && lev >= levMid && min >= minMid;
+
+    (player as any)[RULE_FLAGS_KEY] = {
+      r1_leverage_top10: r1,
+      r2_volatility_top10: r2,
+      r4_leverage_or_vol_top10: r4,
+      r5_leverage_and_minutes_top20: r5,
+    } satisfies RuleFlags;
+  });
+};
+
+const getRuleFlags = (player: Player): RuleFlags | null => {
+  const f = (player as any)[RULE_FLAGS_KEY];
+  return f && typeof f === 'object' ? (f as RuleFlags) : null;
+};
+
+const getPriorityScore = (
+  player: Player,
+  cfg?: Required<Pick<OptimizerConfig, 'numLineups' | 'salaryCap' | 'maxExposure'>> & OptimizerConfig,
+): number => {
   const leveragePriority = getLeverageTierPriority(player);
   const signalPriority = getSignalTierPriority(player);
   // Primary rank by leverage+signal combo; ties break on ceiling/value/usage/minutes.
@@ -941,8 +1053,21 @@ const getPriorityScore = (player: Player): number => {
   const usage = Math.max(0, safeNumber(getUSGPctMaybe(player), 0));
   const minutes = Math.max(0, safeNumber(getMinutesMaybe(player), 0));
   const projection = Math.max(0, safeNumber(player.projection, 0));
+  let ruleBonus = 0;
+  if (cfg?.enableRuleBoosts) {
+    const flags = getRuleFlags(player);
+    if (flags) {
+      const bonusR4 = safeNumber(cfg.bonusR4 ?? cfg.bonus_r4, 350000);
+      const bonusR1 = safeNumber(cfg.bonusR1 ?? cfg.bonus_r1, 650000);
+      const bonusR5 = safeNumber(cfg.bonusR5 ?? cfg.bonus_r5, 900000);
+      if (flags.r4_leverage_or_vol_top10) ruleBonus += bonusR4;
+      if (flags.r1_leverage_top10) ruleBonus += bonusR1;
+      if (flags.r5_leverage_and_minutes_top20) ruleBonus += bonusR5;
+    }
+  }
 
-  return (comboPriority * 100000)
+  return ruleBonus
+    + (comboPriority * 100000)
     + (ceiling * 100)
     + (value * 50)
     + (usage * 5)
@@ -950,10 +1075,14 @@ const getPriorityScore = (player: Player): number => {
     + projection;
 };
 
-const setObjectiveByPriority = (model: ModelBlueprint, players: Player[]) => {
+const setObjectiveByPriority = (
+  model: ModelBlueprint,
+  players: Player[],
+  cfg: Required<Pick<OptimizerConfig, 'numLineups' | 'salaryCap' | 'maxExposure'>> & OptimizerConfig,
+) => {
   model.objective.clear();
   model.assignmentVars.forEach((variable) => {
-    model.objective.set(variable.name, Math.max(0, getPriorityScore(players[variable.playerIndex])));
+    model.objective.set(variable.name, Math.max(0, getPriorityScore(players[variable.playerIndex], cfg)));
   });
 };
 
@@ -1196,16 +1325,16 @@ const searchFallbackLineup = (
 };
 
 const solveLineupFallback = (context: BuildContext): { lineup: Lineup; selectedIndexes: number[] } | null => {
-  const { players } = context;
-  const priorityScore = players.map((player) => Math.max(0, getPriorityScore(player)));
+  const { players, config } = context;
+  const priorityScore = players.map((player) => Math.max(0, getPriorityScore(player, config)));
   return searchFallbackLineup(context, priorityScore, 0);
 };
 
 const solveLineup = async (context: BuildContext): Promise<{ lineup: Lineup; selectedIndexes: number[] } | null> => {
   const baseModel = buildBaseModel(context);
-  const { players } = context;
+  const { players, config } = context;
 
-  setObjectiveByPriority(baseModel, players);
+  setObjectiveByPriority(baseModel, players, config);
   const solved = await solveLp(baseModel);
   return decodeLineup(solved, baseModel, players, context.lineupIndex);
 };
@@ -1228,6 +1357,10 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
     }
   }
 
+  if (config.enableRuleBoosts) {
+    computeRuleFlags(players, config);
+  }
+
   const lineups: Lineup[] = [];
   const previousLineups: number[][] = [];
   const exposureCounts = new Array<number>(players.length).fill(0);
@@ -1235,6 +1368,8 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
   let attempts = 0;
   const maxAttempts = Math.max(config.numLineups * 8, 80);
   let lastSolveError = '';
+  let noSolutionStreak = 0;
+  const maxNoSolutionStreak = 4;
   while (lineups.length < config.numLineups && attempts < maxAttempts) {
     attempts += 1;
     const lineupIndex = lineups.length;
@@ -1267,8 +1402,16 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
       solved = solveLineupFallback(context);
     }
     if (!solved) {
-      break;
+      noSolutionStreak += 1;
+      if (!lastSolveError) {
+        lastSolveError = 'No additional feasible unique lineups found under current pool/exposure constraints.';
+      }
+      if (noSolutionStreak >= maxNoSolutionStreak) {
+        break;
+      }
+      continue;
     }
+    noSolutionStreak = 0;
 
     lineups.push(solved.lineup);
     previousLineups.push([...solved.selectedIndexes]);

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { BarChart2, ChevronLeft, ChevronRight, List, LogOut, Cpu, Lock, Zap } from 'lucide-react';
+import { BarChart2, ChevronLeft, ChevronRight, List, LogOut, Cpu, Lock, Zap, GitCompare } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import { useUser, ClerkProvider, useAuth as useClerkAuth } from "@clerk/clerk-react"; 
 import { AppState, ViewState, ContestInput, ContestDerived, Entitlement, GameInfo } from './types';
@@ -18,6 +18,7 @@ import { PricingPage } from './components/PricingPage';
 import { LineupDrawer } from './components/LineupDrawer';
 import DKEntryManager from './components/DKEntryManager';
 import ReportView from './components/ReportView';
+import { CompareView } from './components/CompareView';
 
 // Simple error boundary to prevent report page from blanking the UI
 class ErrorBoundary extends React.Component<{ fallback: React.ReactNode }, { hasError: boolean }> {
@@ -832,6 +833,13 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
             hideSignalColumn={previewMode}
           />
         )}
+        {!previewMode && view === ViewState.COMPARE && (
+          <CompareView
+            players={state.slate.players}
+            games={state.slate.games}
+            showActuals={effectiveShowActuals}
+          />
+        )}
         {!previewMode && view === ViewState.OPTIMIZER && (
           <OptimizerView
             players={state.slate.players}
@@ -839,6 +847,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
             slateDate={state.slate.date}
             showActuals={effectiveShowActuals}
             injuryLookup={injuryLookup}
+            depthCharts={depthCharts}
             startingLineupLookup={startingLineupLookup}
           />
         )}
@@ -852,7 +861,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
         )}
         {!previewMode && view === ViewState.REPORT && (
           <ErrorBoundary fallback={<div className="p-4 text-ink">Report unavailable: component error.</div>}>
-            <ReportView players={state.slate.players || []} games={state.slate.games || []} />
+            <ReportView players={state.slate.players || []} games={state.slate.games || []} slateDate={state.slate.date} />
           </ErrorBoundary>
         )}
       </main>
@@ -862,8 +871,9 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
 
       {!previewMode && (
         <nav className="fixed bottom-0 left-0 right-0 bg-white/80 border-t border-ink/10 px-6 py-2 pb-safe z-40 shadow-2xl backdrop-blur-md">
-          <div className="flex justify-around items-center max-w-lg mx-auto">
+          <div className="flex justify-around items-center max-w-2xl mx-auto">
             <NavItem label="Research" icon={BarChart2} targetView={ViewState.RESEARCH} setView={setView} view={view} hasEntitlement={hasEntitlement} />
+            <NavItem label="Compare" icon={GitCompare} targetView={ViewState.COMPARE} setView={setView} view={view} hasEntitlement={hasEntitlement} />
             <NavItem label="Optimizer" icon={Zap} targetView={ViewState.OPTIMIZER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
             {selectedDate === getLocalDateStr(new Date()) && (
               <NavItem label="Entry Manager" icon={List} targetView={ViewState.ENTRY_MANAGER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
