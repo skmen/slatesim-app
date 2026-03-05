@@ -2007,17 +2007,19 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
       }
 
       // Annotate cash-adjusted projection.
-      const adjProj = getCashAdjustedProjection(player);
-      (player as any).cashAdjustedProj = adjProj;
+      (player as any).cashAdjustedProj = getCashAdjustedProjection(player);
 
-      // Positional floor filter: use the minimum floor across all eligible positions.
+      // Positional floor filter: compare raw consensus projection against the per-position
+      // minimum threshold (e.g. PG:28).  Using cashAdjustedProj here would exclude too many
+      // players when no floor data is available (adjProj ≈ proj × 0.88 < threshold).
+      const consensusProj = getConsensusProjection(player);
       const positions = parsePositions(player.position);
       const slots: string[] = positions.length > 0 ? positions : ['UTIL'];
       const minFloor = slots.reduce((min, pos) => {
         const floor = posFloors[pos] ?? posFloors['UTIL'] ?? 24;
         return Math.min(min, floor);
       }, Infinity);
-      if (adjProj < minFloor) {
+      if (consensusProj < minFloor) {
         (player as any).optimizerExcluded = true;
       }
     });
