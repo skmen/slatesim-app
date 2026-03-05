@@ -17,6 +17,7 @@ import {
   Lock
 } from 'lucide-react';
 import { Player, Lineup, GameInfo } from '../types';
+import { calculateValueScores } from '../utils/valueScore';
 import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { PlayerDeepDive } from './PlayerDeepDive';
@@ -1376,6 +1377,11 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     setPoolFilters((prev) => prev.map((f) => (f.id === id ? { ...f, ...updates } : f)));
   };
 
+  const valueScoreMap = useMemo(
+    () => calculateValueScores(players, games),
+    [players, games]
+  );
+
   const filteredPoolPlayers = useMemo(() => {
     const term = poolSearch.trim().toLowerCase();
     let pool = players.filter((p) => (!term ? true : p.name.toLowerCase().includes(term)));
@@ -1388,15 +1394,12 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       const displayProjection = Number.isFinite(Number(overrides.projection))
         ? Number(overrides.projection)
         : (Number.isFinite(Number(player.projection)) ? Number(player.projection) : undefined);
-      const displayValue = player.salary > 0 && displayProjection !== undefined
-        ? displayProjection / (player.salary / 1000)
-        : undefined;
       switch (key) {
         case 'name': return player.name;
         case 'team': return player.team;
         case 'opponent': return player.opponent;
         case 'salary': return player.salary;
-        case 'value': return displayValue;
+        case 'value': return valueScoreMap.get(player.id)?.composite;
         case 'usage': return getUsagePercent(player);
         case 'boom': return getBoomPercent(player);
         case 'bust': return getBustPercent(player);
@@ -1448,7 +1451,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     }
 
     return pool;
-  }, [players, poolSearch, poolFilters, playerOverrides, lockedIds, poolSort]);
+  }, [players, poolSearch, poolFilters, playerOverrides, lockedIds, poolSort, valueScoreMap]);
 
   const toggleTeamWeight = useCallback((teamId: string) => {
     setTeamStackWeights((prev) => {
@@ -2260,9 +2263,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                         const displayProjection = Number.isFinite(Number(overrides.projection))
                           ? Number(overrides.projection)
                           : (Number.isFinite(Number(player.projection)) ? Number(player.projection) : undefined);
-                        const displayValue = player.salary > 0 && displayProjection !== undefined
-                          ? displayProjection / (player.salary / 1000)
-                          : undefined;
+                        const displayValue = valueScoreMap.get(player.id)?.composite;
                         const usagePct = getUsagePercent(player);
                         const boomPct = getBoomPercent(player);
                         const bustPct = getBustPercent(player);
@@ -2329,8 +2330,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                             <td className="px-2 py-1.5 text-right text-ink/60">
                               ${Number(player.salary || 0).toLocaleString()}
                             </td>
-                            <td className="px-2 py-1.5 text-right text-ink/60">
-                              {displayValue !== undefined ? displayValue.toFixed(2) : '--'}
+                            <td className={`px-2 py-1.5 text-right font-bold ${displayValue === undefined ? 'text-ink/60' : displayValue >= 65 ? 'text-emerald-600' : displayValue <= 40 ? 'text-red-600' : 'text-ink/60'}`}>
+                              {displayValue !== undefined ? displayValue.toFixed(1) : '--'}
                             </td>
                             <td className="px-2 py-1.5 text-right text-ink/60">
                               {Number.isFinite(Number(usagePct)) ? `${Number(usagePct).toFixed(1)}%` : '--'}
