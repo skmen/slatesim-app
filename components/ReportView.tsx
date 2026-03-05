@@ -4,6 +4,7 @@ import { BarChart2, AlertTriangle, CheckCircle2, HelpCircle } from 'lucide-react
 import highsLoader from 'highs';
 import highsWasmUrl from 'highs/runtime?url';
 import { PlayerDeepDive } from './PlayerDeepDive';
+import { calculateValueScore } from '../utils/valueScore';
 import {
   PieChart, Pie, Cell, Tooltip as RechartsTooltip,
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, LabelList,
@@ -1041,7 +1042,7 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
                   const team = String(player.team || '').toUpperCase();
                   const opponentRaw = String(player.opponent || '').toUpperCase();
                   const opponent = (teamAbbrevMap.get(opponentRaw) || opponentRaw || '--').toUpperCase();
-                  const value = getValue(player);
+                  const valueScore = calculateValueScore(player, games);
                   const ownership = getOwnershipPct(player);
                   const usage = getUsagePct(player);
                   const minutes = getMinutesProj(player);
@@ -1068,7 +1069,7 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
                       <td className="px-3 py-2 text-ink/60">{opponent}</td>
                       <td className="px-3 py-2 text-ink/60">{player.position || '--'}</td>
                       <td className="px-3 py-2 text-right text-ink/60">{formatSalaryK(Number(player.salary))}</td>
-                      <td className="px-3 py-2 text-right text-ink/60">{value !== undefined ? value.toFixed(2) : '--'}</td>
+                      <td className="px-3 py-2 text-right text-ink/60">{valueScore.composite.toFixed(1)}</td>
                       <td className="px-3 py-2 text-right text-ink/60">{ownership !== undefined ? `${ownership.toFixed(1)}%` : '--'}</td>
                       <td className="px-3 py-2 text-right text-ink/60">{usage !== undefined ? `${usage.toFixed(1)}%` : '--'}</td>
                       <td className="px-3 py-2 text-right text-ink/60">{minutes !== undefined ? minutes.toFixed(1) : '--'}</td>
