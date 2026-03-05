@@ -49,6 +49,7 @@ interface OptimizerAdvancedSettings {
 }
 
 const OPTIMIZER_SETTINGS_KEY = 'optimizerAdvancedSettings';
+const HISTORY_WINDOW_GAMES = 20;
 
 const sanitizeOptimizerSettings = (raw: any): OptimizerAdvancedSettings => {
   if (!raw || typeof raw !== 'object') return {};
@@ -757,7 +758,7 @@ export const PlayerDeepDive: React.FC<Props> = ({
           return fallbackProjection;
         })(),
       }));
-      return sortByDateDesc(enriched).slice(0, 10);
+      return sortByDateDesc(enriched).slice(0, HISTORY_WINDOW_GAMES);
     }
 
     const fromPlayByPlay = Array.isArray(player.last5PlayByPlay) ? player.last5PlayByPlay : [];
@@ -785,7 +786,7 @@ export const PlayerDeepDive: React.FC<Props> = ({
           } as HistoricalGame;
         })
         .filter((g) => !!g.date);
-      return sortByDateDesc(derived).slice(0, 10);
+      return sortByDateDesc(derived).slice(0, HISTORY_WINDOW_GAMES);
     }
 
     return [];
@@ -1451,23 +1452,23 @@ export const PlayerDeepDive: React.FC<Props> = ({
               <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
                 {[
                   { label: 'Avg FPTS', value: stats.avg, icon: Activity, color: 'text-drafting-orange' },
-                  { label: 'AVG FPPM (L10)', value: stats.avgFppm, icon: TrendingUp, color: 'text-blue-600' },
+                  { label: 'AVG FPPM (L20)', value: stats.avgFppm, icon: TrendingUp, color: 'text-blue-600' },
                   {
-                    label: 'Hit Rate (L10)',
+                    label: 'Hit Rate (L20)',
                     value: `${stats.hitRate}%`,
                     icon: Zap,
                     color: 'text-emerald-600',
                     hint: 'Hit rate = % of games within 5 FPTS of projection.',
                   },
                   {
-                    label: 'Miss Rate (L10)',
+                    label: 'Miss Rate (L20)',
                     value: `${stats.missRate}%`,
                     icon: TrendingDown,
                     color: 'text-red-600',
                     hint: 'Miss rate = % of games off by more than 5 FPTS from projection.',
                   },
-                  { label: 'Boom % (L10)', value: `${stats.boomRate}%`, icon: TrendingUp, color: 'text-emerald-600' },
-                  { label: 'Bust % (L10)', value: `${stats.bustRate}%`, icon: TrendingDown, color: 'text-red-600' },
+                  { label: 'Boom % (L20)', value: `${stats.boomRate}%`, icon: TrendingUp, color: 'text-emerald-600' },
+                  { label: 'Bust % (L20)', value: `${stats.bustRate}%`, icon: TrendingDown, color: 'text-red-600' },
                 ].map((stat, i) => (
                   <div key={i} className="group bg-white/40 border border-ink/10 p-3 rounded-sm relative">
                     <div className="flex items-center gap-2 mb-1.5">
@@ -1488,7 +1489,7 @@ export const PlayerDeepDive: React.FC<Props> = ({
               <div className="bg-white/40 border border-ink/10 rounded-sm p-6">
                 <div className="flex items-center gap-2 mb-4">
                   <BarChart3 className="w-4 h-4 text-drafting-orange" />
-                  <h3 className="text-xs font-black uppercase tracking-widest text-ink/60">Production History (Last 10)</h3>
+                  <h3 className="text-xs font-black uppercase tracking-widest text-ink/60">Production History (Last 20)</h3>
                 </div>
                 <div className="h-44 w-full">
                   <ResponsiveContainer width="100%" height="100%">
@@ -1602,7 +1603,7 @@ export const PlayerDeepDive: React.FC<Props> = ({
                 <div className="bg-white/40 border border-ink/10 rounded-sm overflow-hidden">
                   <div className="p-4 border-b border-ink/10 bg-white/40 flex items-center gap-2">
                     <TrendingUp className="w-3 h-3 text-drafting-orange" />
-                    <h3 className="text-[10px] font-black uppercase tracking-widest text-ink/60">Game Log (Last 10)</h3>
+                    <h3 className="text-[10px] font-black uppercase tracking-widest text-ink/60">Game Log (Last 20)</h3>
                   </div>
                   <table className="w-full text-left border-collapse">
                     <thead>

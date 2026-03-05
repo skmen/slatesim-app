@@ -88,6 +88,7 @@ const DEFAULT_ADVANCED_MINIMUMS: AdvancedMinimumSettings = {
   minLeverageTier: 1,
   minSignal: 1,
 };
+const HISTORY_WINDOW_GAMES = 20;
 
 const getAdvancedSettingsStorageKey = (slateDate?: string): string =>
   `optimizerAdvancedSettings:${slateDate || 'unspecified'}`;
@@ -574,7 +575,7 @@ const computeFppm = (player: Player): number | null => {
   let games: { minutes: number; fpts: number; date?: string }[] = [];
 
   if (player.history && player.history.length > 0) {
-    const sorted = sortHistoryByDateDesc(player.history).slice(0, 10);
+    const sorted = sortHistoryByDateDesc(player.history).slice(0, HISTORY_WINDOW_GAMES);
     games = sorted.map((g) => ({
       minutes: Number(g.minutes) || 0,
       fpts: Number(g.fpts) || 0,
@@ -596,7 +597,7 @@ const computeFppm = (player: Player): number | null => {
         if (Number.isFinite(da) && Number.isFinite(db)) return db - da;
         return String(b.date).localeCompare(String(a.date));
       })
-      .slice(0, 10);
+      .slice(0, HISTORY_WINDOW_GAMES);
 
     games = derived.map((g: any) => ({
       minutes: Number(g.minutes) || 0,
