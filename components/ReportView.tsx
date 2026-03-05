@@ -4,6 +4,10 @@ import { BarChart2, AlertTriangle, CheckCircle2, HelpCircle } from 'lucide-react
 import highsLoader from 'highs';
 import highsWasmUrl from 'highs/runtime?url';
 import { PlayerDeepDive } from './PlayerDeepDive';
+import {
+  PieChart, Pie, Cell, Tooltip as RechartsTooltip,
+  BarChart, Bar, XAxis, YAxis, ResponsiveContainer, LabelList,
+} from 'recharts';
 
 interface Props {
   players: Player[];
@@ -53,6 +57,12 @@ interface BestActualLineupResult {
   totalProjected: number;
   totalSalary: number;
 }
+
+const CHART_COLORS = [
+  '#f97316', '#3b82f6', '#10b981', '#8b5cf6', '#f59e0b',
+  '#ec4899', '#06b6d4', '#84cc16', '#ef4444', '#a78bfa',
+  '#fb923c', '#34d399', '#60a5fa', '#f472b6', '#fbbf24',
+];
 
 const SCRIPT_TOP_K = 20;
 const SCRIPT_TOP_PERCENTILE = 0.10;
@@ -668,46 +678,78 @@ const buildTeamPlayers = (players: Player[]): Map<string, PlayerRow[]> => {
 };
 
 const TeamPlayerTable: React.FC<{ team: string; rows: PlayerRow[]; onPlayerClick: (player: Player) => void }> = ({ team, rows, onPlayerClick }) => {
+  const pieData = rows
+    .filter((r) => r.actual !== null && r.actual > 0)
+    .map((r) => ({ name: r.name, value: r.actual as number }));
+
   return (
     <div className="rounded-lg border border-ink/10 p-3">
       <p className="text-[10px] uppercase tracking-widest text-ink/50 mb-2">{team}</p>
       {rows.length === 0 ? (
         <p className="text-xs text-ink/60">No players loaded for this team.</p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-ink/60 border-b border-ink/10">
-                <th className="text-left py-1 pr-2">Player</th>
-                <th className="text-left py-1 pr-2">Pos</th>
-                <th className="text-right py-1 pr-2">Proj</th>
-                <th className="text-right py-1 pr-2">Actual</th>
-                <th className="text-right py-1">Delta</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id} className="border-b border-ink/5 last:border-0">
-                  <td className="py-1 pr-2 font-semibold text-ink">
-                    <button
-                      type="button"
-                      onClick={() => onPlayerClick(row.player)}
-                      className="text-left text-ink hover:text-drafting-orange transition-colors"
-                    >
-                      {row.name}
-                    </button>
-                  </td>
-                  <td className="py-1 pr-2 text-ink/70">{row.position}</td>
-                  <td className="py-1 pr-2 text-right text-ink">{row.projected.toFixed(1)}</td>
-                  <td className="py-1 pr-2 text-right text-ink">{row.actual !== null ? row.actual.toFixed(1) : '--'}</td>
-                  <td className={`py-1 text-right font-bold ${row.delta === null ? 'text-ink/50' : row.delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                    {row.delta === null ? '--' : `${row.delta >= 0 ? '+' : ''}${row.delta.toFixed(1)}`}
-                  </td>
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-ink/60 border-b border-ink/10">
+                  <th className="text-left py-1 pr-2">Player</th>
+                  <th className="text-left py-1 pr-2">Pos</th>
+                  <th className="text-right py-1 pr-2">Proj</th>
+                  <th className="text-right py-1 pr-2">Actual</th>
+                  <th className="text-right py-1">Delta</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.id} className="border-b border-ink/5 last:border-0">
+                    <td className="py-1 pr-2 font-semibold text-ink">
+                      <button
+                        type="button"
+                        onClick={() => onPlayerClick(row.player)}
+                        className="text-left text-ink hover:text-drafting-orange transition-colors"
+                      >
+                        {row.name}
+                      </button>
+                    </td>
+                    <td className="py-1 pr-2 text-ink/70">{row.position}</td>
+                    <td className="py-1 pr-2 text-right text-ink">{row.projected.toFixed(1)}</td>
+                    <td className="py-1 pr-2 text-right text-ink">{row.actual !== null ? row.actual.toFixed(1) : '--'}</td>
+                    <td className={`py-1 text-right font-bold ${row.delta === null ? 'text-ink/50' : row.delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {row.delta === null ? '--' : `${row.delta >= 0 ? '+' : ''}${row.delta.toFixed(1)}`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {pieData.length > 0 && (
+            <div className="mt-3">
+              <p className="text-[10px] uppercase tracking-widest text-ink/40 mb-1">FPTS Distribution</p>
+              <ResponsiveContainer width="100%" height={180}>
+                <PieChart>
+                  <Pie
+                    data={pieData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={38}
+                    outerRadius={68}
+                    dataKey="value"
+                    strokeWidth={1}
+                  >
+                    {pieData.map((_, index) => (
+                      <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <RechartsTooltip
+                    formatter={(value: number, name: string) => [`${value.toFixed(1)} FPTS`, name]}
+                    contentStyle={{ fontSize: '11px', borderRadius: '6px' }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -865,6 +907,15 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([team, rows]) => ({ team, rows }));
   }, [matchupRows.length, teamPlayers]);
+
+  const teamFptsTotals = useMemo(() => {
+    const totals: Array<{ team: string; total: number }> = [];
+    teamPlayers.forEach((rows, team) => {
+      const total = rows.reduce((sum, r) => sum + (r.actual ?? 0), 0);
+      if (total > 0) totals.push({ team, total: Number(total.toFixed(1)) });
+    });
+    return totals.sort((a, b) => b.total - a.total);
+  }, [teamPlayers]);
 
   return (
     <div className="min-h-screen bg-vellum text-ink p-4 space-y-6">
@@ -1036,6 +1087,28 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
           </div>
         )}
       </div>
+
+      {hasAnyActual && teamFptsTotals.length > 0 && (
+        <div className="bg-white rounded-xl border border-ink/10 shadow-sm p-4 space-y-3">
+          <p className="text-sm font-bold text-ink">Total FPTS by Team</p>
+          <ResponsiveContainer width="100%" height={Math.max(120, teamFptsTotals.length * 36)}>
+            <BarChart data={teamFptsTotals} layout="vertical" margin={{ top: 0, right: 64, left: 8, bottom: 0 }}>
+              <XAxis type="number" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis type="category" dataKey="team" tick={{ fontSize: 11, fontWeight: 700 }} width={44} axisLine={false} tickLine={false} />
+              <RechartsTooltip
+                formatter={(value: number) => [`${value.toFixed(1)} FPTS`]}
+                contentStyle={{ fontSize: '11px', borderRadius: '6px' }}
+              />
+              <Bar dataKey="total" radius={[0, 4, 4, 0]}>
+                {teamFptsTotals.map((_, index) => (
+                  <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                ))}
+                <LabelList dataKey="total" position="right" style={{ fontSize: 10, fontWeight: 700 }} formatter={(val: number) => val.toFixed(1)} />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
 
       {!hasAnyActual && players.length > 0 && (
         <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-sm flex items-center gap-2">
