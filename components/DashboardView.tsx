@@ -5,6 +5,7 @@ import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/star
 import { MatchupEngine } from './MatchupEngine';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { Search, Activity, BarChart3, Database, Filter, X, Trash2, PlusCircle } from 'lucide-react';
+import { calculateValueScores } from '../utils/valueScore';
 
 interface Props {
   players: Player[];
@@ -626,6 +627,11 @@ export const DashboardView: React.FC<Props> = ({
     return map;
   }, [effectiveGames]);
 
+  const valueScoreMap = useMemo(
+    () => calculateValueScores(players, effectiveGames),
+    [players, effectiveGames]
+  );
+
   const previewTopProjectedIds = useMemo(() => {
     if (!previewMode) return null;
     const topPlayers = [...players]
@@ -1097,8 +1103,8 @@ export const DashboardView: React.FC<Props> = ({
                       </td>
                       <td className="px-3 py-2 text-ink/60">{player.position}</td>
                       <td className="px-3 py-2 text-right text-ink/60">{formatSalaryK(player.salary)}</td>
-                      <td className="px-3 py-2 text-right text-ink/60">
-                        {player.salary > 0 ? (player.projection / (player.salary / 1000)).toFixed(2) : '--'}
+                      <td className="px-3 py-2 text-right font-bold" style={{ color: (() => { const vs = valueScoreMap.get(player.id)?.composite; return vs === undefined ? undefined : vs >= 65 ? '#16a34a' : vs <= 40 ? '#dc2626' : undefined; })() }}>
+                        {(() => { const vs = valueScoreMap.get(player.id)?.composite; return vs !== undefined ? vs.toFixed(1) : '--'; })()}
                       </td>
                       <td className="px-3 py-2 text-right text-ink/60">
                         {player.ownership !== undefined ? `${Number(player.ownership).toFixed(1)}%` : '--'}
