@@ -940,7 +940,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [lockedIds, setLockedIds] = useState<string[]>([]);
   const [selectedMatchups, setSelectedMatchups] = useState<string[]>([]);
-  const [selectedTeams, setSelectedTeams] = useState<string[]>([]);
+  const [teamStackWeights, setTeamStackWeights] = useState<Record<string, number>>({});
+  const [poolSort, setPoolSort] = useState<SortConfig | null>(null);
   const [playerOverrides, setPlayerOverrides] = useState<Record<string, { minutes?: number; projection?: number; minExposure?: number; maxExposure?: number; exclude?: boolean }>>({});
   const [poolSearch, setPoolSearch] = useState('');
   const [showPoolFilterBuilder, setShowPoolFilterBuilder] = useState(false);
@@ -978,7 +979,14 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         setLockedIds(parsed.lockedIds.filter((id: string) => playerIdSet.has(id)));
       }
       if (Array.isArray(parsed.selectedMatchups)) setSelectedMatchups(parsed.selectedMatchups);
-      if (Array.isArray(parsed.selectedTeams)) setSelectedTeams(parsed.selectedTeams);
+      if (parsed.teamStackWeights && typeof parsed.teamStackWeights === 'object' && !Array.isArray(parsed.teamStackWeights)) {
+        setTeamStackWeights(parsed.teamStackWeights as Record<string, number>);
+      } else if (Array.isArray(parsed.selectedTeams)) {
+        // backward compat: convert old string[] to weight-1 entries
+        const weights: Record<string, number> = {};
+        (parsed.selectedTeams as string[]).forEach((t) => { weights[t] = 1; });
+        setTeamStackWeights(weights);
+      }
       if (parsed.playerOverrides && typeof parsed.playerOverrides === 'object') {
         const prunedEntries = Object.entries(parsed.playerOverrides)
           .filter(([id]) => playerIdSet.has(id))
@@ -1135,7 +1143,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       
       const request = {
         players: pool,
-        config
+        config: { ...config, teamStackWeights: Object.keys(teamStackWeights).length > 0 ? teamStackWeights : undefined },
       };
 
       worker.postMessage(request);
@@ -1429,8 +1437,28 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       });
     }
 
+    if (poolSort) {
+      pool = [...pool].sort((a, b) => {
+        const aVal = getFilterValue(a, poolSort.key);
+        const bVal = getFilterValue(b, poolSort.key);
+        const cmp = compareValues(aVal, bVal);
+        return poolSort.dir === 'asc' ? cmp : -cmp;
+      });
+    }
+
     return pool;
-  }, [players, poolSearch, poolFilters, playerOverrides, lockedIds]);
+  }, [players, poolSearch, poolFilters, playerOverrides, lockedIds, poolSort]);
+
+  const toggleTeamWeight = useCallback((teamId: string) => {
+    setTeamStackWeights((prev) => {
+      const current = prev[teamId] ?? 0;
+      if (current >= 5) {
+        const { [teamId]: _removed, ...rest } = prev;
+        return rest;
+      }
+      return { ...prev, [teamId]: current + 1 };
+    });
+  }, []);
 
   const teamOptions = useMemo(() => {
     const set = new Set<string>();
@@ -1445,7 +1473,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     const payload = {
       lockedIds,
       selectedMatchups,
-      selectedTeams,
+      teamStackWeights,
       playerOverrides,
     };
     localStorage.setItem(getAdvancedSettingsStorageKey(slateDate), JSON.stringify(payload));
@@ -1456,7 +1484,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     localStorage.removeItem(getAdvancedSettingsStorageKey(slateDate));
     setLockedIds([]);
     setSelectedMatchups([]);
-    setSelectedTeams([]);
+    setTeamStackWeights({});
     setPlayerOverrides({});
   };
 
@@ -1700,6 +1728,36 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             </div>
           )}
         </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <span className="text-[9px] font-black uppercase tracking-widest text-ink/40">Contest Type</span>
+        <div className="inline-flex rounded-sm border border-ink/20 overflow-hidden">
+          {(['gpp', 'cash'] as const).map((type) => {
+            const active = config.statConstraintMode === type;
+            return (
+              <button
+                key={type}
+                type="button"
+                onClick={() => setConfig((prev) => ({ ...prev, statConstraintMode: type }))}
+                className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-widest transition-colors ${
+                  active
+                    ? type === 'cash'
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-drafting-orange text-white'
+                    : 'text-ink/50 hover:text-ink bg-white/60'
+                }`}
+              >
+                {type === 'gpp' ? 'GPP' : 'Cash'}
+              </button>
+            );
+          })}
+        </div>
+        {config.statConstraintMode === 'cash' && (
+          <span className="text-[9px] font-mono text-emerald-700 font-bold uppercase tracking-widest">
+            Optimizing for median EV
+          </span>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
@@ -2157,19 +2215,37 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                             <X className="w-3.5 h-3.5" />
                           </button>
                         </th>
-                        <th className="px-2 py-2">Player</th>
-                        <th className="px-2 py-2">Team</th>
-                        <th className="px-2 py-2">Opp</th>
-                        <th className="px-2 py-2 text-right">Salary</th>
-                        <th className="px-2 py-2 text-right">Value</th>
-                        <th className="px-2 py-2 text-right">USG</th>
-                        <th className="px-2 py-2 text-right">Boom%</th>
-                        <th className="px-2 py-2 text-right">Bust%</th>
-                        <th className="px-2 py-2 text-right">Lev Score</th>
-                        <th className="px-2 py-2 text-right">Min</th>
-                        <th className="px-2 py-2 text-right">FPTS</th>
-                        <th className="px-2 py-2 text-right">Min Exp</th>
-                        <th className="px-2 py-2 text-right">Max Exp</th>
+                        {([
+                          { key: 'name', label: 'Player', align: 'left' },
+                          { key: 'team', label: 'Team', align: 'left' },
+                          { key: 'opponent', label: 'Opp', align: 'left' },
+                          { key: 'salary', label: 'Salary', align: 'right' },
+                          { key: 'value', label: 'Value', align: 'right' },
+                          { key: 'usage', label: 'USG', align: 'right' },
+                          { key: 'boom', label: 'Boom%', align: 'right' },
+                          { key: 'bust', label: 'Bust%', align: 'right' },
+                          { key: 'leverageScore', label: 'Lev Score', align: 'right' },
+                          { key: 'minutes', label: 'Min', align: 'right' },
+                          { key: 'projection', label: 'FPTS', align: 'right' },
+                          { key: 'minExposure', label: 'Min Exp', align: 'right' },
+                          { key: 'maxExposure', label: 'Max Exp', align: 'right' },
+                        ] as { key: string; label: string; align: 'left' | 'right' }[]).map(({ key, label, align }) => {
+                          const isActive = poolSort?.key === key;
+                          return (
+                            <th
+                              key={key}
+                              className={`px-2 py-2 ${align === 'right' ? 'text-right' : ''} cursor-pointer select-none hover:text-drafting-orange transition-colors`}
+                              onClick={() => setPoolSort((prev) => prev?.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: align === 'right' ? 'desc' : 'asc' })}
+                            >
+                              <span className={`inline-flex items-center gap-0.5 ${isActive ? 'text-drafting-orange' : ''}`}>
+                                {label}
+                                <span className="text-[9px]">
+                                  {isActive ? (poolSort!.dir === 'asc' ? '▲' : '▼') : '⇅'}
+                                </span>
+                              </span>
+                            </th>
+                          );
+                        })}
                       </tr>
                     </thead>
                     <tbody className="text-[12px] font-mono">
@@ -2362,43 +2438,29 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                               }`}
                             >
                               <div className="flex items-center justify-center gap-1 text-[11px] font-black italic text-ink">
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    const teamId = game.teamA.teamId;
-                                    setSelectedTeams((prev) => prev.includes(teamId)
-                                      ? prev.filter((t) => t !== teamId)
-                                      : [...prev, teamId]
-                                    );
-                                  }}
-                                  className={`transition-colors px-1.5 py-0.5 rounded-sm ${
-                                    selectedTeams.includes(game.teamA.teamId)
-                                      ? 'text-white bg-drafting-orange'
-                                      : 'text-ink hover:text-drafting-orange'
-                                  }`}
-                                >
-                                  {game.teamA.abbreviation}
-                                </button>
-                                <span className="text-[9px] text-ink/40 font-mono">@</span>
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    const teamId = game.teamB.teamId;
-                                    setSelectedTeams((prev) => prev.includes(teamId)
-                                      ? prev.filter((t) => t !== teamId)
-                                      : [...prev, teamId]
-                                    );
-                                  }}
-                                  className={`transition-colors px-1.5 py-0.5 rounded-sm ${
-                                    selectedTeams.includes(game.teamB.teamId)
-                                      ? 'text-white bg-drafting-orange'
-                                      : 'text-ink hover:text-drafting-orange'
-                                  }`}
-                                >
-                                  {game.teamB.abbreviation}
-                                </button>
+                                {([
+                                  { teamId: game.teamA.teamId, abbr: game.teamA.abbreviation },
+                                  { teamId: game.teamB.teamId, abbr: game.teamB.abbreviation },
+                                ] as { teamId: string; abbr: string }[]).map(({ teamId, abbr }, i) => {
+                                  const w = teamStackWeights[teamId] ?? 0;
+                                  return (
+                                    <React.Fragment key={teamId}>
+                                      {i === 1 && <span className="text-[9px] text-ink/40 font-mono">@</span>}
+                                      <button
+                                        type="button"
+                                        onClick={(e) => { e.stopPropagation(); toggleTeamWeight(teamId); }}
+                                        className={`relative transition-colors px-1.5 py-0.5 rounded-sm ${
+                                          w > 0 ? 'text-white bg-drafting-orange' : 'text-ink hover:text-drafting-orange'
+                                        }`}
+                                      >
+                                        {abbr}
+                                        {w >= 2 && (
+                                          <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-3.5 h-3.5 rounded-full bg-ink text-white text-[8px] font-black leading-none">{w}</span>
+                                        )}
+                                      </button>
+                                    </React.Fragment>
+                                  );
+                                })}
                               </div>
                             </div>
                           );
@@ -2409,19 +2471,20 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                       <div className="text-[9px] font-black uppercase tracking-widest text-ink/40 mb-1">Teams</div>
                       <div className="flex flex-wrap gap-2">
                         {teamOptions.map((team) => {
-                          const selected = selectedTeams.includes(team);
+                          const w = teamStackWeights[team] ?? 0;
                           return (
                             <button
                               key={team}
                               type="button"
-                              onClick={() => {
-                                setSelectedTeams((prev) => selected ? prev.filter((t) => t !== team) : [...prev, team]);
-                              }}
-                              className={`px-2 py-1 rounded-sm text-[10px] font-black uppercase tracking-widest border ${
-                                selected ? 'bg-drafting-orange text-white border-drafting-orange' : 'border-ink/20 text-ink/60 hover:border-drafting-orange/40 hover:text-ink'
+                              onClick={() => toggleTeamWeight(team)}
+                              className={`relative px-2 py-1 rounded-sm text-[10px] font-black uppercase tracking-widest border ${
+                                w > 0 ? 'bg-drafting-orange text-white border-drafting-orange' : 'border-ink/20 text-ink/60 hover:border-drafting-orange/40 hover:text-ink'
                               }`}
                             >
                               {team}
+                              {w >= 2 && (
+                                <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-3.5 h-3.5 rounded-full bg-ink text-white text-[8px] font-black leading-none">{w}</span>
+                              )}
                             </button>
                           );
                         })}

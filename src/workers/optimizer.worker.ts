@@ -55,6 +55,10 @@ interface OptimizerConfig {
   stack_min_players?: number;
   stackMinGameTotal?: number;
   stack_min_game_total?: number;
+  // Cash-specific config
+  cashMinGameTotal?: number;          // min game O/U to include player (default 220)
+  cashMaxExposurePct?: number;        // max exposure % per player across lineups (default 65)
+  cashPositionFloors?: Record<string, number>; // per-position minimum adjusted projection
 }
 
 type ResolvedOptimizerConfig = Required<Pick<OptimizerConfig, 'numLineups' | 'salaryCap' | 'salaryFloor' | 'maxExposure'>> & OptimizerConfig;
@@ -460,6 +464,9 @@ const withDefaultConfig = (config?: OptimizerConfig): ResolvedOptimizerConfig =>
     stack_min_players: stackMinPlayers,
     stackMinGameTotal,
     stack_min_game_total: stackMinGameTotal,
+    cashMinGameTotal: safeNumber((config as any)?.cashMinGameTotal, 220),
+    cashMaxExposurePct: clamp(safeNumber((config as any)?.cashMaxExposurePct, 65), 0, 100),
+    cashPositionFloors: (config as any)?.cashPositionFloors ?? null,
   };
 };
 
@@ -493,9 +500,15 @@ const toExposurePercent = (raw: unknown, fallback: number): number => {
 const buildExposureLimits = (
   players: Player[],
   totalLineups: number,
+  globalMaxExposurePct?: number,  // cash: cap every non-locked player (e.g. 65)
 ): { minRequiredByPlayer: number[]; maxAllowedByPlayer: number[] } => {
   const minRequiredByPlayer = new Array<number>(players.length).fill(0);
   const maxAllowedByPlayer = new Array<number>(players.length).fill(totalLineups);
+
+  const globalMaxCount =
+    globalMaxExposurePct !== undefined && globalMaxExposurePct < 100
+      ? Math.floor((globalMaxExposurePct / 100) * totalLineups)
+      : undefined;
 
   players.forEach((player, idx) => {
     const isLocked = Boolean((player as any).optimizerLocked);
@@ -520,7 +533,13 @@ const buildExposureLimits = (
     }
 
     const minReq = Math.ceil((minPct / 100) * totalLineups);
-    const maxAllowed = Math.floor((maxPct / 100) * totalLineups);
+    let maxAllowed = Math.floor((maxPct / 100) * totalLineups);
+
+    // Apply global cash exposure cap (e.g. 65%) — takes precedence over per-player max
+    if (globalMaxCount !== undefined) {
+      maxAllowed = Math.min(maxAllowed, globalMaxCount);
+    }
+
     if (minReq > maxAllowed) {
       throw new Error(`Exposure settings infeasible for ${player.name}.`);
     }
@@ -1195,6 +1214,104 @@ const getCeilingTieBreaker = (player: Player): number => {
   ]), 0));
 };
 
+const getFloorValue = (player: Player): number => {
+  return Math.max(0, safeNumber(readNumericMaybe(player, [
+    'floor',
+    'floorProjection',
+    'floorProj',
+    'projectedFloor',
+    'fptsFloor',
+    'dkFloor',
+    'bust',
+    'bustProjection',
+  ]), 0));
+};
+
+// ---------------------------------------------------------------------------
+// Cash-mode helpers
+// ---------------------------------------------------------------------------
+
+/** Default positional projection floors for cash game mode. */
+const CASH_POSITION_FLOORS_DEFAULT: Record<string, number> = {
+  PG: 28, SG: 25, SF: 25, PF: 26, C: 24, G: 24, F: 24, UTIL: 24,
+};
+
+/** Read the raw player status string from any common field name. */
+const getPlayerStatusRaw = (player: Player): string =>
+  readString(player, [
+    'status', 'injuryStatus', 'injury_status', 'playerStatus',
+    'designation', 'gameStatus', 'game_status', 'injuryDesignation',
+    'availability', 'reportStatus',
+  ]).toLowerCase();
+
+/**
+ * Returns true if the player status indicates they should be excluded in
+ * cash mode: GTD, Questionable (Q), Doubtful (D), or Out (O).
+ */
+const isCashUnavailableStatus = (status: string): boolean => {
+  if (!status) return false;
+  const s = status.toLowerCase().replace(/[^a-z]/g, '');
+  return (
+    s === 'out' || s === 'o' ||
+    s === 'doubtful' || s === 'd' ||
+    s === 'questionable' || s === 'q' ||
+    s === 'gtd' || s === 'gametimedecision'
+  );
+};
+
+/** Column names that are NOT additional projection sources. */
+const SKIP_PROJ_NORM_KEYS = new Set([
+  'projection', 'proj', 'fpts', 'ceiling', 'ceil', 'floor',
+  'actual', 'actualfpts', 'fptsactual', 'dkactual',
+  'minutesprojection', 'projminutes', 'projectedminutes', 'minutesprojeciton',
+  'value', 'val', 'salary', 'sal', 'ownership', 'own',
+]);
+
+/**
+ * Detects whether a column key looks like an additional projection source
+ * (e.g. numberfire_proj, sabersim_fpts, tda_proj).
+ */
+const looksLikeProjectionCol = (key: string): boolean => {
+  const norm = normKey(key);
+  if (SKIP_PROJ_NORM_KEYS.has(norm)) return false;
+  // Must contain 'proj' (but not minutesproj or value) OR end with 'fpts'
+  const hasProj = norm.includes('proj') && !norm.includes('minute') && !norm.includes('min') && norm !== 'proj';
+  const hasFpts = norm.endsWith('fpts') && norm !== 'fpts' && !norm.startsWith('actual');
+  return hasProj || hasFpts;
+};
+
+/**
+ * If the player object carries multiple projection source columns (e.g.
+ * numberfire_proj, sabersim_proj), returns their average; otherwise returns
+ * player.projection.  Values outside [5, 120] are ignored as non-projection.
+ */
+const getConsensusProjection = (player: Player): number => {
+  const primary = Math.max(0, safeNumber(player.projection, 0));
+  const extras: number[] = [];
+  const raw = player as Record<string, any>;
+  for (const key of Object.keys(raw)) {
+    if (!looksLikeProjectionCol(key)) continue;
+    const val = Number(raw[key]);
+    if (Number.isFinite(val) && val > 5 && val < 120) extras.push(val);
+  }
+  if (extras.length === 0) return primary;
+  const all = primary > 0 ? [primary, ...extras] : extras;
+  return all.reduce((a, b) => a + b, 0) / all.length;
+};
+
+/**
+ * Computes the cash-adjusted projection: consensus × 0.6 + floor × 0.4.
+ * If no floor is available, falls back to consensus × 0.7 as an estimate.
+ */
+const getCashAdjustedProjection = (player: Player): number => {
+  const consensus = getConsensusProjection(player);
+  const rawFloor = getFloorValue(player);
+  const effectiveFloor = rawFloor > 0 ? rawFloor : consensus * 0.7;
+  return consensus * 0.6 + effectiveFloor * 0.4;
+};
+
+// ---------------------------------------------------------------------------
+
 const getValueTieBreaker = (player: Player): number => {
   const explicit = readNumericMaybe(player, [
     'value',
@@ -1315,10 +1432,26 @@ const setObjectiveByPriority = (
   const ceilingWeight = clamp(safeNumber(cfg.ceilingWeight ?? (cfg as any).ceiling_weight, 0), 0, 0.5);
   const ownershipPenalty = Math.max(0, safeNumber(cfg.ownershipPenalty ?? (cfg as any).ownership_penalty, 0));
 
+  const statMode = String(cfg.statConstraintMode ?? (cfg as any).mode ?? 'gpp').toLowerCase();
+  const isCash = statMode === 'cash';
+
   model.assignmentVars.forEach((variable) => {
     const player = players[variable.playerIndex];
-    const projection = Math.max(0, safeNumber(player.projection, 0));
 
+    if (isCash) {
+      // Cash mode: pure median EV, no ownership penalties, no leverage/rule bonuses,
+      // no stacking bonuses.  Use pre-annotated cashAdjustedProj when available so
+      // phase 1 and phase 2 use the same score.
+      const preComputed = (player as any).cashAdjustedProj;
+      const cashScore = Number.isFinite(Number(preComputed))
+        ? Number(preComputed)
+        : getCashAdjustedProjection(player);
+      model.objective.set(variable.name, Math.max(0, cashScore));
+      return;
+    }
+
+    // GPP path — unchanged
+    const projection = Math.max(0, safeNumber(player.projection, 0));
     let baseScore: number;
     if (ceilingWeight > 0) {
       const rawCeiling = getCeilingTieBreaker(player);
@@ -1345,7 +1478,15 @@ const setObjectiveByPriority = (
       }
     }
 
-    const finalScore = Math.max(0, baseScore - penaltyAmount + leverageBonus + ruleBonus);
+    const teamWeights = (cfg as any).teamStackWeights;
+    let teamBoost = 0;
+    if (teamWeights && typeof teamWeights === 'object') {
+      const team = getTeamMaybe(player);
+      const w = team ? (teamWeights[team] ?? 0) : 0;
+      if (w > 0) teamBoost = w * 0.6;
+    }
+
+    const finalScore = Math.max(0, baseScore - penaltyAmount + leverageBonus + ruleBonus + teamBoost);
     model.objective.set(variable.name, finalScore);
   });
 };
@@ -1375,7 +1516,19 @@ const setObjectiveProjectionFirst = (
       }
     }
 
-    model.objective.set(variable.name, projection + tieBreaker);
+    const phaseStat = String(cfg.statConstraintMode ?? (cfg as any).mode ?? 'gpp').toLowerCase();
+    let phaseScore: number;
+    if (phaseStat === 'cash') {
+      // Use pre-annotated value from cash pre-filter block so phase 1 and phase 2 use the same score.
+      const preComputed = (player as any).cashAdjustedProj;
+      phaseScore = Number.isFinite(Number(preComputed))
+        ? Number(preComputed)
+        : getCashAdjustedProjection(player);
+    } else {
+      phaseScore = projection + tieBreaker;
+    }
+
+    model.objective.set(variable.name, phaseScore);
   });
 };
 
@@ -1821,10 +1974,62 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
     computeRuleFlags(players, config);
   }
 
+  const statMode = String(config.statConstraintMode ?? config.mode ?? 'gpp').toLowerCase();
+  const isCash = statMode === 'cash';
+
+  // Cash pre-filter: annotate cashAdjustedProj and mark unavailable players as excluded.
+  if (isCash) {
+    const posFloors: Record<string, number> = (config as any).cashPositionFloors ?? CASH_POSITION_FLOORS_DEFAULT;
+    const cashMinGameTotal = safeNumber((config as any).cashMinGameTotal, 220);
+
+    players.forEach((player) => {
+      // Always annotate locked players so objectives use consistent score.
+      if ((player as any).optimizerLocked) {
+        (player as any).cashAdjustedProj = getCashAdjustedProjection(player);
+        return;
+      }
+      // Skip players already excluded by the frontend.
+      if ((player as any).optimizerExcluded || (player as any).excluded) return;
+
+      // Status filter: exclude GTD / Q / D / Out.
+      const status = getPlayerStatusRaw(player);
+      if (isCashUnavailableStatus(status)) {
+        (player as any).optimizerExcluded = true;
+        return;
+      }
+
+      // Game total filter: exclude players from low-total games.
+      const gameTotal = getGameTotalMaybe(player);
+      if (gameTotal !== undefined && gameTotal < cashMinGameTotal) {
+        (player as any).optimizerExcluded = true;
+        return;
+      }
+
+      // Annotate cash-adjusted projection.
+      const adjProj = getCashAdjustedProjection(player);
+      (player as any).cashAdjustedProj = adjProj;
+
+      // Positional floor filter: use the minimum floor across all eligible positions.
+      const positions = parsePositions(player.position);
+      const slots: string[] = positions.length > 0 ? positions : ['UTIL'];
+      const minFloor = slots.reduce((min, pos) => {
+        const floor = posFloors[pos] ?? posFloors['UTIL'] ?? 24;
+        return Math.min(min, floor);
+      }, Infinity);
+      if (adjProj < minFloor) {
+        (player as any).optimizerExcluded = true;
+      }
+    });
+  }
+
   const lineups: Lineup[] = [];
   const previousLineups: number[][] = [];
   const exposureCounts = new Array<number>(players.length).fill(0);
-  const { minRequiredByPlayer, maxAllowedByPlayer } = buildExposureLimits(players, config.numLineups);
+  const { minRequiredByPlayer, maxAllowedByPlayer } = buildExposureLimits(
+    players,
+    config.numLineups,
+    isCash ? safeNumber((config as any).cashMaxExposurePct, 65) : undefined,
+  );
   let attempts = 0;
   const maxAttempts = Math.max(config.numLineups * 8, 80);
   let lastSolveError = '';
