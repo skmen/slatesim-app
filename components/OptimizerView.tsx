@@ -21,7 +21,7 @@ import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
-import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260303-lineupdiagnostics1';
+import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260304-feasibility2';
 
 interface Props {
   players: Player[];
@@ -62,6 +62,7 @@ interface AdvancedMinimumSettings {
 interface OptimizerConfigState {
   numLineups: number;
   salaryCap: number;
+  salaryFloor: number;
   minExposure: number;
   maxExposure: number;
   site: 'DraftKings';
@@ -90,6 +91,13 @@ const DEFAULT_ADVANCED_MINIMUMS: AdvancedMinimumSettings = {
 
 const getAdvancedSettingsStorageKey = (slateDate?: string): string =>
   `optimizerAdvancedSettings:${slateDate || 'unspecified'}`;
+
+const parseExposurePercentMaybe = (value: unknown): number | undefined => {
+  if (value === '' || value === null || value === undefined) return undefined;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return undefined;
+  return Math.max(0, Math.min(100, numeric));
+};
 
 const LEVERAGE_TIER_RANK_OPTIONS = [
   { value: 1, label: '1. TOXIC' },
@@ -135,6 +143,8 @@ const POOL_FILTER_COLUMNS = [
   { key: 'salary', label: 'Salary' },
   { key: 'value', label: 'Value' },
   { key: 'usage', label: 'USG' },
+  { key: 'boom', label: 'Boom%' },
+  { key: 'bust', label: 'Bust%' },
   { key: 'minutes', label: 'Min' },
   { key: 'projection', label: 'FPTS' },
   { key: 'leverageScore', label: 'Lev Score' },
@@ -365,6 +375,54 @@ const getUsagePercent = (player: Player): number | undefined => {
     'usage',
     'USAGE_PCT',
     'USAGE%',
+  ]);
+  return normalizePercentValue(raw);
+};
+
+const getBoomPercent = (player: Player): number | undefined => {
+  const raw = readPercentLike(player, [
+    'BOOM%',
+    'BOOM_PCT',
+    'BOOMRATE',
+    'BOOM_RATE',
+    'boomPct',
+    'boom_pct',
+    'boomRate',
+    'boom_rate',
+    'BOOM',
+    'boom',
+    'boomScore',
+    'boom_score',
+    'boomProbability',
+    'boom_probability',
+    'BOOM_PROBABILITY',
+    'BOOM_PROB',
+    'boomProb',
+    'boom_prob',
+  ]);
+  return normalizePercentValue(raw);
+};
+
+const getBustPercent = (player: Player): number | undefined => {
+  const raw = readPercentLike(player, [
+    'BUST%',
+    'BUST_PCT',
+    'BUSTRATE',
+    'BUST_RATE',
+    'bustPct',
+    'bust_pct',
+    'bustRate',
+    'bust_rate',
+    'BUST',
+    'bust',
+    'bustScore',
+    'bust_score',
+    'bustProbability',
+    'bust_probability',
+    'BUST_PROBABILITY',
+    'BUST_PROB',
+    'bustProb',
+    'bust_prob',
   ]);
   return normalizePercentValue(raw);
 };
@@ -830,14 +888,15 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
   const [config, setConfig] = useState<OptimizerConfigState>({
     numLineups: 20,
     salaryCap: 50000,
+    salaryFloor: 49500,
     minExposure: 0,
     maxExposure: 50,
     site: 'DraftKings',
     optimizerMode: 'max_projection',
     upsideDelta: 8,
-    enableStatConstraints: true,
+    enableStatConstraints: false,
     statConstraintMode: 'gpp',
-    deltaFromBestProjection: 8,
+    deltaFromBestProjection: 0,
     upsideWeights: {
       wLev: 1.0,
       wOwn: 0.6,
@@ -921,7 +980,23 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       if (Array.isArray(parsed.selectedTeams)) setSelectedTeams(parsed.selectedTeams);
       if (parsed.playerOverrides && typeof parsed.playerOverrides === 'object') {
         const prunedEntries = Object.entries(parsed.playerOverrides)
-          .filter(([id]) => playerIdSet.has(id));
+          .filter(([id]) => playerIdSet.has(id))
+          .map(([id, rawOverride]: [string, any]) => {
+            const minExposure = parseExposurePercentMaybe(rawOverride?.minExposure);
+            const maxExposure = parseExposurePercentMaybe(rawOverride?.maxExposure);
+            const minutes = Number.isFinite(Number(rawOverride?.minutes)) ? Number(rawOverride.minutes) : undefined;
+            const projection = Number.isFinite(Number(rawOverride?.projection)) ? Number(rawOverride.projection) : undefined;
+            const exclude = rawOverride?.exclude === true ? true : undefined;
+            const cleaned = {
+              ...(minutes !== undefined ? { minutes } : {}),
+              ...(projection !== undefined ? { projection } : {}),
+              ...(minExposure !== undefined ? { minExposure } : {}),
+              ...(maxExposure !== undefined ? { maxExposure } : {}),
+              ...(exclude === true ? { exclude: true } : {}),
+            };
+            return [id, cleaned] as const;
+          })
+          .filter(([, cleaned]) => Object.keys(cleaned).length > 0);
         setPlayerOverrides(Object.fromEntries(prunedEntries));
       }
     } catch {
@@ -939,22 +1014,24 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     try {
       const activeOverrideEntries = Object.entries(playerOverrides).filter(([, overrides]) => {
         if (!overrides) return false;
+        const minExposure = parseExposurePercentMaybe(overrides.minExposure);
+        const maxExposure = parseExposurePercentMaybe(overrides.maxExposure);
         return (
           overrides.minutes !== undefined ||
           overrides.projection !== undefined ||
-          overrides.minExposure !== undefined ||
-          overrides.maxExposure !== undefined ||
+          minExposure !== undefined ||
+          maxExposure !== undefined ||
           overrides.exclude === true
         );
       });
       const excludedOverrideCount = activeOverrideEntries.filter(([, overrides]) => overrides?.exclude === true).length;
       const minExposureOverrideCount = activeOverrideEntries.filter(([, overrides]) => {
-        const val = Number(overrides?.minExposure);
-        return Number.isFinite(val) && val > 0;
+        const val = parseExposurePercentMaybe(overrides?.minExposure);
+        return val !== undefined && val > 0;
       }).length;
       const maxExposureOverrideCount = activeOverrideEntries.filter(([, overrides]) => {
-        const val = Number(overrides?.maxExposure);
-        return Number.isFinite(val) && val < 100;
+        const val = parseExposurePercentMaybe(overrides?.maxExposure);
+        return val !== undefined && val < 100;
       }).length;
 
       // Prepare player pool (only active players with salary and projection)
@@ -962,8 +1039,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         .filter((p) => p.salary > 0 && p.projection > 0)
         .map((player) => {
           const overrides = playerOverrides[player.id] || {};
-          const minExposureVal = Number(overrides.minExposure);
-          const maxExposureVal = Number(overrides.maxExposure);
+          const minExposureVal = parseExposurePercentMaybe(overrides.minExposure);
+          const maxExposureVal = parseExposurePercentMaybe(overrides.maxExposure);
           const merged: Player = {
             ...player,
             projection: Number.isFinite(Number(overrides.projection)) ? Number(overrides.projection) : player.projection,
@@ -975,8 +1052,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             ...merged,
             optimizerLocked: locked,
             optimizerExcluded: Boolean(overrides.exclude),
-            optimizerMinExposure: locked ? 100 : (Number.isFinite(minExposureVal) && minExposureVal >= 0 ? minExposureVal : undefined),
-            optimizerMaxExposure: locked ? 100 : (Number.isFinite(maxExposureVal) && maxExposureVal >= 0 ? maxExposureVal : undefined),
+            optimizerMinExposure: locked ? 100 : minExposureVal,
+            optimizerMaxExposure: locked ? 100 : maxExposureVal,
           };
         })
         .filter((player) => !Boolean((player as any).optimizerExcluded));
@@ -1006,7 +1083,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           case 'progress':
             setProgress(msg.progress);
             if (msg.currentBest) {
-              setGeneratedLineups(prev => [msg.currentBest!, ...prev].slice(0, 150));
+              setGeneratedLineups((prev) => [msg.currentBest!, ...prev].slice(0, Math.max(1, config.numLineups)));
             }
             break;
           case 'result':
@@ -1021,6 +1098,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
               if (excludedOverrideCount > 0) diagnostics.push(`${excludedOverrideCount} excluded`);
               if (minExposureOverrideCount > 0) diagnostics.push(`${minExposureOverrideCount} min-exp caps`);
               if (maxExposureOverrideCount > 0) diagnostics.push(`${maxExposureOverrideCount} max-exp caps`);
+              if (config.salaryFloor > 0) diagnostics.push(`salary floor $${config.salaryFloor}`);
+              if (config.enableStatConstraints) diagnostics.push(`stat constraints ${config.statConstraintMode}`);
+              if (config.deltaFromBestProjection > 0) diagnostics.push(`projection floor -${config.deltaFromBestProjection}`);
               if (poolFilters.length > 0) diagnostics.push(`${poolFilters.length} pool filters`);
               if (poolSearch.trim()) diagnostics.push('pool search active');
 
@@ -1187,7 +1267,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       lineupSource: 'optimizer',
     })));
     if (Number.isFinite(Number(savedSet.salaryCap)) && Number(savedSet.salaryCap) > 0) {
-      setConfig((prev) => ({ ...prev, salaryCap: Number(savedSet.salaryCap) }));
+      const nextCap = Number(savedSet.salaryCap);
+      setConfig((prev) => ({ ...prev, salaryCap: nextCap, salaryFloor: Math.min(prev.salaryFloor, nextCap) }));
     }
     setShowSavedLineupsModal(false);
     setError(null);
@@ -1307,6 +1388,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         case 'salary': return player.salary;
         case 'value': return displayValue;
         case 'usage': return getUsagePercent(player);
+        case 'boom': return getBoomPercent(player);
+        case 'bust': return getBustPercent(player);
         case 'minutes': return displayMinutes;
         case 'projection': return displayProjection;
         case 'leverageScore': return getLeverageScore(player) ?? '';
@@ -1479,6 +1562,10 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     .map((p) => p.id);
   const allVisibleLocked = visibleLockableIds.length > 0 && visibleLockableIds.every((id) => lockedIds.includes(id));
   const allVisibleExcluded = filteredPoolPlayers.length > 0 && filteredPoolPlayers.every((p) => Boolean(playerOverrides[p.id]?.exclude));
+  const includedPlayerPoolCount = useMemo(
+    () => players.reduce((count, player) => count + (playerOverrides[player.id]?.exclude ? 0 : 1), 0),
+    [players, playerOverrides],
+  );
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
@@ -1506,7 +1593,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         </div>
 
         <div className="space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div className="space-y-1.5">
               <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Lineups</label>
               <select
@@ -1527,14 +1614,41 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                 <input 
                   type="number" 
                   value={config.salaryCap}
-                  onChange={(e) => setConfig({ ...config, salaryCap: Number.parseInt(e.target.value, 10) || 50000 })}
+                  onChange={(e) => {
+                    const parsed = Number.parseInt(e.target.value, 10);
+                    const nextCap = Number.isFinite(parsed) && parsed > 0 ? parsed : 50000;
+                    setConfig((prev) => ({
+                      ...prev,
+                      salaryCap: nextCap,
+                      salaryFloor: Math.min(prev.salaryFloor, nextCap),
+                    }));
+                  }}
+                  className="w-full bg-white/60 border border-ink/20 rounded-sm pl-7 pr-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Salary Floor</label>
+              <div className="relative">
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-drafting-orange font-mono font-bold text-[10px]">$</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={config.salaryCap}
+                  value={config.salaryFloor}
+                  onChange={(e) => {
+                    const parsed = Number.parseInt(e.target.value, 10);
+                    const nextFloor = Number.isFinite(parsed) ? Math.max(0, Math.min(parsed, config.salaryCap)) : 0;
+                    setConfig((prev) => ({ ...prev, salaryFloor: nextFloor }));
+                  }}
                   className="w-full bg-white/60 border border-ink/20 rounded-sm pl-7 pr-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
                 />
               </div>
             </div>
 
             {config.optimizerMode === 'upside_max' && (
-              <div className="space-y-1.5 md:col-span-2">
+              <div className="space-y-1.5 md:col-span-3">
                 <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">
                   Upside Delta (Projection Floor)
                 </label>
@@ -1937,7 +2051,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             <div className="flex-1 min-h-0 flex flex-col gap-4 overflow-hidden">
               <div className="border border-ink/10 rounded-sm p-3 bg-white/60 overflow-hidden flex flex-col flex-1 min-h-0">
                 <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-[12px] font-black uppercase tracking-widest text-ink/50">Player Pool</h4>
+                  <h4 className="text-[12px] font-black uppercase tracking-widest text-ink/50">
+                    Player Pool <span className="text-drafting-orange">({includedPlayerPoolCount}/{players.length})</span>
+                  </h4>
                   <div className="flex items-center gap-2">
                     <input
                       type="text"
@@ -2046,6 +2162,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                         <th className="px-2 py-2 text-right">Salary</th>
                         <th className="px-2 py-2 text-right">Value</th>
                         <th className="px-2 py-2 text-right">USG</th>
+                        <th className="px-2 py-2 text-right">Boom%</th>
+                        <th className="px-2 py-2 text-right">Bust%</th>
                         <th className="px-2 py-2 text-right">Lev Score</th>
                         <th className="px-2 py-2 text-right">Min</th>
                         <th className="px-2 py-2 text-right">FPTS</th>
@@ -2066,6 +2184,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                           ? displayProjection / (player.salary / 1000)
                           : undefined;
                         const usagePct = getUsagePercent(player);
+                        const boomPct = getBoomPercent(player);
+                        const bustPct = getBustPercent(player);
                         const isLocked = lockedIds.includes(player.id);
                         return (
                           <tr key={player.id} className="border-b border-ink/5">
@@ -2135,6 +2255,12 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                             <td className="px-2 py-1.5 text-right text-ink/60">
                               {Number.isFinite(Number(usagePct)) ? `${Number(usagePct).toFixed(1)}%` : '--'}
                             </td>
+                            <td className="px-2 py-1.5 text-right text-emerald-600">
+                              {Number.isFinite(Number(boomPct)) ? `${Number(boomPct).toFixed(1)}%` : '--'}
+                            </td>
+                            <td className="px-2 py-1.5 text-right text-red-600">
+                              {Number.isFinite(Number(bustPct)) ? `${Number(bustPct).toFixed(1)}%` : '--'}
+                            </td>
                             <td className="px-2 py-1.5 text-right text-ink/70 uppercase">
                               {getLeverageScore(player) !== null ? Number(getLeverageScore(player)).toFixed(2) : '--'}
                             </td>
@@ -2203,7 +2329,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                       })}
                       {filteredPoolPlayers.length === 0 && (
                         <tr>
-                          <td colSpan={13} className="px-2 py-6 text-center text-[12px] text-ink/40 font-black uppercase tracking-widest">
+                          <td colSpan={15} className="px-2 py-6 text-center text-[12px] text-ink/40 font-black uppercase tracking-widest">
                             No players found
                           </td>
                         </tr>

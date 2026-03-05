@@ -12,6 +12,12 @@ type StatConstraintMode = 'cash' | 'gpp';
 interface OptimizerConfig {
   numLineups?: number;
   salaryCap?: number;
+  salaryFloor?: number;
+  salary_floor?: number;
+  enableDiagnostics?: boolean;
+  enable_diagnostics?: boolean;
+  forceFallback?: boolean;
+  force_fallback?: boolean;
   maxExposure?: number;
   enableStatConstraints?: boolean;
   enable_stat_constraints?: boolean;
@@ -39,7 +45,19 @@ interface OptimizerConfig {
   bonus_r1?: number;
   bonusR5?: number;
   bonus_r5?: number;
+  ceilingWeight?: number;
+  ceiling_weight?: number;
+  ownershipPenalty?: number;
+  ownership_penalty?: number;
+  minUniquePlayers?: number;
+  min_unique_players?: number;
+  stackMinPlayers?: number;
+  stack_min_players?: number;
+  stackMinGameTotal?: number;
+  stack_min_game_total?: number;
 }
+
+type ResolvedOptimizerConfig = Required<Pick<OptimizerConfig, 'numLineups' | 'salaryCap' | 'salaryFloor' | 'maxExposure'>> & OptimizerConfig;
 
 interface RequestPayload {
   players: Player[];
@@ -80,7 +98,7 @@ interface SolveResult {
 
 interface BuildContext {
   players: Player[];
-  config: Required<Pick<OptimizerConfig, 'numLineups' | 'salaryCap' | 'maxExposure'>> & OptimizerConfig;
+  config: ResolvedOptimizerConfig;
   lineupIndex: number;
   previousLineups: number[][];
   statSettings: StatConstraintSettings;
@@ -117,6 +135,70 @@ type RuleFlags = {
   r4_leverage_or_vol_top10: boolean;
   r5_leverage_and_minutes_top20: boolean;
 };
+
+interface ConstraintSnapshot {
+  name: string;
+  sense: '<=' | '>=' | '=';
+  rhs: number;
+}
+
+interface ExposureConstraintsSummary {
+  forcedIncludeCount: number;
+  forcedExcludeCount: number;
+  playersAtMaxCount: number;
+  playersWithMinCount: number;
+  remainingIncludingCurrent: number;
+}
+
+interface LineupDiagnosticsPayload {
+  lineupIndex: number;
+  phase1Status: string;
+  phase2Status: string;
+  usedFallback: boolean;
+  objectiveValuePhase1: number | null;
+  objectiveValuePhase2: number | null;
+  phase1ProjectionSum: number | null;
+  projectionSum: number;
+  salarySum: number;
+  uniquePlayersOk: boolean;
+  exposureConstraintsSummary: ExposureConstraintsSummary;
+  duplicateConstraintActive: boolean;
+  deltaFromBestProjection: number;
+  phase1Constraints: ConstraintSnapshot[];
+  phase2Constraints: ConstraintSnapshot[];
+  bindingConstraints: string[];
+  infeasibilityInfo?: string;
+}
+
+interface RunDiagnosticsPayload {
+  nRequested: number;
+  nSolvedILP: number;
+  nSolvedFallback: number;
+  phase2InfeasibleCount: number;
+  avgProjectionSum: number;
+  maxProjectionSum: number;
+  avgSalarySum: number;
+  phase1SuccessRate: number;
+  phase2InfeasibleRate: number;
+  fallbackUsageRate: number;
+}
+
+interface SolveLineupDiagnostics {
+  phase1Status: string;
+  phase2Status: string;
+  objectiveValuePhase1: number | null;
+  objectiveValuePhase2: number | null;
+  phase1ProjectionSum: number | null;
+  phase1Constraints: ConstraintSnapshot[];
+  phase2Constraints: ConstraintSnapshot[];
+  bindingConstraints: string[];
+  infeasibilityInfo?: string;
+}
+
+interface SolveLineupResult {
+  solved: { lineup: Lineup; selectedIndexes: number[] } | null;
+  diagnostics: SolveLineupDiagnostics;
+}
 
 let highsModulePromise: Promise<any> | null = null;
 const RULE_FLAGS_KEY = '__ruleFlags';
@@ -282,7 +364,7 @@ const buildLp = (model: ModelBlueprint): string => {
   return lines.join('\n');
 };
 
-const withDefaultConfig = (config?: OptimizerConfig): Required<Pick<OptimizerConfig, 'numLineups' | 'salaryCap' | 'maxExposure'>> & OptimizerConfig => {
+const withDefaultConfig = (config?: OptimizerConfig): ResolvedOptimizerConfig => {
   const statModeRaw = String((config as any)?.statConstraintMode ?? (config as any)?.mode ?? 'gpp').toLowerCase();
   const statMode: StatConstraintMode = statModeRaw === 'cash' ? 'cash' : 'gpp';
   const enableStatRaw = (config as any)?.enableStatConstraints ?? (config as any)?.enable_stat_constraints;
@@ -294,16 +376,54 @@ const withDefaultConfig = (config?: OptimizerConfig): Required<Pick<OptimizerCon
   const lowCutoffRaw = (config as any)?.lowMinutesCutoff ?? (config as any)?.low_minutes_cutoff;
   const enableRuleRaw = (config as any)?.enableRuleBoosts ?? (config as any)?.enable_rule_boosts;
   const enableRuleBoosts = enableRuleRaw === undefined ? true : Boolean(enableRuleRaw);
+  const enableDiagnosticsRaw = (config as any)?.enableDiagnostics ?? (config as any)?.enable_diagnostics;
+  const enableDiagnostics = enableDiagnosticsRaw === undefined ? false : Boolean(enableDiagnosticsRaw);
+  const forceFallbackRaw = (config as any)?.forceFallback ?? (config as any)?.force_fallback;
+  const forceFallback = forceFallbackRaw === undefined ? false : Boolean(forceFallbackRaw);
   const topQuantile = clamp(safeNumber((config as any)?.topQuantile ?? (config as any)?.top_quantile, 0.10), 0.01, 0.40);
   const midQuantile = clamp(safeNumber((config as any)?.midQuantile ?? (config as any)?.mid_quantile, 0.20), 0.01, 0.50);
   const bonusR4 = safeNumber((config as any)?.bonusR4 ?? (config as any)?.bonus_r4, 350000);
   const bonusR1 = safeNumber((config as any)?.bonusR1 ?? (config as any)?.bonus_r1, 650000);
   const bonusR5 = safeNumber((config as any)?.bonusR5 ?? (config as any)?.bonus_r5, 900000);
+  const ceilingWeight = clamp(
+    safeNumber((config as any)?.ceilingWeight ?? (config as any)?.ceiling_weight, statMode === 'cash' ? 0.0 : 0.25),
+    0,
+    0.5,
+  );
+  const ownershipPenalty = Math.max(
+    0,
+    safeNumber((config as any)?.ownershipPenalty ?? (config as any)?.ownership_penalty, statMode === 'cash' ? 0.0 : 0.10),
+  );
+  const minUniquePlayers = Math.max(
+    1,
+    Math.floor(safeNumber((config as any)?.minUniquePlayers ?? (config as any)?.min_unique_players, 1)),
+  );
+  const stackMinPlayers = Math.max(
+    0,
+    Math.floor(safeNumber((config as any)?.stackMinPlayers ?? (config as any)?.stack_min_players, 0)),
+  );
+  const stackMinGameTotal = Math.max(
+    0,
+    safeNumber((config as any)?.stackMinGameTotal ?? (config as any)?.stack_min_game_total, 215),
+  );
+  const salaryCap = Math.max(1, Math.floor(safeNumber(config?.salaryCap, 50000)));
+  const defaultSalaryFloor = statMode === 'cash' ? 49200 : 49000;
+  const salaryFloor = clamp(
+    Math.floor(safeNumber((config as any)?.salaryFloor ?? (config as any)?.salary_floor, defaultSalaryFloor)),
+    0,
+    salaryCap,
+  );
 
   return {
     numLineups: Math.max(1, Math.floor(safeNumber(config?.numLineups, 20))),
-    salaryCap: Math.max(1, Math.floor(safeNumber(config?.salaryCap, 50000))),
+    salaryCap,
+    salaryFloor,
+    salary_floor: salaryFloor,
     maxExposure: clamp(safeNumber(config?.maxExposure, 100), 0, 100),
+    enableDiagnostics,
+    enable_diagnostics: enableDiagnostics,
+    forceFallback,
+    force_fallback: forceFallback,
     enableStatConstraints,
     enable_stat_constraints: enableStatConstraints,
     statConstraintMode: statMode,
@@ -330,10 +450,20 @@ const withDefaultConfig = (config?: OptimizerConfig): Required<Pick<OptimizerCon
     bonus_r1: bonusR1,
     bonusR5,
     bonus_r5: bonusR5,
+    ceilingWeight,
+    ceiling_weight: ceilingWeight,
+    ownershipPenalty,
+    ownership_penalty: ownershipPenalty,
+    minUniquePlayers,
+    min_unique_players: minUniquePlayers,
+    stackMinPlayers,
+    stack_min_players: stackMinPlayers,
+    stackMinGameTotal,
+    stack_min_game_total: stackMinGameTotal,
   };
 };
 
-const getStatConstraintSettings = (config: Required<Pick<OptimizerConfig, 'numLineups' | 'salaryCap' | 'maxExposure'>> & OptimizerConfig): StatConstraintSettings => {
+const getStatConstraintSettings = (config: ResolvedOptimizerConfig): StatConstraintSettings => {
   const modeRaw = String(config.statConstraintMode ?? config.mode ?? 'gpp').toLowerCase();
   const mode: StatConstraintMode = modeRaw === 'cash' ? 'cash' : 'gpp';
   return {
@@ -354,6 +484,7 @@ const getStatConstraintSettings = (config: Required<Pick<OptimizerConfig, 'numLi
 };
 
 const toExposurePercent = (raw: unknown, fallback: number): number => {
+  if (raw === '' || raw === null || raw === undefined) return fallback;
   const value = Number(raw);
   if (!Number.isFinite(value)) return fallback;
   return clamp(value, 0, 100);
@@ -604,6 +735,24 @@ const buildBaseModel = (context: BuildContext): ModelBlueprint => {
     '<=',
     config.salaryCap,
   );
+  if (config.salaryFloor > 0) {
+    addConstraint(
+      constraints,
+      'salary_floor',
+      assignmentVars.map((variable) => ({
+        varName: variable.name,
+        coeff: Math.max(0, safeNumber(players[variable.playerIndex].salary, 0)),
+      })),
+      '>=',
+      config.salaryFloor,
+    );
+  }
+
+  const minUniquePlayers = Math.max(
+    1,
+    Math.floor(safeNumber(config.minUniquePlayers ?? (config as any).min_unique_players, 1)),
+  );
+  const maxSharedPlayers = DK_SLOTS.length - minUniquePlayers;
 
   context.previousLineups.forEach((prevLineup, lineupIdx) => {
     const terms: LinearTerm[] = [];
@@ -613,7 +762,7 @@ const buildBaseModel = (context: BuildContext): ModelBlueprint => {
       });
     });
     if (terms.length > 0) {
-      addConstraint(constraints, `nodup_${lineupIdx}`, terms, '<=', DK_SLOTS.length - 1);
+      addConstraint(constraints, `nodup_${lineupIdx}`, terms, '<=', maxSharedPlayers);
     }
   });
 
@@ -687,6 +836,26 @@ const getVolatilityMaybe = (player: Player): number | null => {
 const getMinutesProjMaybe = (player: Player): number | null => {
   const v = readNumericMaybe(player, ['MINUTES_PROJ', 'minutesProj', 'minutes_proj', 'minutesProjection', 'minutes']);
   return Number.isFinite(Number(v)) ? Number(v) : null;
+};
+
+const getTeamMaybe = (player: Player): string => {
+  return readString(player, ['team', 'teamAbbr', 'team_abbr', 'teamId', 'team_id', 'TEAM']);
+};
+
+const getOpponentMaybe = (player: Player): string => {
+  return readString(player, ['opponent', 'opp', 'OPP', 'opposingTeam', 'opposing_team', 'opp_team']);
+};
+
+const getGameTotalMaybe = (player: Player): number | undefined => {
+  return readNumericMaybe(player, [
+    'gameTotal', 'game_total', 'overUnder', 'over_under',
+    'total', 'TOTAL', 'gameOu', 'game_ou', 'slateTotal',
+  ]);
+};
+
+const getGameSlug = (team: string, opponent: string): string => {
+  const parts = [team.toLowerCase().trim(), opponent.toLowerCase().trim()].sort();
+  return parts.join('_vs_');
 };
 
 const buildStatConstraintRules = (context: BuildContext): StatConstraintRule[] => {
@@ -793,7 +962,7 @@ const buildStatConstraintRules = (context: BuildContext): StatConstraintRule[] =
     rules.push({
       name: 'limit_high_owned',
       sense: '<=',
-      rhs: 3,
+      rhs: statSettings.mode === 'cash' ? 8 : 4,
       playerIndexes: qualifying((player) => {
         const own = getOwnershipPctMaybe(player);
         return Number.isFinite(Number(own)) && Number(own) >= 25;
@@ -917,6 +1086,50 @@ const evaluateStatConstraintRules = (
   return { ok: failing.length === 0, failing };
 };
 
+const finiteOrNull = (value: number): number | null => (Number.isFinite(value) ? value : null);
+
+const snapshotConstraints = (model: ModelBlueprint, limit = 120): ConstraintSnapshot[] => {
+  return model.constraints.slice(0, limit).map((constraint) => ({
+    name: constraint.name,
+    sense: constraint.sense,
+    rhs: constraint.rhs,
+  }));
+};
+
+const isInfeasibleStatus = (status: string): boolean => {
+  const s = String(status || '').toLowerCase();
+  return s.includes('infeasible') || s.includes('unbounded') || s.includes('error') || s.includes('empty');
+};
+
+const getBindingConstraints = (
+  model: ModelBlueprint,
+  solution: SolveResult,
+  tolerance = 1e-6,
+  limit = 30,
+): string[] => {
+  if (!solution.values || solution.values.size === 0) return [];
+  const binding: string[] = [];
+
+  for (const constraint of model.constraints) {
+    let lhs = 0;
+    constraint.terms.forEach((term) => {
+      lhs += term.coeff * safeNumber(solution.values.get(term.varName), 0);
+    });
+
+    let isBinding = false;
+    if (constraint.sense === '=') isBinding = Math.abs(lhs - constraint.rhs) <= tolerance;
+    if (constraint.sense === '<=') isBinding = Math.abs(constraint.rhs - lhs) <= tolerance;
+    if (constraint.sense === '>=') isBinding = Math.abs(lhs - constraint.rhs) <= tolerance;
+
+    if (isBinding) {
+      binding.push(constraint.name);
+      if (binding.length >= limit) break;
+    }
+  }
+
+  return binding;
+};
+
 const getLeverageTierPriority = (player: Player): number => {
   const tier = readString(player, [
     'signalLeverageTier',
@@ -998,7 +1211,7 @@ const getValueTieBreaker = (player: Player): number => {
 
 const computeRuleFlags = (
   players: Player[],
-  cfg: Required<Pick<OptimizerConfig, 'numLineups' | 'salaryCap' | 'maxExposure'>> & OptimizerConfig,
+  cfg: ResolvedOptimizerConfig,
 ) => {
   const topQuantile = clamp(safeNumber(cfg.topQuantile ?? cfg.top_quantile, 0.10), 0.01, 0.40);
   const midQuantile = clamp(safeNumber(cfg.midQuantile ?? cfg.mid_quantile, 0.20), 0.01, 0.50);
@@ -1039,49 +1252,130 @@ const getRuleFlags = (player: Player): RuleFlags | null => {
   return f && typeof f === 'object' ? (f as RuleFlags) : null;
 };
 
+const FALLBACK_SCORE_MIN = 0;
+const FALLBACK_SCORE_MAX = 200;
+
+const normalizeFallbackRuleBonus = (raw: unknown, fallback: number): number => {
+  const n = safeNumber(raw, fallback);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  // Legacy config values are on a huge scale; map them to sane fallback defaults.
+  if (n > 50) return fallback;
+  return clamp(n, 0, 10);
+};
+
 const getPriorityScore = (
   player: Player,
-  cfg?: Required<Pick<OptimizerConfig, 'numLineups' | 'salaryCap' | 'maxExposure'>> & OptimizerConfig,
+  cfg?: ResolvedOptimizerConfig,
 ): number => {
   const leveragePriority = getLeverageTierPriority(player);
   const signalPriority = getSignalTierPriority(player);
-  // Primary rank by leverage+signal combo; ties break on ceiling/value/usage/minutes.
   const comboPriority = leveragePriority * 10 + signalPriority;
   const ceiling = getCeilingTieBreaker(player);
   const value = getValueTieBreaker(player);
   const usage = Math.max(0, safeNumber(getUSGPctMaybe(player), 0));
   const minutes = Math.max(0, safeNumber(getMinutesMaybe(player), 0));
   const projection = Math.max(0, safeNumber(player.projection, 0));
+  const comboBonus = (comboPriority / 53) * 2.0;
+  const ceilingBonus = Math.min(80, ceiling) * 0.03;
+  const valueBonus = Math.min(10, value) * 0.25;
+  const usageBonus = Math.min(45, usage) * 0.04;
+  const minutesBonus = Math.min(40, minutes) * 0.03;
   let ruleBonus = 0;
   if (cfg?.enableRuleBoosts) {
     const flags = getRuleFlags(player);
     if (flags) {
-      const bonusR4 = safeNumber(cfg.bonusR4 ?? cfg.bonus_r4, 350000);
-      const bonusR1 = safeNumber(cfg.bonusR1 ?? cfg.bonus_r1, 650000);
-      const bonusR5 = safeNumber(cfg.bonusR5 ?? cfg.bonus_r5, 900000);
+      // Keep fallback rule boosts in a projection-like scale (single term <= 10 points).
+      const bonusR4 = normalizeFallbackRuleBonus(cfg.bonusR4 ?? cfg.bonus_r4, 2.5);
+      const bonusR1 = normalizeFallbackRuleBonus(cfg.bonusR1 ?? cfg.bonus_r1, 4.0);
+      const bonusR5 = normalizeFallbackRuleBonus(cfg.bonusR5 ?? cfg.bonus_r5, 6.0);
       if (flags.r4_leverage_or_vol_top10) ruleBonus += bonusR4;
       if (flags.r1_leverage_top10) ruleBonus += bonusR1;
       if (flags.r5_leverage_and_minutes_top20) ruleBonus += bonusR5;
     }
   }
 
-  return ruleBonus
-    + (comboPriority * 100000)
-    + (ceiling * 100)
-    + (value * 50)
-    + (usage * 5)
-    + (minutes * 2)
-    + projection;
+  const fallbackScoreRaw = projection
+    + comboBonus
+    + ceilingBonus
+    + valueBonus
+    + usageBonus
+    + minutesBonus
+    + ruleBonus;
+
+  return clamp(fallbackScoreRaw, FALLBACK_SCORE_MIN, FALLBACK_SCORE_MAX);
 };
 
 const setObjectiveByPriority = (
   model: ModelBlueprint,
   players: Player[],
-  cfg: Required<Pick<OptimizerConfig, 'numLineups' | 'salaryCap' | 'maxExposure'>> & OptimizerConfig,
+  cfg: ResolvedOptimizerConfig,
+) => {
+  model.objective.clear();
+
+  const ceilingWeight = clamp(safeNumber(cfg.ceilingWeight ?? (cfg as any).ceiling_weight, 0), 0, 0.5);
+  const ownershipPenalty = Math.max(0, safeNumber(cfg.ownershipPenalty ?? (cfg as any).ownership_penalty, 0));
+
+  model.assignmentVars.forEach((variable) => {
+    const player = players[variable.playerIndex];
+    const projection = Math.max(0, safeNumber(player.projection, 0));
+
+    let baseScore: number;
+    if (ceilingWeight > 0) {
+      const rawCeiling = getCeilingTieBreaker(player);
+      const effectiveCeiling = rawCeiling > 0 ? rawCeiling : projection;
+      baseScore = projection * (1 - ceilingWeight) + effectiveCeiling * ceilingWeight;
+    } else {
+      baseScore = projection;
+    }
+
+    const ownershipPct = Math.max(0, safeNumber(getOwnershipPctMaybe(player), 0));
+    const penaltyAmount = ownershipPenalty * ownershipPct;
+
+    const leveragePriority = getLeverageTierPriority(player);
+    const signalPriority = getSignalTierPriority(player);
+    const leverageBonus = ((leveragePriority * 10 + signalPriority) / 53) * 2.0;
+
+    let ruleBonus = 0;
+    if (cfg.enableRuleBoosts) {
+      const flags = getRuleFlags(player);
+      if (flags) {
+        if (flags.r5_leverage_and_minutes_top20) ruleBonus += 0.5;
+        if (flags.r1_leverage_top10) ruleBonus += 0.3;
+        if (flags.r4_leverage_or_vol_top10) ruleBonus += 0.2;
+      }
+    }
+
+    const finalScore = Math.max(0, baseScore - penaltyAmount + leverageBonus + ruleBonus);
+    model.objective.set(variable.name, finalScore);
+  });
+};
+
+const setObjectiveProjectionFirst = (
+  model: ModelBlueprint,
+  players: Player[],
+  cfg: ResolvedOptimizerConfig,
 ) => {
   model.objective.clear();
   model.assignmentVars.forEach((variable) => {
-    model.objective.set(variable.name, Math.max(0, getPriorityScore(players[variable.playerIndex], cfg)));
+    const player = players[variable.playerIndex];
+    const projection = Math.max(0, safeNumber(player.projection, 0));
+
+    // Tiny tie-breakers only: keep projection as the dominant optimization signal.
+    const leveragePriority = getLeverageTierPriority(player);
+    const signalPriority = getSignalTierPriority(player);
+    const comboNormalized = (leveragePriority * 10 + signalPriority) / 53;
+    let tieBreaker = comboNormalized * 0.0005;
+
+    if (cfg.enableRuleBoosts) {
+      const flags = getRuleFlags(player);
+      if (flags) {
+        if (flags.r5_leverage_and_minutes_top20) tieBreaker += 0.0003;
+        if (flags.r1_leverage_top10) tieBreaker += 0.0002;
+        if (flags.r4_leverage_or_vol_top10) tieBreaker += 0.0001;
+      }
+    }
+
+    model.objective.set(variable.name, projection + tieBreaker);
   });
 };
 
@@ -1096,6 +1390,76 @@ const addProjectionFloorConstraint = (model: ModelBlueprint, players: Player[], 
     '>=',
     projectionFloor,
   );
+};
+
+const addGameStackConstraint = (
+  model: ModelBlueprint,
+  players: Player[],
+  stackMinPlayers: number,
+  stackMinGameTotal: number,
+): void => {
+  if (stackMinPlayers < 2) return;
+
+  const gamePlayerMap = new Map<string, number[]>();
+  const gameTotalMap = new Map<string, number>();
+
+  players.forEach((player, idx) => {
+    const team = getTeamMaybe(player);
+    if (!team) return;
+    const opp = getOpponentMaybe(player);
+    const slug = getGameSlug(team, opp || 'unknown');
+
+    if (!gamePlayerMap.has(slug)) gamePlayerMap.set(slug, []);
+    gamePlayerMap.get(slug)!.push(idx);
+
+    if (!gameTotalMap.has(slug)) {
+      const total = getGameTotalMaybe(player);
+      if (total !== undefined) gameTotalMap.set(slug, total);
+    }
+  });
+
+  if (gamePlayerMap.size === 0) return;
+
+  interface GameCandidate {
+    slug: string;
+    indexes: number[];
+    avgProjection: number;
+  }
+  const candidates: GameCandidate[] = [];
+
+  gamePlayerMap.forEach((indexes, slug) => {
+    const availableIndexes = indexes.filter(
+      (idx) => (model.assignmentVarsByPlayer.get(idx) || []).length > 0,
+    );
+    if (availableIndexes.length < stackMinPlayers) return;
+
+    const gameTotal = gameTotalMap.get(slug);
+    if (gameTotal !== undefined && stackMinGameTotal > 0 && gameTotal < stackMinGameTotal) return;
+
+    const avgProjection =
+      availableIndexes.reduce(
+        (sum, idx) => sum + Math.max(0, safeNumber(players[idx]?.projection, 0)),
+        0,
+      ) / availableIndexes.length;
+
+    candidates.push({ slug, indexes: availableIndexes, avgProjection });
+  });
+
+  if (candidates.length === 0) return;
+
+  candidates.sort((a, b) => b.avgProjection - a.avgProjection);
+  const targetGame = candidates[0];
+
+  const terms: LinearTerm[] = [];
+  targetGame.indexes.forEach((idx) => {
+    (model.assignmentVarsByPlayer.get(idx) || []).forEach((varName) => {
+      terms.push({ varName, coeff: 1 });
+    });
+  });
+
+  if (terms.length >= stackMinPlayers) {
+    addConstraint(model.constraints, 'game_stack_min', terms, '>=', stackMinPlayers);
+  }
 };
 
 const decodeLineup = (
@@ -1267,6 +1631,7 @@ const searchFallbackLineup = (
       const selectedIndexes = DK_SLOTS.map((slot) => slotToPlayer.get(slot)).filter((idx): idx is number => idx !== undefined);
       if (selectedIndexes.length !== DK_SLOTS.length) return false;
       if (totalSalary > config.salaryCap) return false;
+      if (totalSalary < config.salaryFloor) return false;
       if (totalProjection < projectionFloor) return false;
       if (previousSignatures.has(buildLineupSignature(selectedIndexes))) return false;
       if (statRules.length > 0) {
@@ -1327,29 +1692,127 @@ const solveLineupFallback = (context: BuildContext): { lineup: Lineup; selectedI
   return searchFallbackLineup(context, priorityScore, 0);
 };
 
-const solveLineup = async (context: BuildContext): Promise<{ lineup: Lineup; selectedIndexes: number[] } | null> => {
-  const baseModel = buildBaseModel(context);
+const solveLineup = async (context: BuildContext): Promise<SolveLineupResult> => {
   const { players, config } = context;
+  const floorModel = buildBaseModel(context);
+  setObjectiveProjectionFirst(floorModel, players, config);
+  const phase1Result = await solveLp(floorModel);
+  let bestProjectionSum: number | null = null;
+  if (phase1Result.values.size > 0) {
+    const selectedPlayerIndexes = new Set<number>();
+    floorModel.assignmentVars.forEach((variable) => {
+      const value = safeNumber(phase1Result.values.get(variable.name), 0);
+      if (value > 0.5) selectedPlayerIndexes.add(variable.playerIndex);
+    });
+    if (selectedPlayerIndexes.size > 0) {
+      bestProjectionSum = Array.from(selectedPlayerIndexes).reduce(
+        (sum, idx) => sum + Math.max(0, safeNumber(players[idx]?.projection, 0)),
+        0,
+      );
+    }
+  }
 
+  const baseModel = buildBaseModel(context);
   setObjectiveByPriority(baseModel, players, config);
-  const solved = await solveLp(baseModel);
-  return decodeLineup(solved, baseModel, players, context.lineupIndex);
+  const stackMinPlayers = Math.max(
+    0,
+    Math.floor(safeNumber(config.stackMinPlayers ?? (config as any).stack_min_players, 0)),
+  );
+  if (stackMinPlayers >= 2) {
+    const stackMinGameTotal = Math.max(
+      0,
+      safeNumber(config.stackMinGameTotal ?? (config as any).stack_min_game_total, 215),
+    );
+    addGameStackConstraint(baseModel, players, stackMinPlayers, stackMinGameTotal);
+  }
+  if (
+    bestProjectionSum !== null
+    && Number.isFinite(bestProjectionSum)
+    && bestProjectionSum > 0
+  ) {
+    const delta = Math.max(
+      0,
+      safeNumber(config.deltaFromBestProjection ?? config.delta_from_best_projection, 8),
+    );
+    if (delta > 0) {
+      const projectionFloor = Math.max(0, bestProjectionSum - delta);
+      addProjectionFloorConstraint(baseModel, players, projectionFloor);
+    }
+  }
+
+  const phase2Result = await solveLp(baseModel);
+  const solved = decodeLineup(phase2Result, baseModel, players, context.lineupIndex);
+  const phase1Status = String(phase1Result.status || 'Unknown');
+  const phase2Status = String(phase2Result.status || 'Unknown');
+  const infeasibilityInfo = isInfeasibleStatus(phase2Status)
+    ? 'Phase 2 infeasible; active constraints snapshot attached.'
+    : undefined;
+
+  return {
+    solved,
+    diagnostics: {
+      phase1Status,
+      phase2Status,
+      objectiveValuePhase1: finiteOrNull(phase1Result.objectiveValue),
+      objectiveValuePhase2: finiteOrNull(phase2Result.objectiveValue),
+      phase1ProjectionSum: finiteOrNull(bestProjectionSum ?? Number.NaN),
+      phase1Constraints: snapshotConstraints(floorModel),
+      phase2Constraints: snapshotConstraints(baseModel),
+      bindingConstraints: getBindingConstraints(baseModel, phase2Result),
+      ...(infeasibilityInfo ? { infeasibilityInfo } : {}),
+    },
+  };
 };
 
 const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
   const players = Array.isArray(payload.players) ? payload.players : [];
   const config = withDefaultConfig(payload.config);
-  const statSettings = {
-    ...getStatConstraintSettings(config),
-    enable: false,
+  const statSettings = getStatConstraintSettings(config);
+  const enableDiagnostics = config.enableDiagnostics === true;
+  const forceFallback = config.forceFallback === true || config.force_fallback === true;
+  const deltaFromBestProjection = Math.max(
+    0,
+    safeNumber(config.deltaFromBestProjection ?? config.delta_from_best_projection, 8),
+  );
+  const diagnosticsState = {
+    nSolvedILP: 0,
+    nSolvedFallback: 0,
+    phase2InfeasibleCount: 0,
+    projectionTotal: 0,
+    salaryTotal: 0,
+    maxProjectionSum: 0,
+    nIlpAttempts: 0,
+  };
+  let runSummaryEmitted = false;
+
+  const emitRunSummary = (lineupsBuilt: number) => {
+    if (!enableDiagnostics || runSummaryEmitted) return;
+    runSummaryEmitted = true;
+    const denom = Math.max(1, lineupsBuilt);
+    const ilpDenom = Math.max(1, diagnosticsState.nIlpAttempts);
+    const summary: RunDiagnosticsPayload = {
+      nRequested: config.numLineups,
+      nSolvedILP: diagnosticsState.nSolvedILP,
+      nSolvedFallback: diagnosticsState.nSolvedFallback,
+      phase2InfeasibleCount: diagnosticsState.phase2InfeasibleCount,
+      avgProjectionSum: Number((diagnosticsState.projectionTotal / denom).toFixed(4)),
+      maxProjectionSum: Number(diagnosticsState.maxProjectionSum.toFixed(4)),
+      avgSalarySum: Number((diagnosticsState.salaryTotal / denom).toFixed(4)),
+      phase1SuccessRate: Number((diagnosticsState.nSolvedILP / ilpDenom).toFixed(4)),
+      phase2InfeasibleRate: Number((diagnosticsState.phase2InfeasibleCount / ilpDenom).toFixed(4)),
+      fallbackUsageRate: Number((diagnosticsState.nSolvedFallback / denom).toFixed(4)),
+    };
+    workerScope.postMessage({ type: 'diagnostics_summary', diagnostics: summary });
   };
 
   if (players.length < DK_SLOTS.length) {
+    emitRunSummary(0);
     throw new Error('Optimizer pool too small after filters.');
   }
 
   for (const slot of DK_SLOTS) {
     if (!players.some((player) => canFitDK(player, slot))) {
+      emitRunSummary(0);
       throw new Error(`No eligible players for ${slot}.`);
     }
   }
@@ -1367,6 +1830,17 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
   let lastSolveError = '';
   let noSolutionStreak = 0;
   const maxNoSolutionStreak = 4;
+  const defaultSolveDiagnostics: SolveLineupDiagnostics = {
+    phase1Status: 'not_run',
+    phase2Status: 'not_run',
+    objectiveValuePhase1: null,
+    objectiveValuePhase2: null,
+    phase1ProjectionSum: null,
+    phase1Constraints: [],
+    phase2Constraints: [],
+    bindingConstraints: [],
+  };
+
   while (lineups.length < config.numLineups && attempts < maxAttempts) {
     attempts += 1;
     const lineupIndex = lineups.length;
@@ -1387,16 +1861,50 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
       forcedExposureInclude: exposureStep.forceInclude,
       forcedExposureExclude: exposureStep.forceExclude,
     };
+    const remainingIncludingCurrent = config.numLineups - lineupIndex;
+    const exposureConstraintsSummary: ExposureConstraintsSummary = {
+      forcedIncludeCount: exposureStep.forceInclude.size,
+      forcedExcludeCount: exposureStep.forceExclude.size,
+      playersAtMaxCount: players.reduce((sum, _player, idx) => {
+        const maxAllowed = maxAllowedByPlayer[idx] ?? config.numLineups;
+        return sum + ((exposureCounts[idx] || 0) >= maxAllowed ? 1 : 0);
+      }, 0),
+      playersWithMinCount: minRequiredByPlayer.reduce((sum, value) => sum + (value > 0 ? 1 : 0), 0),
+      remainingIncludingCurrent,
+    };
 
     let solved: { lineup: Lineup; selectedIndexes: number[] } | null = null;
-    try {
-      solved = await solveLineup(context);
-    } catch (error) {
-      lastSolveError = error instanceof Error ? error.message : String(error);
-      solved = null;
+    let solveDiagnostics = defaultSolveDiagnostics;
+    let usedFallback = forceFallback;
+    if (!forceFallback) {
+      try {
+        diagnosticsState.nIlpAttempts += 1;
+        const solveResult = await solveLineup(context);
+        solveDiagnostics = solveResult.diagnostics;
+        solved = solveResult.solved;
+        if (isInfeasibleStatus(solveDiagnostics.phase2Status)) {
+          diagnosticsState.phase2InfeasibleCount += 1;
+        }
+      } catch (error) {
+        lastSolveError = error instanceof Error ? error.message : String(error);
+        solveDiagnostics = {
+          ...defaultSolveDiagnostics,
+          phase1Status: 'error',
+          phase2Status: 'error',
+          infeasibilityInfo: lastSolveError,
+        };
+        solved = null;
+      }
+    } else {
+      solveDiagnostics = {
+        ...defaultSolveDiagnostics,
+        phase1Status: 'skipped_force_fallback',
+        phase2Status: 'skipped_force_fallback',
+      };
     }
     if (!solved) {
       solved = solveLineupFallback(context);
+      if (solved) usedFallback = true;
     }
     if (!solved) {
       noSolutionStreak += 1;
@@ -1409,12 +1917,54 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
       continue;
     }
     noSolutionStreak = 0;
+    if (usedFallback) diagnosticsState.nSolvedFallback += 1;
+    else diagnosticsState.nSolvedILP += 1;
+    const duplicateConstraintActive = previousLineups.length > 0;
 
     lineups.push(solved.lineup);
     previousLineups.push([...solved.selectedIndexes]);
     solved.selectedIndexes.forEach((idx) => {
       exposureCounts[idx] = (exposureCounts[idx] || 0) + 1;
     });
+    const projectionSumRaw = solved.selectedIndexes.reduce(
+      (sum, idx) => sum + Math.max(0, safeNumber(players[idx]?.projection, 0)),
+      0,
+    );
+    const salarySumRaw = solved.selectedIndexes.reduce(
+      (sum, idx) => sum + Math.max(0, safeNumber(players[idx]?.salary, 0)),
+      0,
+    );
+    const projectionSum = Number(projectionSumRaw.toFixed(4));
+    const salarySum = Number(salarySumRaw.toFixed(4));
+    diagnosticsState.projectionTotal += projectionSum;
+    diagnosticsState.salaryTotal += salarySum;
+    diagnosticsState.maxProjectionSum = Math.max(diagnosticsState.maxProjectionSum, projectionSum);
+
+    if (enableDiagnostics) {
+      const uniquePlayersOk =
+        solved.selectedIndexes.length === DK_SLOTS.length
+        && new Set(solved.selectedIndexes).size === DK_SLOTS.length;
+      const diagnosticsPayload: LineupDiagnosticsPayload = {
+        lineupIndex,
+        phase1Status: solveDiagnostics.phase1Status,
+        phase2Status: solveDiagnostics.phase2Status,
+        usedFallback,
+        objectiveValuePhase1: solveDiagnostics.objectiveValuePhase1,
+        objectiveValuePhase2: solveDiagnostics.objectiveValuePhase2,
+        phase1ProjectionSum: solveDiagnostics.phase1ProjectionSum,
+        projectionSum,
+        salarySum,
+        uniquePlayersOk,
+        exposureConstraintsSummary,
+        duplicateConstraintActive,
+        deltaFromBestProjection,
+        phase1Constraints: solveDiagnostics.phase1Constraints,
+        phase2Constraints: solveDiagnostics.phase2Constraints,
+        bindingConstraints: solveDiagnostics.bindingConstraints,
+        ...(solveDiagnostics.infeasibilityInfo ? { infeasibilityInfo: solveDiagnostics.infeasibilityInfo } : {}),
+      };
+      workerScope.postMessage({ type: 'diagnostics_lineup', diagnostics: diagnosticsPayload });
+    }
 
     workerScope.postMessage({
       type: 'progress',
@@ -1425,6 +1975,7 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
   }
 
   if (lineups.length === 0 && lastSolveError) {
+    emitRunSummary(lineups.length);
     throw new Error(lastSolveError);
   }
 
@@ -1439,6 +1990,7 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
       .slice(0, 5);
 
     if (unmetMinExposure.length > 0) {
+      emitRunSummary(lineups.length);
       throw new Error(
         `Unable to satisfy min exposures with current constraints (${lineups.length}/${config.numLineups} lineups). ` +
           unmetMinExposure.map((item) => `${item.name} ${item.got}/${item.required}`).join('; '),
@@ -1446,6 +1998,7 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
     }
   }
 
+  emitRunSummary(lineups.length);
   return lineups;
 };
 

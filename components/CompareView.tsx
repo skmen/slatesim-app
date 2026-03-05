@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Player, GameInfo } from '../types';
 import { GitCompare, Table2, Filter, X, Trash2, PlusCircle } from 'lucide-react';
 import { MatchupEngine } from './MatchupEngine';
@@ -140,7 +140,7 @@ const parsePositions = (position: string): Position[] =>
     .filter((p): p is Position => POSITIONS.includes(p as Position));
 
 const parseMatchup = (text: any): { away: string; home: string } | null => {
-  const match = String(text || '').match(/([A-Z]{2,5})@([A-Z]{2,5})/i);
+  const match = String(text || '').match(/([A-Z]{2,5})\s*@\s*([A-Z]{2,5})/i);
   if (!match) return null;
   return { away: match[1].toUpperCase(), home: match[2].toUpperCase() };
 };
@@ -181,6 +181,9 @@ const compareValues = (a: any, b: any): number => {
   return String(a).localeCompare(String(b));
 };
 
+const isFiniteNumeric = (value: any): boolean =>
+  value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+
 const nextSort = (current: SortConfig, key: string, defaultDir: SortDir = 'desc'): SortConfig => {
   if (current.key === key) {
     return { key, dir: current.dir === 'asc' ? 'desc' : 'asc' };
@@ -197,15 +200,15 @@ const normalizeStatForThreshold = (column: string, raw: any): number | null => {
 
 const getSeasonStatThreshold = (position: Position, column: string): number | null => {
   const threshold = SEASON_STAT_THRESHOLDS[position]?.[column];
-  return Number.isFinite(Number(threshold)) ? Number(threshold) : null;
+  return isFiniteNumeric(threshold) ? Number(threshold) : null;
 };
 
 const isSeasonStatAtThreshold = (position: Position, column: string, raw: any): boolean => {
   const threshold = getSeasonStatThreshold(position, column);
-  if (!Number.isFinite(Number(threshold))) return false;
+  if (threshold === null) return false;
   const value = normalizeStatForThreshold(column, raw);
-  if (!Number.isFinite(Number(value))) return false;
-  return Number(value) >= Number(threshold);
+  if (value === null) return false;
+  return value >= threshold;
 };
 
 const dvpStatClass = (position: Position, stat: 'pts' | 'reb' | 'ast' | 'blk' | '3pm', value: number | null): string => {
@@ -264,7 +267,7 @@ const getSeasonThresholdTitle = (position: Position, key: string, value: any): s
   if (!thresholdColumn) return undefined;
   if (!isSeasonStatAtThreshold(position, thresholdColumn, value)) return undefined;
   const threshold = getSeasonStatThreshold(position, thresholdColumn);
-  return Number.isFinite(Number(threshold)) ? `Threshold ${threshold}` : undefined;
+  return threshold === null ? undefined : `Threshold ${threshold}`;
 };
 
 const getPlayerStat = (player: Player, keys: string[]): any => {
@@ -288,24 +291,68 @@ const getActualFptsValue = (player: Player): number | null => {
   return Number.isFinite(actualVal) ? actualVal : null;
 };
 
-const getOpponentTeamForPlayer = (player: Player, games: GameInfo[]): GameInfo['teamA'] | GameInfo['teamB'] | undefined => {
-  const teamId = String(player.team || '').toUpperCase();
+const normalizeTeamToken = (value: any): string =>
+  String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+const buildTeamLookup = (games: GameInfo[]) => {
+  const map = new Map<string, GameInfo['teamA'] | GameInfo['teamB']>();
+  const add = (team: GameInfo['teamA'] | GameInfo['teamB']) => {
+    const tokens = [
+      normalizeTeamToken(team?.teamId),
+      normalizeTeamToken(team?.abbreviation),
+      normalizeTeamToken(team?.name),
+    ].filter(Boolean);
+    tokens.forEach((token) => {
+      if (!map.has(token)) map.set(token, team);
+    });
+  };
+  games.forEach((game) => {
+    add(game.teamA);
+    add(game.teamB);
+  });
+  return map;
+};
+
+const getOpponentTeamForPlayer = (
+  player: Player,
+  games: GameInfo[],
+  teamLookup: Map<string, GameInfo['teamA'] | GameInfo['teamB']>,
+): GameInfo['teamA'] | GameInfo['teamB'] | undefined => {
+  const teamId = normalizeTeamToken(player.team);
   if (!teamId) return undefined;
-  let opponentId = String(player.opponent || '').toUpperCase();
-  if (!opponentId) {
-    const parsed = parseMatchup((player as any)['Game Info'] ?? (player as any).gameInfo);
-    if (parsed) {
-      opponentId = teamId === parsed.away ? parsed.home : teamId === parsed.home ? parsed.away : '';
+
+  const parsed = parseMatchup((player as any)['Game Info'] ?? (player as any).gameInfo);
+  if (parsed) {
+    const away = normalizeTeamToken(parsed.away);
+    const home = normalizeTeamToken(parsed.home);
+    if (teamId === away) {
+      return teamLookup.get(home);
+    }
+    if (teamId === home) {
+      return teamLookup.get(away);
     }
   }
-  if (!opponentId) return undefined;
 
-  const game = games.find((g) =>
-    (g.teamA.teamId === teamId && g.teamB.teamId === opponentId) ||
-    (g.teamB.teamId === teamId && g.teamA.teamId === opponentId)
-  );
-  if (!game) return undefined;
-  return game.teamA.teamId === opponentId ? game.teamA : game.teamB;
+  const directOpponent = normalizeTeamToken(player.opponent);
+  if (directOpponent) {
+    const game = games.find((g) => {
+      const a = normalizeTeamToken(g.teamA.teamId);
+      const b = normalizeTeamToken(g.teamB.teamId);
+      return (a === teamId && b === directOpponent) || (b === teamId && a === directOpponent);
+    });
+    if (game) {
+      return normalizeTeamToken(game.teamA.teamId) === directOpponent ? game.teamA : game.teamB;
+    }
+    return teamLookup.get(directOpponent);
+  }
+
+  const fallbackGame = games.find((g) => {
+    const a = normalizeTeamToken(g.teamA.teamId);
+    const b = normalizeTeamToken(g.teamB.teamId);
+    return a === teamId || b === teamId;
+  });
+  if (!fallbackGame) return undefined;
+  return normalizeTeamToken(fallbackGame.teamA.teamId) === teamId ? fallbackGame.teamB : fallbackGame.teamA;
 };
 
 export const CompareView: React.FC<Props> = ({ players, games, showActuals }) => {
@@ -317,6 +364,9 @@ export const CompareView: React.FC<Props> = ({ players, games, showActuals }) =>
   const [filters, setFilters] = useState<FilterRule[]>([]);
   const [dvpSort, setDvpSort] = useState<SortConfig>({ key: 'dvpRank', dir: 'asc' });
   const [statsSort, setStatsSort] = useState<SortConfig>({ key: 'projection', dir: 'desc' });
+  const topScrollbarRef = useRef<HTMLDivElement | null>(null);
+  const tableScrollbarRef = useRef<HTMLDivElement | null>(null);
+  const scrollSyncLockRef = useRef(false);
 
   const effectiveGames = useMemo<GameInfo[]>(() => {
     if (games.length > 0) return games;
@@ -367,6 +417,8 @@ export const CompareView: React.FC<Props> = ({ players, games, showActuals }) =>
     });
     return map;
   }, [effectiveGames]);
+
+  const teamLookup = useMemo(() => buildTeamLookup(effectiveGames), [effectiveGames]);
 
   useEffect(() => {
     if (selectedMatchupKey !== ALL_MATCHUPS_KEY && !matchupMap.has(selectedMatchupKey)) {
@@ -421,15 +473,16 @@ export const CompareView: React.FC<Props> = ({ players, games, showActuals }) =>
   const dvpRows = useMemo<DvpRow[]>(() => {
     return filteredPlayers.map((player) => {
       const actual = getActualFptsValue(player);
-      const opponentTeam = getOpponentTeamForPlayer(player, effectiveGames);
+      const opponentTeam = getOpponentTeamForPlayer(player, effectiveGames, teamLookup);
       const dvpRow = opponentTeam?.positionalDvP?.[selectedPosition] || {};
-      const opp3pmAllowed = getPlayerStat(player, ['opp3pmAllowed', 'opp_3pm_allowed', 'opp3pmallowed']);
-      const threePm = Number.isFinite(Number(opp3pmAllowed))
-        ? Number(opp3pmAllowed)
-        : readByKeys(dvpRow, ['3PM', '3pm', '3P', '3ptm', '3PTM']);
       return {
         player,
-        opp: (teamAbbrevMap.get(player.opponent) || player.opponent || '--').toUpperCase(),
+        opp: String(
+          opponentTeam?.abbreviation
+          || teamAbbrevMap.get(player.opponent)
+          || player.opponent
+          || '--'
+        ).toUpperCase(),
         position: selectedPosition,
         projection: Number(player.projection) || 0,
         actual,
@@ -437,12 +490,12 @@ export const CompareView: React.FC<Props> = ({ players, games, showActuals }) =>
         ptsAllowed: readByKeys(dvpRow, ['PTS', 'points', 'fantasyPointsAllowedPerGame']),
         rebAllowed: readByKeys(dvpRow, ['REB', 'rebounds']),
         astAllowed: readByKeys(dvpRow, ['AST', 'assists', 'A', 'APG']),
-        threePmAllowed: threePm,
+        threePmAllowed: readByKeys(dvpRow, ['3PM', '3pm', '3P', '3ptm', '3PTM']),
         blkAllowed: readByKeys(dvpRow, ['BLK', 'blocks']),
         stlAllowed: readByKeys(dvpRow, ['STL', 'steals']),
       };
     });
-  }, [effectiveGames, filteredPlayers, selectedPosition, teamAbbrevMap]);
+  }, [effectiveGames, filteredPlayers, selectedPosition, teamAbbrevMap, teamLookup]);
 
   const statsRows = useMemo<StatsRow[]>(() => {
     return filteredPlayers.map((player) => {
@@ -586,6 +639,29 @@ export const CompareView: React.FC<Props> = ({ players, games, showActuals }) =>
   }, [statsRows, filters, statsSort]);
 
   const visibleRowCount = selectedTable === 'dvp' ? displayedDvpRows.length : displayedStatsRows.length;
+  const tableMinWidth = selectedTable === 'dvp' ? 1180 : 1700;
+
+  const handleTopScrollbarScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    if (scrollSyncLockRef.current) return;
+    scrollSyncLockRef.current = true;
+    if (tableScrollbarRef.current) {
+      tableScrollbarRef.current.scrollLeft = event.currentTarget.scrollLeft;
+    }
+    window.requestAnimationFrame(() => {
+      scrollSyncLockRef.current = false;
+    });
+  };
+
+  const handleTableScrollbarScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    if (scrollSyncLockRef.current) return;
+    scrollSyncLockRef.current = true;
+    if (topScrollbarRef.current) {
+      topScrollbarRef.current.scrollLeft = event.currentTarget.scrollLeft;
+    }
+    window.requestAnimationFrame(() => {
+      scrollSyncLockRef.current = false;
+    });
+  };
 
   const toggleMatchup = (matchupKey: string) => {
     setSelectedTeams([]);
@@ -752,7 +828,19 @@ export const CompareView: React.FC<Props> = ({ players, games, showActuals }) =>
           </button>
         </div>
 
-        <div className="overflow-x-auto border border-ink/10 rounded-sm bg-white/30">
+        <div
+          ref={topScrollbarRef}
+          onScroll={handleTopScrollbarScroll}
+          className="overflow-x-auto overflow-y-hidden border border-ink/10 rounded-sm bg-white/20 mb-2 h-3.5"
+        >
+          <div style={{ width: tableMinWidth, height: 1 }} />
+        </div>
+
+        <div
+          ref={tableScrollbarRef}
+          onScroll={handleTableScrollbarScroll}
+          className="overflow-x-auto border border-ink/10 rounded-sm bg-white/30"
+        >
           {selectedTable === 'dvp' ? (
             <table className="w-full border-collapse min-w-[1180px]">
               <thead>
@@ -772,22 +860,28 @@ export const CompareView: React.FC<Props> = ({ players, games, showActuals }) =>
                 </tr>
               </thead>
               <tbody className="text-[12px] font-mono">
-                {displayedDvpRows.length > 0 ? displayedDvpRows.map((row) => (
-                  <tr key={`dvp-${row.player.id}`} className="border-b border-ink/5">
-                    <td className="px-3 py-2 font-black text-ink">{row.player.name}</td>
-                    <td className="px-3 py-2 text-ink/70">{row.player.team}</td>
-                    <td className="px-3 py-2 text-ink/70">{row.opp}</td>
-                    <td className="px-3 py-2 text-right font-black text-drafting-orange">{formatNum(row.projection, 2)}</td>
-                    <td className="px-3 py-2 text-right font-black text-emerald-600">{showActuals && row.actual !== null ? row.actual.toFixed(2) : '--'}</td>
-                    <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.dvpRank, 1)}</td>
-                    <td className={`px-3 py-2 text-right ${dvpStatClass(row.position, 'pts', Number.isFinite(Number(row.ptsAllowed)) ? Number(row.ptsAllowed) : null)}`}>{formatNum(row.ptsAllowed, 2)}</td>
-                    <td className={`px-3 py-2 text-right ${dvpStatClass(row.position, 'reb', Number.isFinite(Number(row.rebAllowed)) ? Number(row.rebAllowed) : null)}`}>{formatNum(row.rebAllowed, 2)}</td>
-                    <td className={`px-3 py-2 text-right ${dvpStatClass(row.position, 'ast', Number.isFinite(Number(row.astAllowed)) ? Number(row.astAllowed) : null)}`}>{formatNum(row.astAllowed, 2)}</td>
-                    <td className={`px-3 py-2 text-right ${dvpStatClass(row.position, '3pm', Number.isFinite(Number(row.threePmAllowed)) ? Number(row.threePmAllowed) : null)}`}>{formatNum(row.threePmAllowed, 2)}</td>
-                    <td className={`px-3 py-2 text-right ${dvpStatClass(row.position, 'blk', Number.isFinite(Number(row.blkAllowed)) ? Number(row.blkAllowed) : null)}`}>{formatNum(row.blkAllowed, 2)}</td>
-                    <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.stlAllowed, 2)}</td>
-                  </tr>
-                )) : (
+                {displayedDvpRows.length > 0 ? displayedDvpRows.map((row) => {
+                  const exceededProjection = row.actual !== null && Number.isFinite(row.actual) && row.actual > row.projection;
+                  return (
+                    <tr
+                      key={`dvp-${row.player.id}`}
+                      className={`border-b border-ink/5 ${exceededProjection ? 'bg-emerald-200/80 hover:bg-emerald-300/80' : ''}`}
+                    >
+                      <td className="px-3 py-2 font-black text-ink">{row.player.name}</td>
+                      <td className="px-3 py-2 text-ink/70">{row.player.team}</td>
+                      <td className="px-3 py-2 text-ink/70">{row.opp}</td>
+                      <td className="px-3 py-2 text-right font-black text-drafting-orange">{formatNum(row.projection, 2)}</td>
+                      <td className="px-3 py-2 text-right font-black text-emerald-600">{showActuals && row.actual !== null ? row.actual.toFixed(2) : '--'}</td>
+                      <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.dvpRank, 1)}</td>
+                      <td className={`px-3 py-2 text-right ${dvpStatClass(row.position, 'pts', Number.isFinite(Number(row.ptsAllowed)) ? Number(row.ptsAllowed) : null)}`}>{formatNum(row.ptsAllowed, 2)}</td>
+                      <td className={`px-3 py-2 text-right ${dvpStatClass(row.position, 'reb', Number.isFinite(Number(row.rebAllowed)) ? Number(row.rebAllowed) : null)}`}>{formatNum(row.rebAllowed, 2)}</td>
+                      <td className={`px-3 py-2 text-right ${dvpStatClass(row.position, 'ast', Number.isFinite(Number(row.astAllowed)) ? Number(row.astAllowed) : null)}`}>{formatNum(row.astAllowed, 2)}</td>
+                      <td className={`px-3 py-2 text-right ${dvpStatClass(row.position, '3pm', Number.isFinite(Number(row.threePmAllowed)) ? Number(row.threePmAllowed) : null)}`}>{formatNum(row.threePmAllowed, 2)}</td>
+                      <td className={`px-3 py-2 text-right ${dvpStatClass(row.position, 'blk', Number.isFinite(Number(row.blkAllowed)) ? Number(row.blkAllowed) : null)}`}>{formatNum(row.blkAllowed, 2)}</td>
+                      <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.stlAllowed, 2)}</td>
+                    </tr>
+                  );
+                }) : (
                   <tr>
                     <td colSpan={12} className="py-8 text-center text-[10px] font-black text-ink/40 uppercase tracking-widest">
                       No players matched the selected filters
@@ -828,70 +922,76 @@ export const CompareView: React.FC<Props> = ({ players, games, showActuals }) =>
                 </tr>
               </thead>
               <tbody className="text-[12px] font-mono">
-                {displayedStatsRows.length > 0 ? displayedStatsRows.map((row) => (
-                  <tr key={`stats-${row.player.id}`} className="border-b border-ink/5">
-                    <td className="px-3 py-2 font-black text-ink">{row.player.name}</td>
-                    <td className="px-3 py-2 text-ink/70">{row.player.team}</td>
-                    <td className="px-3 py-2 text-ink/70">{row.opp}</td>
-                    <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.player.salary, 0)}</td>
-                    <td className="px-3 py-2 text-right text-ink/70">{row.value !== null ? row.value.toFixed(2) : '--'}</td>
-                    <td className="px-3 py-2 text-right font-black text-drafting-orange">{formatNum(row.projection, 2)}</td>
-                    {showActuals && <td className="px-3 py-2 text-right font-black text-emerald-600">{row.actual !== null ? row.actual.toFixed(2) : '--'}</td>}
-                    <td className="px-3 py-2 text-right text-ink/70">{formatPct(row.ownership, 1)}</td>
-                    <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.minutes, 1)}</td>
-                    <td
-                      title={getSeasonThresholdTitle(row.position, 'usage', row.usage)}
-                      className={`px-3 py-2 text-right ${getSeasonHighlightClass(row.position, 'usage', row.usage)}`}
+                {displayedStatsRows.length > 0 ? displayedStatsRows.map((row) => {
+                  const exceededProjection = row.actual !== null && Number.isFinite(row.actual) && row.actual > row.projection;
+                  return (
+                    <tr
+                      key={`stats-${row.player.id}`}
+                      className={`border-b border-ink/5 ${exceededProjection ? 'bg-emerald-200/80 hover:bg-emerald-300/80' : ''}`}
                     >
-                      {formatPct(row.usage, 1)}
-                    </td>
-                    <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.fp, 2)}</td>
-                    <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.pts, 2)}</td>
-                    <td
-                      title={getSeasonThresholdTitle(row.position, 'reb', row.reb)}
-                      className={`px-3 py-2 text-right ${getSeasonHighlightClass(row.position, 'reb', row.reb)}`}
-                    >
-                      {formatNum(row.reb, 2)}
-                    </td>
-                    <td
-                      title={getSeasonThresholdTitle(row.position, 'ast', row.ast)}
-                      className={`px-3 py-2 text-right ${getSeasonHighlightClass(row.position, 'ast', row.ast)}`}
-                    >
-                      {formatNum(row.ast, 2)}
-                    </td>
-                    <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.stl, 2)}</td>
-                    <td
-                      title={getSeasonThresholdTitle(row.position, 'blk', row.blk)}
-                      className={`px-3 py-2 text-right ${getSeasonHighlightClass(row.position, 'blk', row.blk)}`}
-                    >
-                      {formatNum(row.blk, 2)}
-                    </td>
-                    <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.tov, 2)}</td>
-                    <td
-                      title={getSeasonThresholdTitle(row.position, 'fga', row.fga)}
-                      className={`px-3 py-2 text-right ${getSeasonHighlightClass(row.position, 'fga', row.fga)}`}
-                    >
-                      {formatNum(row.fga, 2)}
-                    </td>
-                    <td
-                      title={getSeasonThresholdTitle(row.position, 'fta', row.fta)}
-                      className={`px-3 py-2 text-right ${getSeasonHighlightClass(row.position, 'fta', row.fta)}`}
-                    >
-                      {formatNum(row.fta, 2)}
-                    </td>
-                    <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.fgPct, 2)}</td>
-                    <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.threePm, 2)}</td>
-                    <td
-                      title={getSeasonThresholdTitle(row.position, 'threePa', row.threePa)}
-                      className={`px-3 py-2 text-right ${getSeasonHighlightClass(row.position, 'threePa', row.threePa)}`}
-                    >
-                      {formatNum(row.threePa, 2)}
-                    </td>
-                    <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.threePct, 2)}</td>
-                    <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.tsPct, 2)}</td>
-                    <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.pie, 2)}</td>
-                  </tr>
-                )) : (
+                      <td className="px-3 py-2 font-black text-ink">{row.player.name}</td>
+                      <td className="px-3 py-2 text-ink/70">{row.player.team}</td>
+                      <td className="px-3 py-2 text-ink/70">{row.opp}</td>
+                      <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.player.salary, 0)}</td>
+                      <td className="px-3 py-2 text-right text-ink/70">{row.value !== null ? row.value.toFixed(2) : '--'}</td>
+                      <td className="px-3 py-2 text-right font-black text-drafting-orange">{formatNum(row.projection, 2)}</td>
+                      {showActuals && <td className="px-3 py-2 text-right font-black text-emerald-600">{row.actual !== null ? row.actual.toFixed(2) : '--'}</td>}
+                      <td className="px-3 py-2 text-right text-ink/70">{formatPct(row.ownership, 1)}</td>
+                      <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.minutes, 1)}</td>
+                      <td
+                        title={getSeasonThresholdTitle(row.position, 'usage', row.usage)}
+                        className={`px-3 py-2 text-right ${getSeasonHighlightClass(row.position, 'usage', row.usage)}`}
+                      >
+                        {formatPct(row.usage, 1)}
+                      </td>
+                      <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.fp, 2)}</td>
+                      <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.pts, 2)}</td>
+                      <td
+                        title={getSeasonThresholdTitle(row.position, 'reb', row.reb)}
+                        className={`px-3 py-2 text-right ${getSeasonHighlightClass(row.position, 'reb', row.reb)}`}
+                      >
+                        {formatNum(row.reb, 2)}
+                      </td>
+                      <td
+                        title={getSeasonThresholdTitle(row.position, 'ast', row.ast)}
+                        className={`px-3 py-2 text-right ${getSeasonHighlightClass(row.position, 'ast', row.ast)}`}
+                      >
+                        {formatNum(row.ast, 2)}
+                      </td>
+                      <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.stl, 2)}</td>
+                      <td
+                        title={getSeasonThresholdTitle(row.position, 'blk', row.blk)}
+                        className={`px-3 py-2 text-right ${getSeasonHighlightClass(row.position, 'blk', row.blk)}`}
+                      >
+                        {formatNum(row.blk, 2)}
+                      </td>
+                      <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.tov, 2)}</td>
+                      <td
+                        title={getSeasonThresholdTitle(row.position, 'fga', row.fga)}
+                        className={`px-3 py-2 text-right ${getSeasonHighlightClass(row.position, 'fga', row.fga)}`}
+                      >
+                        {formatNum(row.fga, 2)}
+                      </td>
+                      <td
+                        title={getSeasonThresholdTitle(row.position, 'fta', row.fta)}
+                        className={`px-3 py-2 text-right ${getSeasonHighlightClass(row.position, 'fta', row.fta)}`}
+                      >
+                        {formatNum(row.fta, 2)}
+                      </td>
+                      <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.fgPct, 2)}</td>
+                      <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.threePm, 2)}</td>
+                      <td
+                        title={getSeasonThresholdTitle(row.position, 'threePa', row.threePa)}
+                        className={`px-3 py-2 text-right ${getSeasonHighlightClass(row.position, 'threePa', row.threePa)}`}
+                      >
+                        {formatNum(row.threePa, 2)}
+                      </td>
+                      <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.threePct, 2)}</td>
+                      <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.tsPct, 2)}</td>
+                      <td className="px-3 py-2 text-right text-ink/70">{formatNum(row.pie, 2)}</td>
+                    </tr>
+                  );
+                }) : (
                   <tr>
                     <td colSpan={showActuals ? 25 : 24} className="py-8 text-center text-[10px] font-black text-ink/40 uppercase tracking-widest">
                       No players matched the selected filters

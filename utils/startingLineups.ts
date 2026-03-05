@@ -36,6 +36,14 @@ const toStringValue = (value: any): string => {
   return '';
 };
 
+const cleanPlayerName = (raw: string): string => {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return '';
+  const noParen = trimmed.replace(/\s*\([^)]*\)\s*$/g, '').trim();
+  const noPrefix = noParen.replace(/^[A-Z]{1,4}\s*[:\-]\s*/g, '').trim();
+  return noPrefix;
+};
+
 const extractName = (entry: any): string => {
   const direct = readByNormalizedKey(entry, [
     'player',
@@ -46,19 +54,19 @@ const extractName = (entry: any): string => {
     'fullname',
     'displayname',
   ]);
-  const directName = toStringValue(direct);
+  const directName = cleanPlayerName(toStringValue(direct));
   if (directName) return directName;
 
   const nestedPlayer = entry?.player ?? entry?.athlete ?? entry?.person ?? entry?.playerInfo ?? entry?.player_data;
   if (nestedPlayer && typeof nestedPlayer === 'object') {
     const nestedName = readByNormalizedKey(nestedPlayer, ['name', 'fullname', 'playername', 'displayname']);
-    const nestedValue = toStringValue(nestedName);
+    const nestedValue = cleanPlayerName(toStringValue(nestedName));
     if (nestedValue) return nestedValue;
   }
 
   const firstName = toStringValue(readByNormalizedKey(entry, ['firstname', 'first', 'first_name']));
   const lastName = toStringValue(readByNormalizedKey(entry, ['lastname', 'last', 'last_name']));
-  const combined = `${firstName} ${lastName}`.trim();
+  const combined = cleanPlayerName(`${firstName} ${lastName}`.trim());
   if (combined) return combined;
 
   return '';
@@ -79,6 +87,36 @@ const normalizeStatus = (raw: any): 'confirmed' | 'expected' | '' => {
   }
   if (status === 'c') return 'confirmed';
   if (status === 'e') return 'expected';
+  return '';
+};
+
+const isTruthyFlag = (raw: any): boolean => {
+  if (raw === true || raw === 1) return true;
+  const text = toStringValue(raw).toLowerCase();
+  if (!text) return false;
+  return text === 'true' || text === '1' || text === 'yes' || text === 'y';
+};
+
+const readStatusFromEntry = (entry: any): 'confirmed' | 'expected' | '' => {
+  const explicit = normalizeStatus(readByNormalizedKey(entry, [
+    'status',
+    'lineupStatus',
+    'startingStatus',
+    'confirmation',
+    'state',
+  ]));
+  if (explicit) return explicit;
+
+  const confirmedFlag = isTruthyFlag(
+    readByNormalizedKey(entry, ['confirmed', 'isConfirmed', 'confirmedStarters', 'confirmedLineup', 'official'])
+  );
+  if (confirmedFlag) return 'confirmed';
+
+  const expectedFlag = isTruthyFlag(
+    readByNormalizedKey(entry, ['expected', 'isExpected', 'projected', 'probable', 'expectedLineup'])
+  );
+  if (expectedFlag) return 'expected';
+
   return '';
 };
 
@@ -118,16 +156,64 @@ const extractEntries = (payload: any): any[] => {
 const extractPlayersFromValue = (value: any): string[] => {
   if (!value) return [];
   if (Array.isArray(value)) {
-    return value.map((item) => extractName(item) || toStringValue(item)).filter((name) => name.length > 0);
+    return value
+      .map((item) => extractName(item) || cleanPlayerName(toStringValue(item)))
+      .filter((name) => name.length > 0);
   }
   if (typeof value === 'object') {
     const nested = readByNormalizedKey(value, ['players', 'starters', 'lineup', 'startingLineup', 'starting_lineup']);
     if (nested) return extractPlayersFromValue(nested);
-    const values = Object.values(value).map((item) => extractName(item) || toStringValue(item)).filter(Boolean) as string[];
+    const values = Object.values(value)
+      .map((item) => extractName(item) || cleanPlayerName(toStringValue(item)))
+      .filter(Boolean) as string[];
     if (values.length > 0) return values;
   }
+  if (typeof value === 'boolean') return [];
   const asString = toStringValue(value);
-  return asString ? [asString] : [];
+  const cleaned = cleanPlayerName(asString);
+  return cleaned ? [cleaned] : [];
+};
+
+const addPlayersWithEmbeddedStatus = (
+  lookup: StartingLineupLookup,
+  value: any,
+  fallbackStatus: 'confirmed' | 'expected' | ''
+) => {
+  if (!value) return;
+
+  const visit = (node: any) => {
+    if (!node) return;
+
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+
+    if (typeof node === 'object') {
+      const nested = readByNormalizedKey(node, ['players', 'starters', 'lineup', 'startingLineup', 'starting_lineup']);
+      if (nested) {
+        visit(nested);
+        return;
+      }
+
+      const name = extractName(node);
+      const id = extractPlayerId(node);
+      const status = readStatusFromEntry(node) || fallbackStatus;
+      if (name && status) {
+        addPlayerToLookup(lookup, name, id, status);
+        return;
+      }
+
+      Object.values(node).forEach(visit);
+      return;
+    }
+
+    if (!fallbackStatus) return;
+    const cleaned = cleanPlayerName(toStringValue(node));
+    if (cleaned) addPlayerToLookup(lookup, cleaned, '', fallbackStatus);
+  };
+
+  visit(value);
 };
 
 const addPlayerToLookup = (lookup: StartingLineupLookup, name: string, id: string, status: 'confirmed' | 'expected') => {
@@ -150,29 +236,54 @@ export const buildStartingLineupLookup = (payload: any): StartingLineupLookup =>
 
     const entryName = extractName(entry);
     const entryId = extractPlayerId(entry);
-    const entryStatus = normalizeStatus(readByNormalizedKey(entry, ['status', 'lineupStatus', 'startingStatus', 'confirmation', 'state']));
+    const entryStatus = readStatusFromEntry(entry);
+    const startersValue = readByNormalizedKey(entry, [
+      'starters',
+      'startinglineup',
+      'starting_lineup',
+      'lineup',
+      'players',
+      'startingfive',
+      'starting_five',
+    ]);
 
-    if (entryName && entryStatus) {
+    // Only treat entry-level name/status as player data when it's not a team-level lineup container.
+    if (entryName && entryStatus && !startersValue) {
       addPlayerToLookup(lookup, entryName, entryId, entryStatus);
-      return;
     }
 
     const confirmedList = extractPlayersFromValue(
-      readByNormalizedKey(entry, ['confirmed', 'confirmedstarters', 'confirmedlineup', 'confirmedstartinglineup'])
+      readByNormalizedKey(entry, [
+        'confirmedStarters',
+        'confirmedLineup',
+        'confirmedStartingLineup',
+        'confirmedPlayers',
+        'confirmed',
+      ])
     );
     confirmedList.forEach((name) => addPlayerToLookup(lookup, name, '', 'confirmed'));
 
     const expectedList = extractPlayersFromValue(
-      readByNormalizedKey(entry, ['expected', 'expectedstarters', 'projected', 'probable', 'expectedlineup', 'expectedstartinglineup'])
+      readByNormalizedKey(entry, [
+        'expectedStarters',
+        'expectedLineup',
+        'expectedStartingLineup',
+        'projectedStarters',
+        'projectedLineup',
+        'expected',
+        'projected',
+        'probable',
+      ])
     );
     expectedList.forEach((name) => addPlayerToLookup(lookup, name, '', 'expected'));
 
-    const starters = extractPlayersFromValue(
-      readByNormalizedKey(entry, ['starters', 'startinglineup', 'starting_lineup', 'lineup', 'players'])
-    );
+    const starters = extractPlayersFromValue(startersValue);
+    const starterFallbackStatus: 'confirmed' | 'expected' = entryStatus || 'expected';
 
-    if (starters.length > 0 && entryStatus) {
-      starters.forEach((name) => addPlayerToLookup(lookup, name, '', entryStatus));
+    if (starters.length > 0) {
+      starters.forEach((name) => addPlayerToLookup(lookup, name, '', starterFallbackStatus));
+    } else if (startersValue) {
+      addPlayersWithEmbeddedStatus(lookup, startersValue, starterFallbackStatus);
     }
   });
 

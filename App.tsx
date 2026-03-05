@@ -451,6 +451,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
   const [state, setState] = useState<AppState>(INITIAL_STATE);
   const [view, setView] = useState<ViewState>(ViewState.RESEARCH);
   const [loading, setLoading] = useState(false);
+  const [loadingProgress, setLoadingProgress] = useState(0);
   const [isHistorical, setIsHistorical] = useState(false);
   const [selectedDate, setSelectedDate] = useState(() => (
     previewMode ? getPreviewMaxDateStr() : getLocalDateStr(new Date())
@@ -524,6 +525,24 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
     setSelectedDate((prev) => clampPreviewDate(prev));
     setView(ViewState.RESEARCH);
   }, [previewMode, clampPreviewDate]);
+
+  useEffect(() => {
+    if (!loading) {
+      setLoadingProgress(0);
+      return;
+    }
+
+    setLoadingProgress(10);
+    const interval = window.setInterval(() => {
+      setLoadingProgress((prev) => {
+        if (prev >= 92) return prev;
+        const step = 2 + Math.random() * 6;
+        return Math.min(92, prev + step);
+      });
+    }, 180);
+
+    return () => window.clearInterval(interval);
+  }, [loading]);
 
   useEffect(() => {
     const initApp = async () => {
@@ -897,9 +916,14 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
 
       {loading && (
         <div className="fixed inset-0 bg-vellum/60 flex items-center justify-center z-[100] backdrop-blur-md">
-            <div className="bg-white p-6 rounded-xl shadow-2xl flex flex-col items-center border border-ink/10">
-                <div className="w-8 h-8 border-4 border-drafting-orange border-t-transparent animate-spin mb-4"></div>
-                <p className="font-black text-xs uppercase tracking-[0.2em] text-drafting-orange animate-pulse">Running Field Stress Test...</p>
+            <div className="bg-white p-6 rounded-xl shadow-2xl border border-ink/10 w-full max-w-sm">
+                <p className="text-[11px] font-black uppercase tracking-widest text-ink/60 mb-2">loading ...</p>
+                <div className="h-2 w-full rounded-full bg-ink/10 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-drafting-orange via-amber-400 to-drafting-orange transition-[width] duration-200 ease-out"
+                    style={{ width: `${loadingProgress}%` }}
+                  />
+                </div>
             </div>
         </div>
       )}

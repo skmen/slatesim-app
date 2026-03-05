@@ -227,6 +227,16 @@ const getBustPct = (player: Player): number | undefined => {
   ]));
 };
 
+const getActualFpts = (player: Player): number | null => {
+  const actualVal = Number(
+    player.actual ??
+    player.actualFpts ??
+    player.actual_fpts ??
+    player.history?.[player.history.length - 1]?.fpts
+  );
+  return Number.isFinite(actualVal) ? actualVal : null;
+};
+
 const isMatchupBoostSignal = (player: Player): boolean => {
   const clamp = (val: number, min: number, max: number) => Math.min(max, Math.max(min, val));
   const usageRate = readStatNumber(player, ['usageRate', 'usage_rate', 'USG%']) ?? 0;
@@ -678,13 +688,8 @@ export const DashboardView: React.FC<Props> = ({
     }
 
     const getActual = (player: Player): number => {
-      const actualVal = Number(
-        player.actual ??
-        player.actualFpts ??
-        player.actual_fpts ??
-        player.history?.[player.history.length - 1]?.fpts
-      );
-      return Number.isFinite(actualVal) ? actualVal : -Infinity;
+      const actualVal = getActualFpts(player);
+      return actualVal !== null ? actualVal : -Infinity;
     };
 
     const getSortValue = (player: Player, key: string): any => {
@@ -1043,12 +1048,18 @@ export const DashboardView: React.FC<Props> = ({
                     const leverageScore = getLeverageScore(player);
                     const boomPct = getBoomPct(player);
                     const bustPct = getBustPct(player);
+                    const actualFpts = getActualFpts(player);
+                    const exceededProjection = isHistorical && actualFpts !== null && actualFpts > Number(player.projection);
 
                     return (
                     <tr
                       key={player.id}
                       onClick={() => setSelectedPlayer(player)}
-                      className="border-b border-ink/5 hover:bg-white/70 cursor-pointer transition-colors"
+                      className={`border-b border-ink/5 cursor-pointer transition-colors ${
+                        exceededProjection
+                          ? 'bg-emerald-200/80 hover:bg-emerald-300/80'
+                          : 'hover:bg-white/70'
+                      }`}
                     >
                       <td className="px-3 py-2 font-black uppercase tracking-tight text-ink">
                         <div className="flex items-center gap-2">
@@ -1101,15 +1112,7 @@ export const DashboardView: React.FC<Props> = ({
                       </td>
                       {showActuals && (
                         <td className="px-3 py-2 text-right font-black text-emerald-600">
-                          {(() => {
-                            const actualVal = Number(
-                              player.actual ??
-                              player.actualFpts ??
-                              player.actual_fpts ??
-                              player.history?.[player.history.length - 1]?.fpts
-                            );
-                            return Number.isFinite(actualVal) ? actualVal.toFixed(2) : '--';
-                          })()}
+                          {actualFpts !== null ? actualFpts.toFixed(2) : '--'}
                         </td>
                       )}
                       <td className="px-3 py-2 text-right text-ink/60">
