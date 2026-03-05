@@ -939,6 +939,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
   const [expandedLineupId, setExpandedLineupId] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [lockedIds, setLockedIds] = useState<string[]>([]);
+  const [settingsRevision, setSettingsRevision] = useState(0);
   const [selectedMatchups, setSelectedMatchups] = useState<string[]>([]);
   const [teamStackWeights, setTeamStackWeights] = useState<Record<string, number>>({});
   const [poolSort, setPoolSort] = useState<SortConfig | null>(null);
@@ -1486,6 +1487,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     setSelectedMatchups([]);
     setTeamStackWeights({});
     setPlayerOverrides({});
+    setSettingsRevision((r) => r + 1);
   };
 
   const handleDeepDiveExposureChange = useCallback((playerId: string, minExposure?: number, maxExposure?: number) => {
@@ -1610,6 +1612,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           injuryLookup={injuryLookup}
           startingLineupLookup={startingLineupLookup}
           optimizerSettingsKey={getAdvancedSettingsStorageKey(slateDate)}
+          settingsRevision={settingsRevision}
           onOptimizerExposureChange={handleDeepDiveExposureChange}
           onOptimizerLockChange={handleDeepDiveLockChange}
           onOptimizerExcludeChange={handleDeepDiveExcludeChange}

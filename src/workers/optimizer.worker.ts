@@ -535,9 +535,10 @@ const buildExposureLimits = (
     const minReq = Math.ceil((minPct / 100) * totalLineups);
     let maxAllowed = Math.floor((maxPct / 100) * totalLineups);
 
-    // Apply global cash exposure cap (e.g. 65%) — takes precedence over per-player max
+    // Apply global cash exposure cap (e.g. 65%) — takes precedence over per-player max.
+    // Clamp to at least 1 so small lineup counts (e.g. 1) remain feasible.
     if (globalMaxCount !== undefined) {
-      maxAllowed = Math.min(maxAllowed, globalMaxCount);
+      maxAllowed = Math.min(maxAllowed, Math.max(1, globalMaxCount));
     }
 
     if (minReq > maxAllowed) {

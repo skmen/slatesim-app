@@ -20,6 +20,7 @@ interface Props {
   injuryLookup?: InjuryLookup | null;
   startingLineupLookup?: StartingLineupLookup | null;
   optimizerSettingsKey?: string;
+  settingsRevision?: number;
   onOptimizerExposureChange?: (playerId: string, minExposure?: number, maxExposure?: number) => void;
   onOptimizerLockChange?: (playerId: string, locked: boolean) => void;
   onOptimizerExcludeChange?: (playerId: string, excluded: boolean) => void;
@@ -461,6 +462,7 @@ export const PlayerDeepDive: React.FC<Props> = ({
   injuryLookup,
   startingLineupLookup,
   optimizerSettingsKey,
+  settingsRevision,
   onOptimizerExposureChange,
   onOptimizerLockChange,
   onOptimizerExcludeChange,
@@ -1219,7 +1221,7 @@ export const PlayerDeepDive: React.FC<Props> = ({
     setIsOptimizerLocked(Boolean(locked));
     setIsOptimizerExcluded(excluded);
     setExposureStatus(null);
-  }, [player.id, optimizerSettingsKey]);
+  }, [player.id, optimizerSettingsKey, settingsRevision]);
 
   const applyExposureSettings = () => {
     const minExposure = parseExposureInput(minExposureInput);
