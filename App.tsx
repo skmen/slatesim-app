@@ -862,6 +862,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
             startingLineupLookup={startingLineupLookup}
             previewMode={previewMode}
             hideSignalColumn={previewMode}
+            slateDate={state.slate.date}
           />
         )}
         {!previewMode && view === ViewState.COMPARE && (

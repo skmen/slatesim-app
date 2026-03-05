@@ -16,6 +16,7 @@ interface Props {
   startingLineupLookup?: StartingLineupLookup | null;
   previewMode?: boolean;
   hideSignalColumn?: boolean;
+  slateDate?: string;
 }
 
 interface FilterRule {
@@ -537,6 +538,7 @@ export const DashboardView: React.FC<Props> = ({
   depthCharts,
   startingLineupLookup,
   previewMode = false,
+  slateDate,
 }) => {
   const [search, setSearch] = useState('');
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
@@ -1161,6 +1163,7 @@ export const DashboardView: React.FC<Props> = ({
           depthCharts={depthCharts}
           startingLineupLookup={startingLineupLookup}
           previewMode={previewMode}
+          optimizerSettingsKey={`optimizerAdvancedSettings:${slateDate || 'unspecified'}`}
         />
       )}
     </div>
