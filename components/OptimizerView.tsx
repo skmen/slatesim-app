@@ -22,7 +22,7 @@ import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
-import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260304-feasibility2';
+import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260305-cashfilterfix';
 
 interface Props {
   players: Player[];
@@ -917,6 +917,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
   const [error, setError] = useState<string | null>(null);
   const [lineupSort, setLineupSort] = useState<SortConfig>({ key: 'projection', dir: 'desc' });
   const [exposureSort, setExposureSort] = useState<SortConfig>({ key: 'exposure', dir: 'desc' });
+  const [expandedExposureRowId, setExpandedExposureRowId] = useState<string | null>(null);
   const [savedLineupSets, setSavedLineupSets] = useState<SavedLineupSet[]>([]);
   const [showSaveLineupsModal, setShowSaveLineupsModal] = useState(false);
   const [saveLineupName, setSaveLineupName] = useState('');
@@ -1014,6 +1015,25 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       // Ignore malformed stored settings
     }
   }, [slateDate, players]);
+
+  // Keep a ref to the current slateDate so the auto-save effect always writes
+  // to the correct key without slateDate in its deps (prevents saving stale
+  // state to the new key when the slate changes before loading finishes).
+  const slateDateForSaveRef = useRef(slateDate);
+  useEffect(() => { slateDateForSaveRef.current = slateDate; });
+
+  // Skip the very first run so we never overwrite localStorage with the empty
+  // initial state before the settings-loading effect has populated state.
+  const isFirstAutoSaveRunRef = useRef(true);
+  useEffect(() => {
+    if (isFirstAutoSaveRunRef.current) {
+      isFirstAutoSaveRunRef.current = false;
+      return;
+    }
+    if (!slateDateForSaveRef.current) return;
+    const payload = { lockedIds, selectedMatchups, teamStackWeights, playerOverrides };
+    localStorage.setItem(getAdvancedSettingsStorageKey(slateDateForSaveRef.current), JSON.stringify(payload));
+  }, [lockedIds, selectedMatchups, teamStackWeights, playerOverrides]);
 
   const startOptimization = () => {
     if (isOptimizing) return;
@@ -1474,13 +1494,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
   }, [games]);
 
   const saveAdvancedSettings = () => {
-    const payload = {
-      lockedIds,
-      selectedMatchups,
-      teamStackWeights,
-      playerOverrides,
-    };
-    localStorage.setItem(getAdvancedSettingsStorageKey(slateDate), JSON.stringify(payload));
     setShowAdvanced(false);
   };
 
@@ -1975,24 +1988,83 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                 </tr>
               </thead>
               <tbody className="text-[12px] font-mono">
-                {sortedExposureStats.map((stat) => (
-                  <tr key={stat.id} className="border-b border-ink/5 hover:bg-white/40 transition-colors">
-                    <td className="px-4 py-3 text-ink font-bold uppercase truncate max-w-[120px]">{stat.name}</td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex items-center justify-end gap-3">
-                        <div className="w-16 h-1.5 bg-ink/10 rounded-full overflow-hidden">
-                          <div 
-                            className={`h-full ${stat.exposure > config.maxExposure ? 'bg-red-600' : 'bg-drafting-orange'}`}
-                            style={{ width: `${stat.exposure}%` }}
-                          />
-                        </div>
-                        <span className={`font-black min-w-[40px] ${stat.exposure > config.maxExposure ? 'text-red-600' : 'text-ink/60'}`}>
-                          {stat.exposure.toFixed(1)}%
-                        </span>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {sortedExposureStats.map((stat) => {
+                  const isExpanded = expandedExposureRowId === stat.id;
+                  const overrides = playerOverrides[stat.id] ?? {};
+                  return (
+                    <React.Fragment key={stat.id}>
+                      <tr
+                        className="border-b border-ink/5 hover:bg-white/40 transition-colors cursor-pointer select-none"
+                        onClick={() => setExpandedExposureRowId(isExpanded ? null : stat.id)}
+                      >
+                        <td className="px-4 py-3 text-ink font-bold uppercase truncate max-w-[120px]">
+                          <span className="mr-1 text-ink/30 text-[10px]">{isExpanded ? '▼' : '▶'}</span>
+                          {stat.name}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <div className="flex items-center justify-end gap-3">
+                            <div className="w-16 h-1.5 bg-ink/10 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full ${stat.exposure > config.maxExposure ? 'bg-red-600' : 'bg-drafting-orange'}`}
+                                style={{ width: `${stat.exposure}%` }}
+                              />
+                            </div>
+                            <span className={`font-black min-w-[40px] ${stat.exposure > config.maxExposure ? 'text-red-600' : 'text-ink/60'}`}>
+                              {stat.exposure.toFixed(1)}%
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="border-b border-ink/10 bg-white/60">
+                          <td colSpan={2} className="px-4 py-3">
+                            <div className="flex items-center gap-3">
+                              <span className="text-[11px] font-black uppercase tracking-widest text-ink/40">Exposure %</span>
+                              <div className="flex items-center gap-2">
+                                <label className="text-[11px] font-bold uppercase text-ink/50">Min</label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={100}
+                                  value={overrides.minExposure ?? ''}
+                                  placeholder="0"
+                                  onClick={(e) => e.stopPropagation()}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setPlayerOverrides((prev) => ({
+                                      ...prev,
+                                      [stat.id]: { ...prev[stat.id], minExposure: val === '' ? undefined : Number(val) },
+                                    }));
+                                  }}
+                                  className="w-16 bg-white border border-ink/20 rounded-sm px-2 py-1 text-[12px] font-bold font-mono text-right"
+                                />
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <label className="text-[11px] font-bold uppercase text-ink/50">Max</label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={100}
+                                  value={overrides.maxExposure ?? ''}
+                                  placeholder="100"
+                                  onClick={(e) => e.stopPropagation()}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setPlayerOverrides((prev) => ({
+                                      ...prev,
+                                      [stat.id]: { ...prev[stat.id], maxExposure: val === '' ? undefined : Number(val) },
+                                    }));
+                                  }}
+                                  className="w-16 bg-white border border-ink/20 rounded-sm px-2 py-1 text-[12px] font-bold font-mono text-right"
+                                />
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
                 {exposureStats.length === 0 && (
                   <tr>
                     <td colSpan={2} className="px-4 py-12 text-center text-ink/40 font-black uppercase tracking-widest italic opacity-50">
@@ -2531,24 +2603,15 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
 
             <div className="pt-4 border-t border-ink/10 mt-4 flex items-center justify-between">
               <div className="text-[9px] font-mono text-ink/40">
-                Saved settings apply to optimizer runs.
+                Settings auto-save as you make changes.
               </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={clearAdvancedSettings}
-                  className="px-4 py-2 border border-ink/20 rounded-sm text-[10px] font-black uppercase tracking-widest text-ink/60 hover:border-red-600/40 hover:text-red-600"
-                >
-                  Clear
-                </button>
-                <button
-                  type="button"
-                  onClick={saveAdvancedSettings}
-                  className="px-4 py-2 bg-drafting-orange text-white rounded-sm text-[10px] font-black uppercase tracking-widest hover:opacity-90"
-                >
-                  Save
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={clearAdvancedSettings}
+                className="px-4 py-2 border border-ink/20 rounded-sm text-[10px] font-black uppercase tracking-widest text-ink/60 hover:border-red-600/40 hover:text-red-600"
+              >
+                Clear
+              </button>
             </div>
           </div>
         </div>

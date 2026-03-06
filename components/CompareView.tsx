@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Player, GameInfo } from '../types';
 import { GitCompare, Table2, Filter, X, Trash2, PlusCircle } from 'lucide-react';
 import { MatchupEngine } from './MatchupEngine';
+import { calculateValueScores } from '../utils/valueScore';
 
 interface Props {
   players: Player[];
@@ -419,6 +420,7 @@ export const CompareView: React.FC<Props> = ({ players, games, showActuals }) =>
   }, [effectiveGames]);
 
   const teamLookup = useMemo(() => buildTeamLookup(effectiveGames), [effectiveGames]);
+  const valueScoreMap = useMemo(() => calculateValueScores(players, effectiveGames), [players, effectiveGames]);
 
   useEffect(() => {
     if (selectedMatchupKey !== ALL_MATCHUPS_KEY && !matchupMap.has(selectedMatchupKey)) {
@@ -505,7 +507,7 @@ export const CompareView: React.FC<Props> = ({ players, games, showActuals }) =>
         player,
         opp: (teamAbbrevMap.get(player.opponent) || player.opponent || '--').toUpperCase(),
         position: selectedPosition,
-        value: player.salary > 0 ? player.projection / (player.salary / 1000) : null,
+        value: valueScoreMap.get(player.id)?.composite ?? null,
         ownership: getPlayerStat(player, ['ownership', 'OWNERSHIP_PCT']),
         minutes: getPlayerStat(player, ['minutesProjection', 'minutes', 'min', 'MINUTES_PROJ']),
         usage: getPlayerStat(player, ['usageRate', 'usage_rate', 'USG%', 'USAGE_PCT']),
@@ -528,7 +530,7 @@ export const CompareView: React.FC<Props> = ({ players, games, showActuals }) =>
         actual,
       };
     });
-  }, [filteredPlayers, selectedPosition, teamAbbrevMap]);
+  }, [filteredPlayers, selectedPosition, teamAbbrevMap, valueScoreMap]);
 
   const getDvpValue = (row: DvpRow, key: string): any => {
     switch (key) {

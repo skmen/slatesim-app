@@ -535,8 +535,15 @@ const buildExposureLimits = (
     const minReq = Math.ceil((minPct / 100) * totalLineups);
     let maxAllowed = Math.floor((maxPct / 100) * totalLineups);
 
-    // Apply global cash exposure cap (e.g. 65%) — takes precedence over per-player max.
-    // Clamp to at least 1 so small lineup counts (e.g. 1) remain feasible.
+    // When the percentage rounds down to 0 (e.g. 50% × 1 lineup = 0.5 → 0),
+    // treat the player as still eligible — they should be allowed in at least 1 lineup.
+    // A genuine exclusion is expressed via 0% max exposure or the exclude toggle.
+    if (maxPct > 0 && maxAllowed < 1) {
+      maxAllowed = 1;
+    }
+
+    // Apply global cash exposure cap (e.g. 65%) — takes precedence over per-player max,
+    // but never reduces below 1 for eligible players.
     if (globalMaxCount !== undefined) {
       maxAllowed = Math.min(maxAllowed, Math.max(1, globalMaxCount));
     }
@@ -937,47 +944,73 @@ const buildStatConstraintRules = (context: BuildContext): StatConstraintRule[] =
   });
 
   if (statSettings.mode === 'gpp') {
-    rules.push({
-      name: 'two_high_usage_players',
-      sense: '>=',
-      rhs: 2,
-      playerIndexes: qualifying((player) => {
-        const usg = getUSGPctMaybe(player);
-        return Number.isFinite(Number(usg)) && Number(usg) >= 28;
-      }),
-    });
+    // Scale down rhs for "require N of M" constraints when the qualifying pool is small.
+    // If fewer than 2*required players qualify, forcing N of them into every lineup
+    // exhausts unique combinations rapidly on small slates.
+    const scaledRhs2 = (indexes: number[]): number => (indexes.length >= 4 ? 2 : 1);
 
-    rules.push({
-      name: 'five_moderate_usage_players',
-      sense: '>=',
-      rhs: 5,
-      playerIndexes: qualifying((player) => {
-        const usg = getUSGPctMaybe(player);
-        return Number.isFinite(Number(usg)) && Number(usg) >= 20;
-      }),
+    const highUsageIndexes = qualifying((player) => {
+      const usg = getUSGPctMaybe(player);
+      return Number.isFinite(Number(usg)) && Number(usg) >= 28;
     });
+    if (highUsageIndexes.length >= 1) {
+      rules.push({
+        name: 'two_high_usage_players',
+        sense: '>=',
+        rhs: scaledRhs2(highUsageIndexes),
+        playerIndexes: highUsageIndexes,
+      });
+    }
 
-    rules.push({
-      name: 'two_stock_guys',
-      sense: '>=',
-      rhs: 2,
-      playerIndexes: qualifying((player) => {
-        const stl = getSTLMaybe(player);
-        const blk = getBLKMaybe(player);
-        if (!Number.isFinite(Number(stl)) || !Number.isFinite(Number(blk))) return false;
-        return Number(stl) + Number(blk) >= 2;
-      }),
+    const modUsageIndexes = qualifying((player) => {
+      const usg = getUSGPctMaybe(player);
+      return Number.isFinite(Number(usg)) && Number(usg) >= 20;
     });
+    if (modUsageIndexes.length >= 2) {
+      // Scale rhs=5 down when the pool is too small for meaningful diversity.
+      // C(N,5) < 10 when N < 7, so require fewer when the pool is tight.
+      const scaledRhs5 = modUsageIndexes.length >= 8
+        ? 5
+        : modUsageIndexes.length >= 6
+          ? 4
+          : modUsageIndexes.length >= 4
+            ? 3
+            : 2;
+      rules.push({
+        name: 'five_moderate_usage_players',
+        sense: '>=',
+        rhs: scaledRhs5,
+        playerIndexes: modUsageIndexes,
+      });
+    }
 
-    rules.push({
-      name: 'two_fta_ceiling_players',
-      sense: '>=',
-      rhs: 2,
-      playerIndexes: qualifying((player) => {
-        const fta = getFTAMaybe(player);
-        return Number.isFinite(Number(fta)) && Number(fta) >= 6;
-      }),
+    const stockIndexes = qualifying((player) => {
+      const stl = getSTLMaybe(player);
+      const blk = getBLKMaybe(player);
+      if (!Number.isFinite(Number(stl)) || !Number.isFinite(Number(blk))) return false;
+      return Number(stl) + Number(blk) >= 2;
     });
+    if (stockIndexes.length >= 1) {
+      rules.push({
+        name: 'two_stock_guys',
+        sense: '>=',
+        rhs: scaledRhs2(stockIndexes),
+        playerIndexes: stockIndexes,
+      });
+    }
+
+    const ftaIndexes = qualifying((player) => {
+      const fta = getFTAMaybe(player);
+      return Number.isFinite(Number(fta)) && Number(fta) >= 6;
+    });
+    if (ftaIndexes.length >= 1) {
+      rules.push({
+        name: 'two_fta_ceiling_players',
+        sense: '>=',
+        rhs: scaledRhs2(ftaIndexes),
+        playerIndexes: ftaIndexes,
+      });
+    }
 
     rules.push({
       name: 'limit_high_owned',
@@ -989,25 +1022,31 @@ const buildStatConstraintRules = (context: BuildContext): StatConstraintRule[] =
       }),
     });
 
-    rules.push({
-      name: 'require_some_low_owned',
-      sense: '>=',
-      rhs: 2,
-      playerIndexes: qualifying((player) => {
-        const own = getOwnershipPctMaybe(player);
-        return Number.isFinite(Number(own)) && Number(own) <= 10;
-      }),
+    const lowOwnedIndexes = qualifying((player) => {
+      const own = getOwnershipPctMaybe(player);
+      return Number.isFinite(Number(own)) && Number(own) <= 10;
     });
+    if (lowOwnedIndexes.length >= 1) {
+      rules.push({
+        name: 'require_some_low_owned',
+        sense: '>=',
+        rhs: scaledRhs2(lowOwnedIndexes),
+        playerIndexes: lowOwnedIndexes,
+      });
+    }
 
-    rules.push({
-      name: 'require_two_high_leverage',
-      sense: '>=',
-      rhs: 2,
-      playerIndexes: qualifying((player) => {
-        const lev = leverageTierToScoreMaybe(player);
-        return Number.isFinite(Number(lev)) && Number(lev) >= 2;
-      }),
+    const highLevIndexes = qualifying((player) => {
+      const lev = leverageTierToScoreMaybe(player);
+      return Number.isFinite(Number(lev)) && Number(lev) >= 2;
     });
+    if (highLevIndexes.length >= 1) {
+      rules.push({
+        name: 'require_two_high_leverage',
+        sense: '>=',
+        rhs: scaledRhs2(highLevIndexes),
+        playerIndexes: highLevIndexes,
+      });
+    }
   }
 
   return rules;
@@ -1232,9 +1271,12 @@ const getFloorValue = (player: Player): number => {
 // Cash-mode helpers
 // ---------------------------------------------------------------------------
 
-/** Default positional projection floors for cash game mode. */
+/** Default positional projection floors for cash game mode.
+ * Intentionally conservative — only filters out true scrubs.
+ * The ILP objective already maximises cash-adjusted projection,
+ * so there is no need to aggressively gate with high floors here. */
 const CASH_POSITION_FLOORS_DEFAULT: Record<string, number> = {
-  PG: 28, SG: 25, SF: 25, PF: 26, C: 24, G: 24, F: 24, UTIL: 24,
+  PG: 18, SG: 16, SF: 16, PF: 16, C: 14, G: 14, F: 14, UTIL: 14,
 };
 
 /** Read the raw player status string from any common field name. */
@@ -1247,17 +1289,17 @@ const getPlayerStatusRaw = (player: Player): string =>
 
 /**
  * Returns true if the player status indicates they should be excluded in
- * cash mode: GTD, Questionable (Q), Doubtful (D), or Out (O).
+ * cash mode: Doubtful (D) or Out (O).
+ *
+ * GTD and Questionable (Q) players are intentionally NOT excluded here —
+ * they are active on a high percentage of NBA slates and excluding them
+ * risks making the pool too small to build a valid lineup (especially on
+ * lighter late-season slates with heavy injury-report activity).
  */
 const isCashUnavailableStatus = (status: string): boolean => {
   if (!status) return false;
   const s = status.toLowerCase().replace(/[^a-z]/g, '');
-  return (
-    s === 'out' || s === 'o' ||
-    s === 'doubtful' || s === 'd' ||
-    s === 'questionable' || s === 'q' ||
-    s === 'gtd' || s === 'gametimedecision'
-  );
+  return s === 'out' || s === 'o' || s === 'doubtful' || s === 'd';
 };
 
 /** Column names that are NOT additional projection sources. */
@@ -2023,6 +2065,32 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
         (player as any).optimizerExcluded = true;
       }
     });
+
+    // Safety check: if the cash pre-filter eliminated all eligible players for any
+    // required DK slot, re-enable the highest-projecting excluded player(s) for that
+    // slot so the optimizer can still build a valid lineup.
+    for (const slot of DK_SLOTS) {
+      const hasEligible = players.some(
+        (p) => !Boolean((p as any).optimizerExcluded || (p as any).excluded) && canFitDK(p, slot),
+      );
+      if (!hasEligible) {
+        // Find the best excluded (non-locked, non-frontend-excluded) candidate for this slot.
+        const candidates = players
+          .filter(
+            (p) =>
+              Boolean((p as any).optimizerExcluded) &&
+              !Boolean((p as any).excluded) &&
+              !Boolean((p as any).optimizerLocked) &&
+              canFitDK(p, slot),
+          )
+          .sort((a, b) => Math.max(0, safeNumber(b.projection, 0)) - Math.max(0, safeNumber(a.projection, 0)));
+        // Re-enable the top candidate so the slot can be filled.
+        if (candidates.length > 0) {
+          delete (candidates[0] as any).optimizerExcluded;
+          (candidates[0] as any).cashAdjustedProj = getCashAdjustedProjection(candidates[0]);
+        }
+      }
+    }
   }
 
   const lineups: Lineup[] = [];

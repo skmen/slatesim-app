@@ -707,7 +707,7 @@ export const DashboardView: React.FC<Props> = ({
         case 'position': return player.position;
         case 'opponent': return teamAbbrevMap.get(player.opponent) || player.opponent || '';
         case 'salary': return player.salary;
-        case 'value': return player.salary > 0 ? (player.projection / (player.salary / 1000)) : 0;
+        case 'value': return valueScoreMap.get(player.id)?.composite;
         case 'leverageScore': return getLeverageScore(player) ?? -Infinity;
         case 'boom': return getBoomPct(player) ?? -Infinity;
         case 'bust': return getBustPct(player) ?? -Infinity;
@@ -729,7 +729,7 @@ export const DashboardView: React.FC<Props> = ({
         case 'position': return player.position;
         case 'opponent': return teamAbbrevMap.get(player.opponent) || player.opponent || '';
         case 'salary': return player.salary;
-        case 'value': return player.salary > 0 ? (player.projection / (player.salary / 1000)) : 0;
+        case 'value': return valueScoreMap.get(player.id)?.composite;
         case 'leverageScore': return getLeverageScore(player);
         case 'boom': return getBoomPct(player);
         case 'bust': return getBustPct(player);
@@ -789,7 +789,7 @@ export const DashboardView: React.FC<Props> = ({
         return sortDir === 'asc' ? cmp : -cmp;
       })
       .slice(0, previewMode ? 25 : 30);
-  }, [players, previewMode, previewTopProjectedIds, search, selectedMatchupKey, selectedTeams, matchupMap, sortKey, sortDir, teamAbbrevMap, filters, salaryTab]);
+  }, [players, previewMode, previewTopProjectedIds, search, selectedMatchupKey, selectedTeams, matchupMap, sortKey, sortDir, teamAbbrevMap, filters, salaryTab, valueScoreMap]);
 
   const handleSort = (key: string) => {
     if (sortKey === key) {

@@ -505,12 +505,8 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
 
   const displayedUpdated = useMemo(() => {
     if (formattedLastModified) return formattedLastModified;
-    if (state.lastUpdated) {
-      const dt = new Date(state.lastUpdated);
-      if (Number.isFinite(dt.getTime())) return dt.toLocaleString();
-    }
     return '—';
-  }, [formattedLastModified, state.lastUpdated]);
+  }, [formattedLastModified]);
 
   useEffect(() => {
     const previousDate = previousSelectedDateRef.current;

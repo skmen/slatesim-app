@@ -6,7 +6,7 @@ import highsWasmUrl from 'highs/runtime?url';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { calculateValueScore } from '../utils/valueScore';
 import {
-  PieChart, Pie, Cell, Tooltip as RechartsTooltip,
+  Cell, Tooltip as RechartsTooltip,
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, LabelList,
 } from 'recharts';
 
@@ -32,6 +32,23 @@ interface PlayerRow {
   projected: number;
   actual: number | null;
   delta: number | null;
+}
+
+interface TeamFptsDistributionPoint {
+  id: string;
+  name: string;
+  fpts: number;
+}
+
+interface TeamFptsTotalRow {
+  team: string;
+  total: number;
+  average: number;
+  median: number;
+  min: number;
+  max: number;
+  playerCount: number;
+  distribution: TeamFptsDistributionPoint[];
 }
 
 interface AccuracySummary {
@@ -132,6 +149,14 @@ const normalizePctMaybe = (value: number | undefined): number | undefined => {
 const formatSalaryK = (salary: number): string => {
   if (!Number.isFinite(salary)) return '--';
   return `$${(salary / 1000).toFixed(1)}K`;
+};
+
+const getMedian = (values: number[]): number => {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 !== 0) return sorted[mid];
+  return (sorted[mid - 1] + sorted[mid]) / 2;
 };
 
 const parsePositions = (position: string): string[] => {
@@ -678,80 +703,104 @@ const buildTeamPlayers = (players: Player[]): Map<string, PlayerRow[]> => {
   return teamMap;
 };
 
-const TeamPlayerTable: React.FC<{ team: string; rows: PlayerRow[]; onPlayerClick: (player: Player) => void }> = ({ team, rows, onPlayerClick }) => {
-  const pieData = rows
-    .filter((r) => r.actual !== null && r.actual > 0)
-    .map((r) => ({ name: r.name, value: r.actual as number }));
+const TEAM_TABLE_COLS = 11;
+
+const TeamTableRows: React.FC<{ team: string; rows: PlayerRow[]; onPlayerClick: (player: Player) => void }> = ({ team, rows, onPlayerClick }) => (
+  <>
+    <tr className="bg-ink/[0.04]">
+      <td colSpan={TEAM_TABLE_COLS} className="px-3 py-1 text-[10px] font-black uppercase tracking-widest text-ink/50">{team}</td>
+    </tr>
+    {rows.length === 0 ? (
+      <tr>
+        <td colSpan={TEAM_TABLE_COLS} className="px-3 py-2 text-xs text-ink/60 italic">No players loaded for {team}.</td>
+      </tr>
+    ) : rows.map((row) => {
+      const salary = Number(row.player.salary);
+      const usage = getUsagePct(row.player);
+      const minutes = getMinutesProj(row.player);
+      const boomPct = getBoomPct(row.player);
+      const bustPct = getBustPct(row.player);
+      const eff = (row.actual !== null && Number.isFinite(salary) && salary > 0)
+        ? row.actual / (salary / 1000)
+        : null;
+      return (
+        <tr key={row.id} className="border-b border-ink/5 last:border-0 hover:bg-ink/[0.02]">
+          <td className="px-3 py-1.5 font-semibold text-ink max-w-[130px] truncate">
+            <button type="button" onClick={() => onPlayerClick(row.player)} className="text-left hover:text-drafting-orange transition-colors truncate">{row.name}</button>
+          </td>
+          <td className="px-3 py-1.5 text-ink/60">{row.position}</td>
+          <td className="px-3 py-1.5 text-right text-ink/60">{Number.isFinite(salary) && salary > 0 ? formatSalaryK(salary) : '--'}</td>
+          <td className="px-3 py-1.5 text-right text-ink/60">{minutes !== undefined ? minutes.toFixed(1) : '--'}</td>
+          <td className="px-3 py-1.5 text-right text-ink/60">{usage !== undefined ? `${usage.toFixed(1)}%` : '--'}</td>
+          <td className="px-3 py-1.5 text-right text-ink">{row.projected.toFixed(1)}</td>
+          <td className="px-3 py-1.5 text-right text-ink">{row.actual !== null ? row.actual.toFixed(1) : '--'}</td>
+          <td className={`px-3 py-1.5 text-right font-bold ${eff !== null ? (eff >= 4 ? 'text-emerald-600' : eff >= 2.5 ? 'text-ink' : 'text-red-500') : 'text-ink/40'}`}>
+            {eff !== null ? `${eff.toFixed(1)}x` : '--'}
+          </td>
+          <td className={`px-3 py-1.5 text-right font-bold ${row.delta === null ? 'text-ink/40' : row.delta >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+            {row.delta === null ? '--' : `${row.delta >= 0 ? '+' : ''}${row.delta.toFixed(1)}`}
+          </td>
+          <td className="px-3 py-1.5 text-right text-emerald-600">{boomPct !== undefined ? `${boomPct.toFixed(0)}%` : '--'}</td>
+          <td className="px-3 py-1.5 text-right text-red-500">{bustPct !== undefined ? `${bustPct.toFixed(0)}%` : '--'}</td>
+        </tr>
+      );
+    })}
+  </>
+);
+
+const teamTableHeader = (
+  <tr className="text-[10px] font-black text-ink/40 uppercase tracking-widest border-b border-ink/10">
+    <th className="px-3 py-2 text-left">Player</th>
+    <th className="px-3 py-2 text-left">Pos</th>
+    <th className="px-3 py-2 text-right">Salary</th>
+    <th className="px-3 py-2 text-right">Min</th>
+    <th className="px-3 py-2 text-right">Usage</th>
+    <th className="px-3 py-2 text-right">Proj</th>
+    <th className="px-3 py-2 text-right">Actual</th>
+    <th className="px-3 py-2 text-right">EFF</th>
+    <th className="px-3 py-2 text-right">Delta</th>
+    <th className="px-3 py-2 text-right">Boom</th>
+    <th className="px-3 py-2 text-right">Bust</th>
+  </tr>
+);
+
+const MatchupTable: React.FC<{ teamA: string; teamB: string; teamARows: PlayerRow[]; teamBRows: PlayerRow[]; onPlayerClick: (player: Player) => void }> = ({ teamA, teamB, teamARows, teamBRows, onPlayerClick }) => (
+  <div className="overflow-x-auto">
+    <table className="w-full text-xs border-collapse">
+      <thead>{teamTableHeader}</thead>
+      <tbody className="font-mono">
+        <TeamTableRows team={teamA} rows={teamARows} onPlayerClick={onPlayerClick} />
+        <TeamTableRows team={teamB} rows={teamBRows} onPlayerClick={onPlayerClick} />
+      </tbody>
+    </table>
+  </div>
+);
+
+const TeamFptsTooltip: React.FC<any> = ({ active, payload }) => {
+  if (!active || !payload || payload.length === 0) return null;
+  const row = payload[0]?.payload as TeamFptsTotalRow | undefined;
+  if (!row) return null;
 
   return (
-    <div className="rounded-lg border border-ink/10 p-3">
-      <p className="text-[10px] uppercase tracking-widest text-ink/50 mb-2">{team}</p>
-      {rows.length === 0 ? (
-        <p className="text-xs text-ink/60">No players loaded for this team.</p>
-      ) : (
-        <>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-ink/60 border-b border-ink/10">
-                  <th className="text-left py-1 pr-2">Player</th>
-                  <th className="text-left py-1 pr-2">Pos</th>
-                  <th className="text-right py-1 pr-2">Proj</th>
-                  <th className="text-right py-1 pr-2">Actual</th>
-                  <th className="text-right py-1">Delta</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => (
-                  <tr key={row.id} className="border-b border-ink/5 last:border-0">
-                    <td className="py-1 pr-2 font-semibold text-ink">
-                      <button
-                        type="button"
-                        onClick={() => onPlayerClick(row.player)}
-                        className="text-left text-ink hover:text-drafting-orange transition-colors"
-                      >
-                        {row.name}
-                      </button>
-                    </td>
-                    <td className="py-1 pr-2 text-ink/70">{row.position}</td>
-                    <td className="py-1 pr-2 text-right text-ink">{row.projected.toFixed(1)}</td>
-                    <td className="py-1 pr-2 text-right text-ink">{row.actual !== null ? row.actual.toFixed(1) : '--'}</td>
-                    <td className={`py-1 text-right font-bold ${row.delta === null ? 'text-ink/50' : row.delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                      {row.delta === null ? '--' : `${row.delta >= 0 ? '+' : ''}${row.delta.toFixed(1)}`}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {pieData.length > 0 && (
-            <div className="mt-3">
-              <p className="text-[10px] uppercase tracking-widest text-ink/40 mb-1">FPTS Distribution</p>
-              <ResponsiveContainer width="100%" height={180}>
-                <PieChart>
-                  <Pie
-                    data={pieData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={38}
-                    outerRadius={68}
-                    dataKey="value"
-                    strokeWidth={1}
-                  >
-                    {pieData.map((_, index) => (
-                      <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <RechartsTooltip
-                    formatter={(value: number, name: string) => [`${value.toFixed(1)} FPTS`, name]}
-                    contentStyle={{ fontSize: '11px', borderRadius: '6px' }}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
+    <div className="rounded-md border border-ink/15 bg-white/95 px-4 py-3 shadow-md text-[11px] min-w-[320px] max-w-[420px] max-h-[65vh]">
+      <p className="font-black text-ink uppercase tracking-wide">{row.team}</p>
+      <div className="mt-1 text-ink/70 space-y-0.5">
+        <p>Total: <span className="font-bold text-ink">{row.total.toFixed(1)} FPTS</span></p>
+        <p>Players: <span className="font-bold text-ink">{row.playerCount}</span></p>
+        <p>Avg / Median: <span className="font-bold text-ink">{row.average.toFixed(1)} / {row.median.toFixed(1)}</span></p>
+        <p>Range: <span className="font-bold text-ink">{row.min.toFixed(1)} to {row.max.toFixed(1)}</span></p>
+      </div>
+      <div className="mt-2 border-t border-ink/10 pt-1">
+        <p className="text-[10px] uppercase tracking-wider text-ink/50 mb-1">FPTS Distribution</p>
+        <div className="max-h-[42vh] overflow-y-auto pr-1 space-y-0.5">
+          {row.distribution.map((entry) => (
+            <div key={entry.id} className="flex items-center justify-between gap-3">
+              <span className="truncate text-ink/70">{entry.name}</span>
+              <span className="font-mono font-bold text-ink">{entry.fpts.toFixed(1)}</span>
             </div>
-          )}
-        </>
-      )}
+          ))}
+        </div>
+      </div>
     </div>
   );
 };
@@ -791,6 +840,7 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
   const [bestLineupLoading, setBestLineupLoading] = useState(false);
   const [bestLineupError, setBestLineupError] = useState<string | null>(null);
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
+  const [activeMatchupTab, setActiveMatchupTab] = useState(0);
 
   const hasAnyActual = useMemo(() => {
     return players.some((player) => getActual(player) !== undefined);
@@ -841,49 +891,49 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
         value: accuracy.rmse,
         formatted: accuracy.rmse.toFixed(4),
         pass: isMetricPass('RMSE', accuracy.rmse),
-        tooltip: `Root Mean Squared Error from compute_metrics. Lower is better mathematically. Script PASS window: ${SCRIPT_PASS_WINDOWS.RMSE.min.toFixed(1)}-${SCRIPT_PASS_WINDOWS.RMSE.max.toFixed(1)} (inclusive).`,
+        tooltip: `How far off our projections were on average, but big misses count more than small ones. Think of it as a "penalty-weighted" average miss in fantasy points. Lower is better. Sweet spot: ${SCRIPT_PASS_WINDOWS.RMSE.min.toFixed(1)}–${SCRIPT_PASS_WINDOWS.RMSE.max.toFixed(1)} pts.`,
       },
       {
         key: 'MAE',
         value: accuracy.mae,
         formatted: accuracy.mae.toFixed(4),
         pass: isMetricPass('MAE', accuracy.mae),
-        tooltip: `Mean Absolute Error from compute_metrics; average absolute fantasy-point miss. Lower is better mathematically. Script PASS window: ${SCRIPT_PASS_WINDOWS.MAE.min.toFixed(1)}-${SCRIPT_PASS_WINDOWS.MAE.max.toFixed(1)} (inclusive).`,
+        tooltip: `The plain average of how many fantasy points we missed by — if MAE is 8, we were off by 8 FPTS on average across all players. Lower is better. Sweet spot: ${SCRIPT_PASS_WINDOWS.MAE.min.toFixed(1)}–${SCRIPT_PASS_WINDOWS.MAE.max.toFixed(1)} pts.`,
       },
       {
         key: 'R2',
         value: accuracy.r2,
         formatted: isFiniteNumber(accuracy.r2) ? accuracy.r2.toFixed(4) : 'NaN',
         pass: isMetricPass('R2', accuracy.r2),
-        tooltip: `Coefficient of determination (variance explained). Higher is generally better. Script PASS window: ${SCRIPT_PASS_WINDOWS.R2.min.toFixed(2)}-${SCRIPT_PASS_WINDOWS.R2.max.toFixed(2)} (inclusive).`,
+        tooltip: `How well projections move in the same direction as actual scores. An R² of 0.4 means we explain 40% of the variation in results. Closer to 1 is better; 0 means no better than guessing the average. Sweet spot: ${SCRIPT_PASS_WINDOWS.R2.min.toFixed(2)}–${SCRIPT_PASS_WINDOWS.R2.max.toFixed(2)}.`,
       },
       {
         key: 'TOP_K_HIT_RATE',
         value: accuracy.topKHitRate,
         formatted: accuracy.topKHitRate.toFixed(4),
         pass: isMetricPass('TOP_K_HIT_RATE', accuracy.topKHitRate),
-        tooltip: `Overlap between top projected and top actual scorers, using script default top_k=${SCRIPT_TOP_K} (clipped to sample size). Script PASS window: ${SCRIPT_PASS_WINDOWS.TOP_K_HIT_RATE.min.toFixed(2)}-${SCRIPT_PASS_WINDOWS.TOP_K_HIT_RATE.max.toFixed(2)}.`,
+        tooltip: `How many of the top ${SCRIPT_TOP_K} players we projected actually finished as top ${SCRIPT_TOP_K} scorers. Higher means we're correctly identifying the best plays. Target: above ${Math.round(SCRIPT_PASS_WINDOWS.TOP_K_HIT_RATE.min * 100)}%.`,
       },
       {
         key: 'TOP_PERCENTILE_PRECISION',
         value: accuracy.topPercentilePrecision,
         formatted: accuracy.topPercentilePrecision.toFixed(4),
         pass: isMetricPass('TOP_PERCENTILE_PRECISION', accuracy.topPercentilePrecision),
-        tooltip: `Among projected top-${Math.round(SCRIPT_TOP_PERCENTILE * 100)}% players, share who actually finish top-${Math.round(SCRIPT_TOP_PERCENTILE * 100)}%. Script PASS window: ${SCRIPT_PASS_WINDOWS.TOP_PERCENTILE_PRECISION.min.toFixed(2)}-${SCRIPT_PASS_WINDOWS.TOP_PERCENTILE_PRECISION.max.toFixed(2)}.`,
+        tooltip: `When we flagged a player as a top-${Math.round(SCRIPT_TOP_PERCENTILE * 100)}% play, how often did they actually finish in the top ${Math.round(SCRIPT_TOP_PERCENTILE * 100)}%? Measures our hit rate on high-upside calls. Target: above ${Math.round(SCRIPT_PASS_WINDOWS.TOP_PERCENTILE_PRECISION.min * 100)}%.`,
       },
       {
         key: 'TOP_PERCENTILE_RECALL',
         value: accuracy.topPercentileRecall,
         formatted: accuracy.topPercentileRecall.toFixed(4),
         pass: isMetricPass('TOP_PERCENTILE_RECALL', accuracy.topPercentileRecall),
-        tooltip: `Among actual top-${Math.round(SCRIPT_TOP_PERCENTILE * 100)}% finishers, share projected in top-${Math.round(SCRIPT_TOP_PERCENTILE * 100)}%. Script PASS window: ${SCRIPT_PASS_WINDOWS.TOP_PERCENTILE_RECALL.min.toFixed(2)}-${SCRIPT_PASS_WINDOWS.TOP_PERCENTILE_RECALL.max.toFixed(2)}.`,
+        tooltip: `Of the players who actually scored in the top ${Math.round(SCRIPT_TOP_PERCENTILE * 100)}%, how many did we have projected there? Measures how few studs we missed. Target: above ${Math.round(SCRIPT_PASS_WINDOWS.TOP_PERCENTILE_RECALL.min * 100)}%.`,
       },
       {
         key: 'PERCENTILE_RANK_MAE',
         value: accuracy.percentileRankMae,
         formatted: accuracy.percentileRankMae.toFixed(4),
         pass: isMetricPass('PERCENTILE_RANK_MAE', accuracy.percentileRankMae),
-        tooltip: `Mean absolute difference between projection percentile rank and actual percentile rank, using pandas-style percentile rank with average tie handling. Script PASS window: ${SCRIPT_PASS_WINDOWS.PERCENTILE_RANK_MAE.min.toFixed(2)}-${SCRIPT_PASS_WINDOWS.PERCENTILE_RANK_MAE.max.toFixed(2)}.`,
+        tooltip: `How accurately we rank players relative to each other. A score of 0.15 means we're off by about 15 percentile spots on average — e.g., projecting someone as a top-30% play when they're actually top-45%. Lower is better. Target: below ${SCRIPT_PASS_WINDOWS.PERCENTILE_RANK_MAE.max.toFixed(2)}.`,
       },
     ];
   }, [accuracy]);
@@ -909,11 +959,37 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
       .map(([team, rows]) => ({ team, rows }));
   }, [matchupRows.length, teamPlayers]);
 
-  const teamFptsTotals = useMemo(() => {
-    const totals: Array<{ team: string; total: number }> = [];
+  const teamFptsTotals = useMemo<TeamFptsTotalRow[]>(() => {
+    const totals: TeamFptsTotalRow[] = [];
     teamPlayers.forEach((rows, team) => {
-      const total = rows.reduce((sum, r) => sum + (r.actual ?? 0), 0);
-      if (total > 0) totals.push({ team, total: Number(total.toFixed(1)) });
+      const distribution = rows
+        .map((row) => {
+          const actual = Number(row.actual);
+          if (!Number.isFinite(actual)) return null;
+          return {
+            id: row.id,
+            name: row.name,
+            fpts: actual,
+          };
+        })
+        .filter((entry): entry is TeamFptsDistributionPoint => entry !== null)
+        .sort((a, b) => b.fpts - a.fpts);
+      if (distribution.length === 0) return;
+
+      const values = distribution.map((entry) => entry.fpts);
+      const total = values.reduce((sum, value) => sum + value, 0);
+      if (total <= 0) return;
+
+      totals.push({
+        team,
+        total: Number(total.toFixed(1)),
+        average: Number((total / values.length).toFixed(1)),
+        median: Number(getMedian(values).toFixed(1)),
+        min: Number(Math.min(...values).toFixed(1)),
+        max: Number(Math.max(...values).toFixed(1)),
+        playerCount: values.length,
+        distribution,
+      });
     });
     return totals.sort((a, b) => b.total - a.total);
   }, [teamPlayers]);
@@ -925,7 +1001,7 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
         <h1 className="text-xl font-black uppercase tracking-widest">Projection vs Actual Report</h1>
       </div>
       <p className="text-sm text-ink/70 max-w-3xl">
-        Player-level projection vs actual by team. Team-total metrics have been removed.
+        Player-level projection vs actual by team. Hover the team FPTS bars to inspect each team&apos;s player FPTS distribution.
       </p>
 
       {!isHistoricalSlate && (
@@ -959,7 +1035,7 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
               <span className="inline-flex items-center">
                 <MetricLabel
                   label="Mean Error (Raw)"
-                  tooltip="Average signed error (projection - actual), matching compute_metrics MEAN_ERROR. Positive means over-projection bias; negative means under-projection bias. The script prints this value but does not apply a PASS/FAIL threshold."
+                  tooltip="The average amount we over- or under-projected players. Positive means we projected too high on average; negative means too low. This is informational — there's no pass/fail target."
                 />
               </span>
               <span className="text-ink/70">: </span>
@@ -1097,8 +1173,9 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
               <XAxis type="number" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
               <YAxis type="category" dataKey="team" tick={{ fontSize: 11, fontWeight: 700 }} width={44} axisLine={false} tickLine={false} />
               <RechartsTooltip
-                formatter={(value: number) => [`${value.toFixed(1)} FPTS`]}
-                contentStyle={{ fontSize: '11px', borderRadius: '6px' }}
+                cursor={{ fill: 'rgba(15, 23, 42, 0.05)' }}
+                wrapperStyle={{ pointerEvents: 'auto', zIndex: 50 }}
+                content={<TeamFptsTooltip />}
               />
               <Bar dataKey="total" radius={[0, 4, 4, 0]}>
                 {teamFptsTotals.map((_, index) => (
@@ -1119,33 +1196,58 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
       )}
 
       {matchupRows.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {matchupRows.map((row) => (
-            <div key={row.matchupKey} className="bg-white rounded-xl border border-ink/10 shadow-sm p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-bold text-ink">{row.teamA} @ {row.teamB}</p>
-                {(row.spread !== null || row.total !== null) && (
-                  <p className="text-[11px] text-ink/60">
-                    Vegas: {row.spread !== null ? `Spread ${row.spread.toFixed(1)}` : '--'} {row.total !== null ? `| O/U ${row.total.toFixed(1)}` : ''}
-                  </p>
+        <div className="bg-white rounded-xl border border-ink/10 shadow-sm overflow-hidden">
+          <div className="flex border-b border-ink/10 overflow-x-auto no-scrollbar">
+            {matchupRows.map((row, idx) => (
+              <button
+                key={row.matchupKey}
+                onClick={() => setActiveMatchupTab(idx)}
+                className={`px-4 py-3 text-[11px] font-black uppercase tracking-widest whitespace-nowrap transition-colors border-b-2 ${activeMatchupTab === idx ? 'text-drafting-orange border-drafting-orange' : 'text-ink/50 border-transparent hover:text-ink'}`}
+              >
+                {row.teamA} @ {row.teamB}
+                {row.total !== null && (
+                  <span className="ml-1.5 font-normal normal-case tracking-normal text-ink/40">O/U {row.total.toFixed(1)}</span>
                 )}
-              </div>
-              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                <TeamPlayerTable team={row.teamA} rows={row.teamAPlayers} onPlayerClick={setSelectedPlayer} />
-                <TeamPlayerTable team={row.teamB} rows={row.teamBPlayers} onPlayerClick={setSelectedPlayer} />
-              </div>
+              </button>
+            ))}
+          </div>
+          {matchupRows[activeMatchupTab] && (
+            <div className="p-4">
+              <MatchupTable
+                teamA={matchupRows[activeMatchupTab].teamA}
+                teamB={matchupRows[activeMatchupTab].teamB}
+                teamARows={matchupRows[activeMatchupTab].teamAPlayers}
+                teamBRows={matchupRows[activeMatchupTab].teamBPlayers}
+                onPlayerClick={setSelectedPlayer}
+              />
             </div>
-          ))}
+          )}
         </div>
       )}
 
       {matchupRows.length === 0 && standaloneTeams.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {standaloneTeams.map((teamCard) => (
-            <div key={teamCard.team} className="bg-white rounded-xl border border-ink/10 shadow-sm p-4">
-              <TeamPlayerTable team={teamCard.team} rows={teamCard.rows} onPlayerClick={setSelectedPlayer} />
+        <div className="bg-white rounded-xl border border-ink/10 shadow-sm overflow-hidden">
+          <div className="flex border-b border-ink/10 overflow-x-auto no-scrollbar">
+            {standaloneTeams.map((teamCard, idx) => (
+              <button
+                key={teamCard.team}
+                onClick={() => setActiveMatchupTab(idx)}
+                className={`px-4 py-3 text-[11px] font-black uppercase tracking-widest whitespace-nowrap transition-colors border-b-2 ${activeMatchupTab === idx ? 'text-drafting-orange border-drafting-orange' : 'text-ink/50 border-transparent hover:text-ink'}`}
+              >
+                {teamCard.team}
+              </button>
+            ))}
+          </div>
+          {standaloneTeams[activeMatchupTab] && (
+            <div className="p-4 overflow-x-auto">
+              <table className="w-full text-xs border-collapse">
+                <thead>{teamTableHeader}</thead>
+                <tbody className="font-mono">
+                  <TeamTableRows team={standaloneTeams[activeMatchupTab].team} rows={standaloneTeams[activeMatchupTab].rows} onPlayerClick={setSelectedPlayer} />
+                </tbody>
+              </table>
             </div>
-          ))}
+          )}
         </div>
       )}
 

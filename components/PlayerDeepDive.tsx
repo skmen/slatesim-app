@@ -1371,6 +1371,7 @@ export const PlayerDeepDive: React.FC<Props> = ({
                   step={1}
                   value={minExposureInput}
                   onChange={(e) => setMinExposureInput(e.target.value)}
+                  onBlur={applyExposureSettings}
                   disabled={isOptimizerExcluded}
                   className="w-16 bg-white/70 border border-ink/20 rounded-sm px-2 py-1 text-[10px] font-bold font-mono text-ink outline-none focus:border-drafting-orange"
                   placeholder="0"
@@ -1383,17 +1384,11 @@ export const PlayerDeepDive: React.FC<Props> = ({
                   step={1}
                   value={maxExposureInput}
                   onChange={(e) => setMaxExposureInput(e.target.value)}
+                  onBlur={applyExposureSettings}
                   disabled={isOptimizerExcluded}
                   className="w-16 bg-white/70 border border-ink/20 rounded-sm px-2 py-1 text-[10px] font-bold font-mono text-ink outline-none focus:border-drafting-orange"
                   placeholder="100"
                 />
-                <button
-                  type="button"
-                  onClick={applyExposureSettings}
-                  className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-sm border border-drafting-orange/30 text-drafting-orange hover:bg-drafting-orange/10 transition-colors"
-                >
-                  Save
-                </button>
                 <button
                   type="button"
                   onClick={clearExposureSettings}
