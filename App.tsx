@@ -439,7 +439,7 @@ const NavItem = ({ label, icon: Icon, targetView, entitlement, setView, view, ha
   if (isGated) return null;
   
   return (
-    <button onClick={() => setView(targetView)} className={`flex flex-col items-center gap-1 p-2 min-w-[64px] rounded-lg transition-colors ${view === targetView ? 'text-ink bg-ink/10 font-bold' : 'text-ink/40 hover:bg-ink/5'}`}>
+    <button onClick={() => setView(targetView)} className={`flex flex-col items-center gap-1 p-1.5 sm:p-2 min-w-[52px] sm:min-w-[64px] rounded-lg transition-colors ${view === targetView ? 'text-ink bg-ink/10 font-bold' : 'text-ink/40 hover:bg-ink/5'}`}>
       <Icon className="w-5 h-5" />
       <span className="text-[10px] font-black uppercase tracking-tighter">{label}</span>
     </button>
@@ -758,21 +758,93 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
   return (
     <div className="min-h-screen font-sans bg-vellum text-ink flex flex-col selection:bg-drafting-orange selection:text-white">
       <header className="bg-vellum/80 border-b border-ink/10 sticky top-0 z-50 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 cursor-pointer p-2 rounded-sm" onClick={() => setView(ViewState.RESEARCH)}>
-              <div className="bg-drafting-orange p-1.5 rounded-sm"><Cpu className="w-5 h-5 text-white" /></div>
-              <h1 className="font-black text-xl tracking-tighter leading-none italic uppercase text-ink">SLATE<span className="text-drafting-orange">SIM</span></h1>
+        <div className="max-w-7xl mx-auto px-4">
+          {/* Main row */}
+          <div className="h-12 sm:h-16 flex items-center justify-between gap-2 sm:gap-4">
+            <div className="flex items-center gap-2 sm:gap-4">
+              <div className="flex items-center gap-2 cursor-pointer p-2 rounded-sm" onClick={() => setView(ViewState.RESEARCH)}>
+                <div className="bg-drafting-orange p-1 sm:p-1.5 rounded-sm"><Cpu className="w-4 h-4 sm:w-5 sm:h-5 text-white" /></div>
+                <h1 className="font-black text-lg sm:text-xl tracking-tighter leading-none italic uppercase text-ink">SLATE<span className="text-drafting-orange">SIM</span></h1>
+              </div>
+              {/* Date controls — desktop only */}
+              <div className="hidden sm:flex items-center gap-2">
+                <span className="text-[10px] font-black text-ink/60 uppercase tracking-widest">Slate Date</span>
+                <button
+                  type="button"
+                  onClick={() => shiftSelectedDate(-1)}
+                  disabled={previewMode && !canShiftPrev}
+                  className="inline-flex items-center justify-center bg-vellum border border-ink/20 rounded-sm w-7 h-7 text-ink/70 hover:text-drafting-orange hover:border-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  aria-label="Previous day"
+                  title="Previous day"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <input
+                  type="date"
+                  value={selectedDate}
+                  min={previewMode ? previewMinDate : undefined}
+                  max={previewMode ? previewMaxDate : undefined}
+                  onChange={(e) => setSelectedDate(clampPreviewDate(e.target.value))}
+                  className="bg-vellum border border-ink/20 rounded-sm px-2 py-1 text-xs font-bold text-ink outline-none focus:border-drafting-orange"
+                />
+                <button
+                  type="button"
+                  onClick={() => shiftSelectedDate(1)}
+                  disabled={previewMode && !canShiftNext}
+                  className="inline-flex items-center justify-center bg-vellum border border-ink/20 rounded-sm w-7 h-7 text-ink/70 hover:text-drafting-orange hover:border-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  aria-label="Next day"
+                  title="Next day"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setShowActuals((prev) => !prev)}
+                  disabled={!allowHistoricalActuals}
+                  className="text-[10px] font-black border border-ink/20 px-2 py-1 rounded uppercase tracking-widest text-ink/60 hover:text-drafting-orange hover:border-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {!allowHistoricalActuals ? 'Actuals Unavailable' : (showActuals ? 'Hide Actuals' : 'Reveal Actuals')}
+                </button>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-black text-ink/60 uppercase tracking-widest">Slate Date</span>
+            <div className="flex items-center gap-2 sm:gap-3">
+              {!previewMode && (
+                <div className="hidden sm:flex flex-col items-end mr-2">
+                  <span className="text-[10px] font-bold text-ink uppercase tracking-tighter">{user?.username}</span>
+                  <span className="text-[9px] font-bold text-ink/70 uppercase tracking-widest">
+                    Updated: {displayedUpdated}
+                  </span>
+                  <span className="text-[8px] font-black text-drafting-orange uppercase opacity-80">{user?.role}</span>
+                </div>
+              )}
+              {previewMode && (
+                <div className="hidden sm:block text-[9px] font-black uppercase tracking-widest text-ink/50">
+                  Preview • Last 7 Days
+                </div>
+              )}
+              {!previewMode && hasEntitlement('admin_panel') && (
+                <button onClick={() => setView(ViewState.LOAD)} className="hidden sm:inline-flex text-[9px] font-black text-drafting-orange border border-drafting-orange/20 px-2 py-1 rounded uppercase tracking-widest hover:bg-drafting-orange/10 transition-all font-mono">UPDATE_DATA</button>
+              )}
+              {previewMode ? (
+                <a
+                  href="/"
+                  className="px-3 py-1.5 rounded-sm border border-ink/20 text-[10px] font-black uppercase tracking-widest text-ink/60 hover:border-drafting-orange/40 hover:text-ink transition-all"
+                >
+                  Back
+                </a>
+              ) : (
+                <button onClick={logout} className="p-2 rounded-full hover:bg-red-500/10 text-ink/40 hover:text-red-600 transition-colors"><LogOut className="w-5 h-5" /></button>
+              )}
+            </div>
+          </div>
+          {/* Mobile date row */}
+          <div className="flex sm:hidden items-center justify-between pb-2 gap-2">
+            <div className="flex items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => shiftSelectedDate(-1)}
                 disabled={previewMode && !canShiftPrev}
                 className="inline-flex items-center justify-center bg-vellum border border-ink/20 rounded-sm w-7 h-7 text-ink/70 hover:text-drafting-orange hover:border-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                 aria-label="Previous day"
-                title="Previous day"
               >
                 <ChevronLeft className="w-4 h-4" />
               </button>
@@ -790,52 +862,23 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                 disabled={previewMode && !canShiftNext}
                 className="inline-flex items-center justify-center bg-vellum border border-ink/20 rounded-sm w-7 h-7 text-ink/70 hover:text-drafting-orange hover:border-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                 aria-label="Next day"
-                title="Next day"
               >
                 <ChevronRight className="w-4 h-4" />
               </button>
+            </div>
+            {allowHistoricalActuals && (
               <button
                 onClick={() => setShowActuals((prev) => !prev)}
-                disabled={!allowHistoricalActuals}
-                className="text-[10px] font-black border border-ink/20 px-2 py-1 rounded uppercase tracking-widest text-ink/60 hover:text-drafting-orange hover:border-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                className="text-[10px] font-black border border-ink/20 px-2 py-1 rounded uppercase tracking-widest text-ink/60 hover:text-drafting-orange hover:border-drafting-orange transition-all"
               >
-                {!allowHistoricalActuals ? 'Actuals Unavailable' : (showActuals ? 'Hide Actuals' : 'Reveal Actuals')}
+                {showActuals ? 'Hide Actuals' : 'Actuals'}
               </button>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            {!previewMode && (
-              <div className="flex flex-col items-end mr-2">
-                <span className="text-[10px] font-bold text-ink uppercase tracking-tighter">{user?.username}</span>
-                <span className="text-[9px] font-bold text-ink/70 uppercase tracking-widest">
-                  Updated: {displayedUpdated}
-                </span>
-                <span className="text-[8px] font-black text-drafting-orange uppercase opacity-80">{user?.role}</span>
-              </div>
-            )}
-            {previewMode && (
-              <div className="text-[9px] font-black uppercase tracking-widest text-ink/50">
-                Preview • Last 7 Days
-              </div>
-            )}
-            {!previewMode && hasEntitlement('admin_panel') && (
-              <button onClick={() => setView(ViewState.LOAD)} className="text-[9px] font-black text-drafting-orange border border-drafting-orange/20 px-2 py-1 rounded uppercase tracking-widest hover:bg-drafting-orange/10 transition-all font-mono">UPDATE_DATA</button>
-            )}
-            {previewMode ? (
-              <a
-                href="/"
-                className="px-3 py-1.5 rounded-sm border border-ink/20 text-[10px] font-black uppercase tracking-widest text-ink/60 hover:border-drafting-orange/40 hover:text-ink transition-all"
-              >
-                Back
-              </a>
-            ) : (
-              <button onClick={logout} className="p-2 rounded-full hover:bg-red-500/10 text-ink/40 hover:text-red-600 transition-colors"><LogOut className="w-5 h-5" /></button>
             )}
           </div>
         </div>
       </header>
 
-      <main className="flex-1 max-w-7xl mx-auto px-4 py-6 w-full">
+      <main className="flex-1 max-w-7xl mx-auto px-4 pt-6 pb-24 sm:pb-8 w-full">
         {!previewMode && view === ViewState.LOAD && hasEntitlement('admin_panel') && (
           <div className="max-w-xl mx-auto space-y-8 mt-6 pb-24">
             <div {...getRootProps()} className={`border-2 border-dashed rounded-2xl p-12 text-center transition-all cursor-pointer ${isDragActive ? 'border-drafting-orange bg-drafting-orange/5' : 'border-ink/20 hover:border-drafting-orange bg-white/40'}`}>
@@ -898,13 +941,13 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
       {!previewMode && <LineupDrawer players={state.slate.players} showActuals={effectiveShowActuals} />}
 
       {!previewMode && (
-        <nav className="fixed bottom-0 left-0 right-0 bg-white/80 border-t border-ink/10 px-6 py-2 pb-safe z-40 shadow-2xl backdrop-blur-md">
+        <nav className="fixed bottom-0 left-0 right-0 bg-white/80 border-t border-ink/10 px-2 sm:px-6 py-2 pb-safe z-40 shadow-2xl backdrop-blur-md">
           <div className="flex justify-around items-center max-w-2xl mx-auto">
             <NavItem label="Research" icon={BarChart2} targetView={ViewState.RESEARCH} setView={setView} view={view} hasEntitlement={hasEntitlement} />
             <NavItem label="Compare" icon={GitCompare} targetView={ViewState.COMPARE} setView={setView} view={view} hasEntitlement={hasEntitlement} />
             <NavItem label="Optimizer" icon={Zap} targetView={ViewState.OPTIMIZER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
             {selectedDate === getLocalDateStr(new Date()) && (
-              <NavItem label="Entry Manager" icon={List} targetView={ViewState.ENTRY_MANAGER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
+              <NavItem label="Entries" icon={List} targetView={ViewState.ENTRY_MANAGER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
             )}
             <NavItem label="Report" icon={BarChart2} targetView={ViewState.REPORT} setView={setView} view={view} hasEntitlement={hasEntitlement} />
           </div>
