@@ -866,14 +866,22 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                 <ChevronRight className="w-4 h-4" />
               </button>
             </div>
-            {allowHistoricalActuals && (
-              <button
-                onClick={() => setShowActuals((prev) => !prev)}
-                className="text-[10px] font-black border border-ink/20 px-2 py-1 rounded uppercase tracking-widest text-ink/60 hover:text-drafting-orange hover:border-drafting-orange transition-all"
-              >
-                {showActuals ? 'Hide Actuals' : 'Actuals'}
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {allowHistoricalActuals && (
+                <button
+                  onClick={() => setShowActuals((prev) => !prev)}
+                  className="text-[10px] font-black border border-ink/20 px-2 py-1 rounded uppercase tracking-widest text-ink/60 hover:text-drafting-orange hover:border-drafting-orange transition-all"
+                >
+                  {showActuals ? 'Hide Actuals' : 'Actuals'}
+                </button>
+              )}
+              {!previewMode && (
+                <div className="flex flex-col items-end">
+                  <span className="text-[9px] font-bold text-ink uppercase tracking-tighter">{user?.username}</span>
+                  <span className="text-[8px] font-bold text-ink/60 uppercase tracking-widest truncate max-w-[110px]">Upd: {displayedUpdated}</span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>

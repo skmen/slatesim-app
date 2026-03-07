@@ -699,33 +699,29 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
   return (
     <div className="flex flex-col h-full space-y-6 pb-24 bg-vellum text-black">
       {/* Top Header */}
-      <div className="flex-shrink-0 bg-white border-b border-ink/10 p-4 flex items-center justify-between shadow-sm rounded-b-lg">
-        <div className="flex items-center gap-3">
-          <div>
-            <h1 className="text-xl font-black uppercase tracking-wider text-black">Entry Manager</h1>
-            <p className="text-sm text-black/60">{entries.length} Entries Loaded</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              setSavedLineupSets(loadSavedLineupSets());
-              setShowImportLineupsModal(true);
-            }}
-            className="px-3 py-1.5 rounded-sm border border-ink/20 text-[10px] font-black uppercase tracking-widest text-black hover:border-drafting-orange transition-all"
-          >
-            Import Lineups
-          </button>
+      <div className="flex-shrink-0 bg-white border-b border-ink/10 p-4 flex flex-wrap items-center gap-3 shadow-sm rounded-b-lg">
+        <div>
+          <h1 className="text-xl font-black uppercase tracking-wider text-black">Entry Manager</h1>
+          <p className="text-sm text-black/60">{entries.length} Entries Loaded</p>
         </div>
-        <div className="flex items-center gap-4 ml-auto">
-          <button
-            onClick={runLateSwap}
-            disabled={isLateSwapRunning || entries.length === 0}
-            className="px-5 py-2 rounded-lg bg-drafting-orange text-white font-bold text-sm uppercase tracking-widest shadow hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <Zap className="inline-block w-4 h-4 mr-2"/>
-            {isLateSwapRunning ? 'Optimizing...' : 'Run Late Swap'}
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setSavedLineupSets(loadSavedLineupSets());
+            setShowImportLineupsModal(true);
+          }}
+          className="px-3 py-1.5 rounded-sm border border-ink/20 text-[10px] font-black uppercase tracking-widest text-black hover:border-drafting-orange transition-all"
+        >
+          Import Lineups
+        </button>
+        <button
+          onClick={runLateSwap}
+          disabled={isLateSwapRunning || entries.length === 0}
+          className="ml-auto px-4 py-2 rounded-lg bg-drafting-orange text-white font-bold text-sm uppercase tracking-widest shadow hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <Zap className="inline-block w-4 h-4 mr-2"/>
+          {isLateSwapRunning ? 'Optimizing...' : 'Run Late Swap'}
+        </button>
       </div>
 
       {loadedFileName && (
@@ -767,18 +763,18 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
         </div>
       )}
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
         {/* Left Panel: Slate Controls */}
-        <div className="w-[18%] flex-shrink-0 bg-white border-r border-ink/10 p-4 overflow-y-auto rounded-lg shadow-sm">
-          <h2 className="text-lg font-bold uppercase tracking-wider text-black mb-4">Slate Controls</h2>
-          <div className="space-y-3">
+        <div className="w-full md:w-[18%] md:flex-shrink-0 bg-white border-b md:border-b-0 md:border-r border-ink/10 p-4 md:overflow-y-auto rounded-lg shadow-sm">
+          <h2 className="text-lg font-bold uppercase tracking-wider text-black mb-3">Slate Controls</h2>
+          <div className="flex md:flex-col gap-3 overflow-x-auto pb-1 md:pb-0">
               {games.map(game => {
                   const isLive = isGameStarted(game.teamA.abbreviation) || isGameStarted(game.teamB.abbreviation);
                   const isUpcoming = !isLive;
                   const manuallyLocked = isGameManuallyLocked(game);
 
                   return (
-                      <div key={game.matchupKey} className="bg-vellum p-3 rounded-lg border border-ink/10">
+                      <div key={game.matchupKey} className="bg-vellum p-3 rounded-lg border border-ink/10 min-w-[160px] md:min-w-0">
                           <div className="flex items-center justify-between">
                             <div>
                                 <span className={`px-2 py-1 rounded-full text-xs font-bold uppercase ${isLive ? 'bg-red-100 text-red-700' : 'bg-emerald-600 text-white'}`}>
