@@ -4,7 +4,7 @@ import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { MatchupEngine } from './MatchupEngine';
 import { PlayerDeepDive } from './PlayerDeepDive';
-import { Search, Activity, BarChart3, Database, Filter, X, Trash2, PlusCircle } from 'lucide-react';
+import { Search, Activity, BarChart3, Database, Filter, X, Trash2, PlusCircle, Download } from 'lucide-react';
 import { calculateValueScores } from '../utils/valueScore';
 
 interface Props {
@@ -821,6 +821,46 @@ export const DashboardView: React.FC<Props> = ({
     setSelectedTeams([]);
   };
 
+  const exportToCsv = () => {
+    const csvEscape = (val: any): string => {
+      const str = String(val ?? '');
+      return str.includes(',') || str.includes('"') || str.includes('\n')
+        ? `"${str.replace(/"/g, '""')}"`
+        : str;
+    };
+    const headers = ['Player', 'Team', 'OPP', 'Pos', 'Salary', 'Value', 'Own', 'Usage', 'Min', 'Proj', 'Ceiling', 'Floor', 'Lev Score', 'Boom', 'Bust'];
+    if (showActuals) headers.splice(10, 0, 'Actual');
+    const rows = players.map((p) => {
+      const row = [
+        p.name,
+        p.team,
+        p.opponent,
+        p.position,
+        p.salary,
+        p.value,
+        p.ownership,
+        p.usageRate,
+        p.minutesProjection,
+        p.projection,
+        p.ceiling,
+        p.floor,
+        p.leverageScore,
+        p.boom,
+        p.bust,
+      ];
+      if (showActuals) row.splice(10, 0, (p as any).actual ?? '');
+      return row.map(csvEscape).join(',');
+    });
+    const csv = [headers.map(csvEscape).join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'projections.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       {showFilterBuilder && (
@@ -941,17 +981,26 @@ export const DashboardView: React.FC<Props> = ({
               <BarChart3 className="w-4 h-4 text-drafting-orange" />
               <h3 className="text-xs font-black uppercase tracking-widest text-ink/60">Player Projections</h3>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowFilterBuilder(true)}
-              className={`flex items-center gap-2 px-3 py-2 rounded-sm text-[10px] font-bold uppercase transition-all border ${
-                filters.length > 0
-                  ? 'bg-drafting-orange text-white border-drafting-orange shadow-lg'
-                  : 'bg-white border-ink/20 text-ink/60 hover:bg-ink/5'
-              }`}
-            >
-              <Filter className="w-3.5 h-3.5" /> Filter {filters.length > 0 && `(${filters.length})`}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={exportToCsv}
+                className="flex items-center gap-2 px-3 py-2 rounded-sm text-[10px] font-bold uppercase transition-all border bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700"
+              >
+                <Download className="w-3.5 h-3.5" /> Export
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowFilterBuilder(true)}
+                className={`flex items-center gap-2 px-3 py-2 rounded-sm text-[10px] font-bold uppercase transition-all border ${
+                  filters.length > 0
+                    ? 'bg-drafting-orange text-white border-drafting-orange shadow-lg'
+                    : 'bg-white border-ink/20 text-ink/60 hover:bg-ink/5'
+                }`}
+              >
+                <Filter className="w-3.5 h-3.5" /> Filter {filters.length > 0 && `(${filters.length})`}
+              </button>
+            </div>
           </div>
 
           <div className="relative mb-4">

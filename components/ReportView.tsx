@@ -705,10 +705,88 @@ const buildTeamPlayers = (players: Player[]): Map<string, PlayerRow[]> => {
 
 const TEAM_TABLE_COLS = 11;
 
+const NBA_TEAM_FULL_NAMES: Record<string, string> = {
+  ATL: 'Atlanta Hawks', BOS: 'Boston Celtics', BKN: 'Brooklyn Nets',
+  CHA: 'Charlotte Hornets', CHI: 'Chicago Bulls', CLE: 'Cleveland Cavaliers',
+  DAL: 'Dallas Mavericks', DEN: 'Denver Nuggets', DET: 'Detroit Pistons',
+  GSW: 'Golden State Warriors', HOU: 'Houston Rockets', IND: 'Indiana Pacers',
+  LAC: 'LA Clippers', LAL: 'LA Lakers', MEM: 'Memphis Grizzlies',
+  MIA: 'Miami Heat', MIL: 'Milwaukee Bucks', MIN: 'Minnesota Timberwolves',
+  NOP: 'New Orleans Pelicans', NYK: 'New York Knicks', OKC: 'Oklahoma City Thunder',
+  ORL: 'Orlando Magic', PHI: 'Philadelphia 76ers', PHX: 'Phoenix Suns',
+  POR: 'Portland Trail Blazers', SAC: 'Sacramento Kings', SAS: 'San Antonio Spurs',
+  TOR: 'Toronto Raptors', UTA: 'Utah Jazz', WAS: 'Washington Wizards',
+};
+
+type TeamTableSortKey = 'name' | 'position' | 'salary' | 'minutes' | 'usage' | 'projected' | 'actual' | 'eff' | 'delta' | 'boom' | 'bust';
+interface TeamTableSortConfig { key: TeamTableSortKey; dir: 'asc' | 'desc' }
+
+const getTeamRowSortValue = (row: PlayerRow, key: TeamTableSortKey): number | string => {
+  switch (key) {
+    case 'name': return row.name;
+    case 'position': return row.position;
+    case 'salary': return Number(row.player.salary) || -Infinity;
+    case 'minutes': return getMinutesProj(row.player) ?? -Infinity;
+    case 'usage': return getUsagePct(row.player) ?? -Infinity;
+    case 'projected': return row.projected;
+    case 'actual': return row.actual ?? -Infinity;
+    case 'eff': {
+      const s = Number(row.player.salary);
+      return (row.actual !== null && Number.isFinite(s) && s > 0) ? row.actual / (s / 1000) : -Infinity;
+    }
+    case 'delta': return row.delta ?? -Infinity;
+    case 'boom': return getBoomPct(row.player) ?? -Infinity;
+    case 'bust': return getBustPct(row.player) ?? -Infinity;
+    default: return row.projected;
+  }
+};
+
+const sortTeamRows = (rows: PlayerRow[], sort: TeamTableSortConfig): PlayerRow[] =>
+  [...rows].sort((a, b) => {
+    const av = getTeamRowSortValue(a, sort.key);
+    const bv = getTeamRowSortValue(b, sort.key);
+    const cmp = typeof av === 'string' && typeof bv === 'string'
+      ? av.localeCompare(bv)
+      : Number(av) - Number(bv);
+    return sort.dir === 'asc' ? cmp : -cmp;
+  });
+
+const TeamTableHeader: React.FC<{ sort: TeamTableSortConfig; onSort: (key: TeamTableSortKey) => void }> = ({ sort, onSort }) => {
+  const th = (key: TeamTableSortKey, label: string, align: 'left' | 'right' = 'right') => {
+    const active = sort.key === key;
+    return (
+      <th
+        key={key}
+        onClick={() => onSort(key)}
+        className={`px-3 py-2 text-${align} cursor-pointer select-none whitespace-nowrap transition-colors ${active ? 'text-drafting-orange' : 'text-ink/40 hover:text-ink/70'}`}
+      >
+        {label}{active ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
+      </th>
+    );
+  };
+  return (
+    <tr className="text-[10px] font-black uppercase tracking-widest border-b border-ink/10">
+      {th('name', 'Player', 'left')}
+      {th('position', 'Pos', 'left')}
+      {th('salary', 'Salary')}
+      {th('minutes', 'Min')}
+      {th('usage', 'Usage')}
+      {th('projected', 'Proj')}
+      {th('actual', 'Actual')}
+      {th('eff', 'EFF')}
+      {th('delta', 'Delta')}
+      {th('boom', 'Boom')}
+      {th('bust', 'Bust')}
+    </tr>
+  );
+};
+
 const TeamTableRows: React.FC<{ team: string; rows: PlayerRow[]; onPlayerClick: (player: Player) => void }> = ({ team, rows, onPlayerClick }) => (
   <>
-    <tr className="bg-ink/[0.04]">
-      <td colSpan={TEAM_TABLE_COLS} className="px-3 py-1 text-[10px] font-black uppercase tracking-widest text-ink/50">{team}</td>
+    <tr className="bg-ink">
+      <td colSpan={TEAM_TABLE_COLS} className="px-3 py-2 text-[11px] font-black uppercase tracking-widest text-white">
+        {NBA_TEAM_FULL_NAMES[team] || team}
+      </td>
     </tr>
     {rows.length === 0 ? (
       <tr>
@@ -748,29 +826,13 @@ const TeamTableRows: React.FC<{ team: string; rows: PlayerRow[]; onPlayerClick: 
   </>
 );
 
-const teamTableHeader = (
-  <tr className="text-[10px] font-black text-ink/40 uppercase tracking-widest border-b border-ink/10">
-    <th className="px-3 py-2 text-left">Player</th>
-    <th className="px-3 py-2 text-left">Pos</th>
-    <th className="px-3 py-2 text-right">Salary</th>
-    <th className="px-3 py-2 text-right">Min</th>
-    <th className="px-3 py-2 text-right">Usage</th>
-    <th className="px-3 py-2 text-right">Proj</th>
-    <th className="px-3 py-2 text-right">Actual</th>
-    <th className="px-3 py-2 text-right">EFF</th>
-    <th className="px-3 py-2 text-right">Delta</th>
-    <th className="px-3 py-2 text-right">Boom</th>
-    <th className="px-3 py-2 text-right">Bust</th>
-  </tr>
-);
-
-const MatchupTable: React.FC<{ teamA: string; teamB: string; teamARows: PlayerRow[]; teamBRows: PlayerRow[]; onPlayerClick: (player: Player) => void }> = ({ teamA, teamB, teamARows, teamBRows, onPlayerClick }) => (
+const MatchupTable: React.FC<{ teamA: string; teamB: string; teamARows: PlayerRow[]; teamBRows: PlayerRow[]; onPlayerClick: (player: Player) => void; sort: TeamTableSortConfig; onSort: (key: TeamTableSortKey) => void }> = ({ teamA, teamB, teamARows, teamBRows, onPlayerClick, sort, onSort }) => (
   <div className="overflow-x-auto">
     <table className="w-full text-xs border-collapse">
-      <thead>{teamTableHeader}</thead>
+      <thead><TeamTableHeader sort={sort} onSort={onSort} /></thead>
       <tbody className="font-mono">
-        <TeamTableRows team={teamA} rows={teamARows} onPlayerClick={onPlayerClick} />
-        <TeamTableRows team={teamB} rows={teamBRows} onPlayerClick={onPlayerClick} />
+        <TeamTableRows team={teamA} rows={sortTeamRows(teamARows, sort)} onPlayerClick={onPlayerClick} />
+        <TeamTableRows team={teamB} rows={sortTeamRows(teamBRows, sort)} onPlayerClick={onPlayerClick} />
       </tbody>
     </table>
   </div>
@@ -841,6 +903,10 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
   const [bestLineupError, setBestLineupError] = useState<string | null>(null);
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
   const [activeMatchupTab, setActiveMatchupTab] = useState(0);
+  const [teamTableSort, setTeamTableSort] = useState<TeamTableSortConfig>({ key: 'projected', dir: 'desc' });
+  const handleTeamTableSort = (key: TeamTableSortKey) => {
+    setTeamTableSort((prev) => ({ key, dir: prev.key === key ? (prev.dir === 'asc' ? 'desc' : 'asc') : 'desc' }));
+  };
 
   const hasAnyActual = useMemo(() => {
     return players.some((player) => getActual(player) !== undefined);
@@ -1219,6 +1285,8 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
                 teamARows={matchupRows[activeMatchupTab].teamAPlayers}
                 teamBRows={matchupRows[activeMatchupTab].teamBPlayers}
                 onPlayerClick={setSelectedPlayer}
+                sort={teamTableSort}
+                onSort={handleTeamTableSort}
               />
             </div>
           )}
@@ -1241,9 +1309,9 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
           {standaloneTeams[activeMatchupTab] && (
             <div className="p-4 overflow-x-auto">
               <table className="w-full text-xs border-collapse">
-                <thead>{teamTableHeader}</thead>
+                <thead><TeamTableHeader sort={teamTableSort} onSort={handleTeamTableSort} /></thead>
                 <tbody className="font-mono">
-                  <TeamTableRows team={standaloneTeams[activeMatchupTab].team} rows={standaloneTeams[activeMatchupTab].rows} onPlayerClick={setSelectedPlayer} />
+                  <TeamTableRows team={standaloneTeams[activeMatchupTab].team} rows={sortTeamRows(standaloneTeams[activeMatchupTab].rows, teamTableSort)} onPlayerClick={setSelectedPlayer} />
                 </tbody>
               </table>
             </div>

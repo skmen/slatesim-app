@@ -3,23 +3,24 @@ import React, { useState, useMemo } from 'react';
 import { Player, ContestState } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useLineup } from '../context/LineupContext';
-import { 
-  Search, 
-  ArrowUp, 
-  ArrowDown, 
-  X, 
-  Scale, 
-  Filter, 
-  Columns, 
-  Plus, 
-  Trash2, 
+import {
+  Search,
+  ArrowUp,
+  ArrowDown,
+  X,
+  Scale,
+  Filter,
+  Columns,
+  Plus,
+  Trash2,
   Check,
   ChevronDown,
   ShieldAlert,
   Activity,
   Box,
   Settings,
-  PlusCircle
+  PlusCircle,
+  Download
 } from 'lucide-react';
 
 interface FilterRule {
@@ -213,6 +214,25 @@ export const ProjectionsView: React.FC<Props> = ({ players, referencePlayers, be
     setVisibleColumns(next);
   };
 
+  const exportToCsv = () => {
+    const csvEscape = (val: any): string => {
+      const s = val === undefined || val === null ? '' : String(val);
+      return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const headers = columnsToRender.map((k) => csvEscape(getColLabel(k))).join(',');
+    const rows = processedPlayers.map((p) =>
+      columnsToRender.map((k) => csvEscape(getValueForKey(p, k))).join(',')
+    );
+    const csv = [headers, ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `projections.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="flex flex-col h-full space-y-4 pb-24 relative selection:bg-highlight selection:text-main">
       {/* Filter Builder Modal */}
@@ -329,6 +349,7 @@ export const ProjectionsView: React.FC<Props> = ({ players, referencePlayers, be
           <div className="flex flex-wrap gap-2 justify-end">
             <button onClick={() => setShowFilterBuilder(true)} className={`flex items-center gap-2 px-3 py-2 rounded-sm text-[10px] font-bold uppercase transition-all border ${filters.length > 0 ? 'bg-drafting-orange text-white border-drafting-orange shadow-lg' : 'bg-white border-ink/20 text-ink/60 hover:bg-ink/5'}`}><Filter className="w-3.5 h-3.5" /> Filter {filters.length > 0 && `(${filters.length})`}</button>
             {isAdmin && <button onClick={() => setShowColumnManager(true)} className="flex items-center gap-2 px-3 py-2 bg-white border border-ink/20 text-ink/60 rounded-sm text-[10px] font-bold uppercase hover:bg-ink/5"><Columns className="w-3.5 h-3.5" /> Columns</button>}
+            <button onClick={exportToCsv} className="flex items-center gap-2 px-3 py-2 bg-white border border-ink/20 text-ink/60 rounded-sm text-[10px] font-bold uppercase hover:bg-ink/5 transition-all"><Download className="w-3.5 h-3.5" /> Export</button>
           </div>
         </div>
       </div>

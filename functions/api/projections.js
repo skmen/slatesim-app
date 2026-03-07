@@ -77,6 +77,9 @@ export const onRequest = async ({ request, env }) => {
       return new Response(JSON.stringify({ error: 'Unavailable' }), { status: 502, headers });
     }
 
+    const lastModified = resp.headers.get('last-modified');
+    if (lastModified) headers['last-modified'] = lastModified;
+
     const rawText = await resp.text();
     let parsed;
     try {

@@ -66,6 +66,9 @@ export const onRequest = async ({ request, env }) => {
       return new Response(JSON.stringify({ error: 'Unavailable' }), { status: 502, headers });
     }
 
+    const lastModified = resp.headers.get('last-modified');
+    if (lastModified) headers['last-modified'] = lastModified;
+
     const encrypted = await resp.json();
     if (!encrypted?.iv || !encrypted?.payload) {
       return new Response(JSON.stringify({ error: 'Malformed payload' }), { status: 500, headers });
