@@ -62,11 +62,13 @@ Output schema (return exactly this structure):
 }
 
 Section classification — assign each initial-block sub-section to exactly one category by dominant keywords:
-- injuries  (🩹 "Injury Report"):   out, questionable, doubtful, GTD, injury, inactive, ruled out, upgraded, cleared, DNP, health
-- referees  (🦺 "Officials"):        referee, crew, foul, pace, officiating, FTA, rate, calls, whistles
-- coaches   (📋 "Rotations"):        coach, rotation, bench, starter, minutes, substitution, depth, lineup, blowout
-- totals    (📊 "Game Environment"): total, over/under, O/U, pace, spread, line, odds, implied, points, Vegas
-- overview  (📰 "Overview"):         fallback — use when no other category matches
+- injuries  (🩹 "Injury Report"):          out, questionable, doubtful, GTD, injury, inactive, ruled out, upgraded, cleared, DNP, health
+- referees  (🦺 "Officials"):              referee, crew, foul, pace, officiating, FTA, rate, calls, whistles
+- coaches   (📋 "Rotations"):              coach, rotation, bench, starter, minutes, substitution, depth, lineup, blowout
+- totals    (📊 "Game Environment"):       total, over/under, O/U, pace, spread, line, odds, implied, points, Vegas
+- exposure  (🎯 "Exposure Recommendations"): exposure, fade, target, leverage, stack, ownership, GPP, overweight, underweight, differentiator, boom, bust, HVM, salary, ceiling
+  IMPORTANT: Parse the exposure section as a SINGLE UNIT — do not split into sub-sections. Preserve all five subsections (Increase Exposure, Reduce Exposure, Ownership Leverage, Injury / Late News, Game Stack) verbatim inside the content field.
+- overview  (📰 "Overview"):               fallback — use when no other category matches
 
 Update blocks begin after each "---" horizontal rule, headed by "### 🔄 Update — {time} PST".
 

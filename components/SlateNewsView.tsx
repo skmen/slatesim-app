@@ -65,6 +65,17 @@ const SEVERITY_LABEL: Record<string, string> = {
   none: '',
 };
 
+// Exposure tab definitions — matched against markdown headings
+const EXPOSURE_TABS = [
+  { key: 'target',   label: '🔼 Target',       anchor: 'Increase Exposure' },
+  { key: 'fade',     label: '🔽 Fade',          anchor: 'Reduce Exposure' },
+  { key: 'leverage', label: '⚖️ Leverage',      anchor: 'Ownership Leverage' },
+  { key: 'injury',   label: '⚠️ Injury Watch',  anchor: 'Injury' },
+  { key: 'stacks',   label: '📊 Stacks',         anchor: 'Game Stack' },
+] as const;
+
+type ExposureTabKey = typeof EXPOSURE_TABS[number]['key'];
+
 function formatSlateDate(dateStr: string): string {
   const parts = dateStr.split('-');
   if (parts.length !== 3) return dateStr;
@@ -73,7 +84,27 @@ function formatSlateDate(dateStr: string): string {
   return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
-/** Minimal markdown → readable text: handles bold, bullets, headers. */
+/**
+ * Split exposure section markdown into per-tab content by heading anchors.
+ * Returns a map of tab key → markdown text for that subsection.
+ */
+function parseExposureTabs(content: string): Record<ExposureTabKey, string> {
+  const result = {} as Record<ExposureTabKey, string>;
+  // Split on any ## / ### heading
+  const chunks = content.split(/\n(?=#{2,3}\s)/);
+
+  for (const tab of EXPOSURE_TABS) {
+    const chunk = chunks.find((c) =>
+      c.match(new RegExp(`^#{2,3}\\s+.*${tab.anchor}`, 'i'))
+    );
+    result[tab.key] = chunk
+      ? chunk.replace(/^#{2,3}\s+[^\n]+\n?/, '').trim()
+      : '';
+  }
+  return result;
+}
+
+/** Minimal markdown → React: handles headers, bullets, bold, italic. */
 function renderMarkdown(md: string): React.ReactNode {
   const lines = md.split('\n');
   const nodes: React.ReactNode[] = [];
@@ -81,20 +112,17 @@ function renderMarkdown(md: string): React.ReactNode {
 
   for (const line of lines) {
     const trimmed = line.trim();
-
     if (/^#{1,3}\s/.test(trimmed)) {
-      const text = trimmed.replace(/^#{1,3}\s+/, '');
       nodes.push(
         <p key={key++} className="font-black uppercase tracking-tighter text-xs text-ink/70 mt-3 mb-1">
-          {text}
+          {trimmed.replace(/^#{1,3}\s+/, '')}
         </p>
       );
     } else if (/^[-*]\s/.test(trimmed)) {
-      const text = trimmed.replace(/^[-*]\s+/, '');
       nodes.push(
         <div key={key++} className="flex gap-1.5 items-start ml-2 mb-0.5">
-          <span className="text-drafting-orange mt-0.5 text-[10px]">▪</span>
-          <span className="text-[12px] text-ink/80 leading-snug">{inlineMarkdown(text)}</span>
+          <span className="text-drafting-orange mt-0.5 text-[10px] shrink-0">▪</span>
+          <span className="text-[12px] text-ink/80 leading-snug">{inlineMarkdown(trimmed.replace(/^[-*]\s+/, ''))}</span>
         </div>
       );
     } else if (trimmed === '') {
@@ -107,25 +135,67 @@ function renderMarkdown(md: string): React.ReactNode {
       );
     }
   }
-
   return <>{nodes}</>;
 }
 
 function inlineMarkdown(text: string): React.ReactNode {
-  // Handle **bold** and *italic*
   const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g);
   return parts.map((part, i) => {
-    if (part.startsWith('**') && part.endsWith('**')) {
+    if (part.startsWith('**') && part.endsWith('**'))
       return <strong key={i} className="font-black text-ink">{part.slice(2, -2)}</strong>;
-    }
-    if (part.startsWith('*') && part.endsWith('*')) {
+    if (part.startsWith('*') && part.endsWith('*'))
       return <em key={i}>{part.slice(1, -1)}</em>;
-    }
     return part;
   });
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── ExposurePanel ────────────────────────────────────────────────────────────
+
+interface ExposurePanelProps {
+  section: BriefSection;
+}
+
+const ExposurePanel: React.FC<ExposurePanelProps> = ({ section }) => {
+  const [activeTab, setActiveTab] = useState<ExposureTabKey>('target');
+  const tabs = parseExposureTabs(section.content);
+
+  return (
+    <div className="bg-white/60 border border-ink/10 rounded-xl overflow-hidden">
+      {/* Panel header */}
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-ink/10">
+        <span className="text-base leading-none">{section.icon}</span>
+        <span className="font-black uppercase tracking-tighter text-xs text-ink">{section.label}</span>
+      </div>
+
+      {/* Tab bar */}
+      <div className="flex overflow-x-auto border-b border-ink/10 bg-ink/[0.02]">
+        {EXPOSURE_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`shrink-0 px-3 py-2 text-[10px] font-black uppercase tracking-tighter whitespace-nowrap transition-colors border-b-2 ${
+              activeTab === tab.key
+                ? 'border-drafting-orange text-drafting-orange'
+                : 'border-transparent text-ink/40 hover:text-ink/70'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab content */}
+      <div className="px-4 py-4 min-h-[80px]">
+        {tabs[activeTab]
+          ? renderMarkdown(tabs[activeTab])
+          : <p className="text-[11px] text-ink/30 font-mono">No content for this section.</p>
+        }
+      </div>
+    </div>
+  );
+};
+
+// ─── SectionCard ──────────────────────────────────────────────────────────────
 
 interface SectionCardProps {
   section: BriefSection;
@@ -145,11 +215,10 @@ const SectionCard: React.FC<SectionCardProps> = ({ section, defaultExpanded = fa
           <span className="text-base leading-none">{section.icon}</span>
           <span className="font-black uppercase tracking-tighter text-xs text-ink">{section.label}</span>
         </div>
-        {expanded ? (
-          <ChevronUp className="w-3.5 h-3.5 text-ink/40 shrink-0" />
-        ) : (
-          <ChevronDown className="w-3.5 h-3.5 text-ink/40 shrink-0" />
-        )}
+        {expanded
+          ? <ChevronUp className="w-3.5 h-3.5 text-ink/40 shrink-0" />
+          : <ChevronDown className="w-3.5 h-3.5 text-ink/40 shrink-0" />
+        }
       </button>
 
       {!expanded && section.summary && (
@@ -166,6 +235,8 @@ const SectionCard: React.FC<SectionCardProps> = ({ section, defaultExpanded = fa
     </div>
   );
 };
+
+// ─── UpdateItem ───────────────────────────────────────────────────────────────
 
 interface UpdateItemProps {
   update: BriefUpdate;
@@ -187,12 +258,10 @@ const UpdateItem: React.FC<UpdateItemProps> = ({ update }) => {
       >
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-0.5">
+            <div className="flex items-center gap-2 mb-0.5 flex-wrap">
               <span className="text-[11px] text-ink/40 font-mono">{update.timestamp}</span>
               <span className="text-[10px]">{update.icon}</span>
-              <span className="text-[10px] font-black uppercase tracking-tighter text-ink/50">
-                {update.label}
-              </span>
+              <span className="text-[10px] font-black uppercase tracking-tighter text-ink/50">{update.label}</span>
               {severityLabel && (
                 <span
                   className="text-[9px] font-black px-1 py-0.5 rounded uppercase tracking-widest text-white"
@@ -204,11 +273,10 @@ const UpdateItem: React.FC<UpdateItemProps> = ({ update }) => {
             </div>
             <p className="font-bold text-[12px] text-ink leading-tight">{update.headline}</p>
           </div>
-          {expanded ? (
-            <ChevronUp className="w-3.5 h-3.5 text-ink/40 shrink-0 mt-1" />
-          ) : (
-            <ChevronDown className="w-3.5 h-3.5 text-ink/40 shrink-0 mt-1" />
-          )}
+          {expanded
+            ? <ChevronUp className="w-3.5 h-3.5 text-ink/40 shrink-0 mt-1" />
+            : <ChevronDown className="w-3.5 h-3.5 text-ink/40 shrink-0 mt-1" />
+          }
         </div>
       </button>
 
@@ -221,7 +289,7 @@ const UpdateItem: React.FC<UpdateItemProps> = ({ update }) => {
   );
 };
 
-// ─── Main component ───────────────────────────────────────────────────────────
+// ─── Main ─────────────────────────────────────────────────────────────────────
 
 interface Props {
   slateDate: string;
@@ -243,8 +311,7 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
         setError((body as any)?.error ?? `HTTP ${resp.status}`);
         return;
       }
-      const data: ParsedBrief = await resp.json();
-      setBrief(data);
+      setBrief(await resp.json());
     } catch (e: any) {
       setError(e?.message ?? 'Network error');
     } finally {
@@ -252,11 +319,8 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
     }
   }, [slateDate]);
 
-  useEffect(() => {
-    fetchBrief();
-  }, [fetchBrief]);
+  useEffect(() => { fetchBrief(); }, [fetchBrief]);
 
-  // ─── Loading ───────────────────────────────────────────────────────────────
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-24 text-ink/40">
@@ -266,10 +330,9 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
     );
   }
 
-  // ─── Error ─────────────────────────────────────────────────────────────────
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center gap-3 py-24 text-ink/50">
+      <div className="flex flex-col items-center justify-center gap-3 py-24">
         <AlertCircle className="w-6 h-6 text-red-400" />
         <p className="text-[11px] font-black uppercase tracking-widest text-red-400">{error}</p>
         <button
@@ -284,15 +347,17 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
 
   if (!brief) return null;
 
-  const updateTickerPlayers = brief.player_mentions.filter((m) => m.in_update);
-  const sortedSections = [...brief.sections].sort((a, b) => a.order - b.order);
-  const sortedUpdates = [...brief.updates].reverse(); // newest first
+  const exposureSection = brief.sections.find((s) => s.id === 'exposure');
+  const regularSections = brief.sections
+    .filter((s) => s.id !== 'exposure')
+    .sort((a, b) => a.order - b.order);
+  const sortedUpdates = [...brief.updates].reverse();
+  const tickerPlayers = brief.player_mentions.filter((m) => m.in_update);
 
-  // ─── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
 
-      {/* Hero band */}
+      {/* ── Hero band ────────────────────────────────────────────────────── */}
       <div className="bg-white/60 border border-ink/10 rounded-xl px-5 py-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
@@ -307,7 +372,6 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
               {brief.last_updated_at ? `Last updated ${brief.last_updated_at}` : 'No updates yet'}
             </p>
           </div>
-
           <div className="flex items-center gap-2 flex-wrap">
             {brief.meta.update_count > 0 && (
               <span className="text-[10px] font-black px-2 py-1 rounded-full bg-ink/10 text-ink uppercase tracking-widest">
@@ -315,20 +379,22 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
               </span>
             )}
             {brief.meta.high_severity_count > 0 && (
-              <span className="text-[10px] font-black px-2 py-1 rounded-full text-white uppercase tracking-widest"
-                style={{ backgroundColor: SEVERITY_COLOR.high }}>
+              <span
+                className="text-[10px] font-black px-2 py-1 rounded-full text-white uppercase tracking-widest"
+                style={{ backgroundColor: SEVERITY_COLOR.high }}
+              >
                 {brief.meta.high_severity_count} high severity
               </span>
             )}
           </div>
         </div>
 
-        {/* Player ticker — only shown when updates exist */}
-        {updateTickerPlayers.length > 0 && (
+        {/* Player ticker */}
+        {tickerPlayers.length > 0 && (
           <div className="mt-3 pt-3 border-t border-ink/10">
             <p className="text-[9px] font-black uppercase tracking-widest text-ink/40 mb-2">In Updates</p>
             <div className="flex flex-wrap gap-1.5">
-              {updateTickerPlayers.map((m, i) => (
+              {tickerPlayers.map((m, i) => (
                 <span
                   key={i}
                   title={m.context}
@@ -343,13 +409,16 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
         )}
       </div>
 
-      {/* Two-column editorial layout */}
+      {/* ── Exposure panel (full-width, below hero) ───────────────────────── */}
+      {exposureSection && <ExposurePanel section={exposureSection} />}
+
+      {/* ── Two-column layout ─────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
 
-        {/* Left — section cards */}
+        {/* Left — initial brief sections */}
         <div className="space-y-3">
           <p className="text-[10px] font-black uppercase tracking-widest text-ink/40 px-1">Pre-Slate Brief</p>
-          {sortedSections.map((section) => (
+          {regularSections.map((section) => (
             <SectionCard
               key={section.id + section.order}
               section={section}
@@ -371,9 +440,7 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
               <p className="text-[11px] text-ink/30 font-mono">No updates for this slate yet.</p>
             </div>
           ) : (
-            sortedUpdates.map((update, i) => (
-              <UpdateItem key={i} update={update} />
-            ))
+            sortedUpdates.map((update, i) => <UpdateItem key={i} update={update} />)
           )}
         </div>
       </div>
