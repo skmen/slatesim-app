@@ -59,6 +59,15 @@ interface OptimizerConfig {
   cashMinGameTotal?: number;          // min game O/U to include player (default 220)
   cashMaxExposurePct?: number;        // max exposure % per player across lineups (default 65)
   cashPositionFloors?: Record<string, number>; // per-position minimum adjusted projection
+  // Team stacking priority weights (team abbreviation -> 1-5 weight)
+  teamStackWeights?: Record<string, number>;
+  // Portfolio diversity controls
+  portfolioMaxPairwiseOverlap?: number; // alias for minUniquePlayers: sets minUniquePlayers = 8 - value
+  // Bring-back game stack
+  bringBackEnable?: boolean;            // default true — require >=1 opponent player when stack fires
+  bringBackRate?: number;               // default 0.65 — fraction of lineups that get bring-back
+  // Game stack rotation
+  maxStackGames?: number;               // default 3 — number of top games to rotate across
 }
 
 type ResolvedOptimizerConfig = Required<Pick<OptimizerConfig, 'numLineups' | 'salaryCap' | 'salaryFloor' | 'maxExposure'>> & OptimizerConfig;
@@ -398,10 +407,16 @@ const withDefaultConfig = (config?: OptimizerConfig): ResolvedOptimizerConfig =>
     0,
     safeNumber((config as any)?.ownershipPenalty ?? (config as any)?.ownership_penalty, statMode === 'cash' ? 0.0 : 0.10),
   );
+  const portfolioMaxPairwiseOverlap = (config as any)?.portfolioMaxPairwiseOverlap;
   const minUniquePlayers = Math.max(
     1,
-    Math.floor(safeNumber((config as any)?.minUniquePlayers ?? (config as any)?.min_unique_players, 1)),
+    portfolioMaxPairwiseOverlap !== undefined
+      ? Math.max(1, DK_SLOTS.length - Math.floor(safeNumber(portfolioMaxPairwiseOverlap, 5)))
+      : Math.floor(safeNumber((config as any)?.minUniquePlayers ?? (config as any)?.min_unique_players, 3)),
   );
+  const bringBackEnable = (config as any)?.bringBackEnable ?? true;
+  const bringBackRate = clamp(safeNumber((config as any)?.bringBackRate, 0.65), 0, 1);
+  const maxStackGames = Math.max(1, Math.floor(safeNumber((config as any)?.maxStackGames, 3)));
   const stackMinPlayers = Math.max(
     0,
     Math.floor(safeNumber((config as any)?.stackMinPlayers ?? (config as any)?.stack_min_players, 0)),
@@ -467,6 +482,10 @@ const withDefaultConfig = (config?: OptimizerConfig): ResolvedOptimizerConfig =>
     cashMinGameTotal: safeNumber((config as any)?.cashMinGameTotal, 220),
     cashMaxExposurePct: clamp(safeNumber((config as any)?.cashMaxExposurePct, 65), 0, 100),
     cashPositionFloors: (config as any)?.cashPositionFloors ?? null,
+    teamStackWeights: (config as any)?.teamStackWeights ?? undefined,
+    bringBackEnable,
+    bringBackRate,
+    maxStackGames,
   };
 };
 
@@ -777,7 +796,7 @@ const buildBaseModel = (context: BuildContext): ModelBlueprint => {
 
   const minUniquePlayers = Math.max(
     1,
-    Math.floor(safeNumber(config.minUniquePlayers ?? (config as any).min_unique_players, 1)),
+    Math.floor(safeNumber(config.minUniquePlayers ?? (config as any).min_unique_players, 3)),
   );
   const maxSharedPlayers = DK_SLOTS.length - minUniquePlayers;
 
@@ -1454,13 +1473,22 @@ const getPriorityScore = (
     }
   }
 
+  const teamWeights = (cfg as any)?.teamStackWeights;
+  let teamBoost = 0;
+  if (teamWeights && typeof teamWeights === 'object') {
+    const team = getTeamMaybe(player);
+    const w = team ? (teamWeights[team] ?? 0) : 0;
+    if (w > 0) teamBoost = w * 0.6;
+  }
+
   const fallbackScoreRaw = projection
     + comboBonus
     + ceilingBonus
     + valueBonus
     + usageBonus
     + minutesBonus
-    + ruleBonus;
+    + ruleBonus
+    + teamBoost;
 
   return clamp(fallbackScoreRaw, FALLBACK_SCORE_MIN, FALLBACK_SCORE_MAX);
 };
@@ -1593,6 +1621,11 @@ const addGameStackConstraint = (
   players: Player[],
   stackMinPlayers: number,
   stackMinGameTotal: number,
+  lineupIndex: number,
+  numLineups: number,
+  bringBackEnable: boolean,
+  bringBackRate: number,
+  maxStackGames: number,
 ): void => {
   if (stackMinPlayers < 2) return;
 
@@ -1643,8 +1676,26 @@ const addGameStackConstraint = (
 
   if (candidates.length === 0) return;
 
+  // Fix 3: Rotate across top-maxStackGames games weighted by avgProjection
   candidates.sort((a, b) => b.avgProjection - a.avgProjection);
-  const targetGame = candidates[0];
+  const topGames = candidates.slice(0, Math.min(maxStackGames, candidates.length));
+
+  let targetGame: GameCandidate;
+  if (topGames.length === 1) {
+    targetGame = topGames[0];
+  } else {
+    const totalProj = topGames.reduce((s, g) => s + g.avgProjection, 0);
+    const buckets: number[] = [];
+    let cumulative = 0;
+    topGames.forEach((g) => {
+      cumulative += g.avgProjection / (totalProj || 1);
+      buckets.push(cumulative);
+    });
+    buckets[buckets.length - 1] = 1.0;
+    const position = lineupIndex / Math.max(1, numLineups);
+    const gameIdx = buckets.findIndex((b) => position <= b);
+    targetGame = topGames[Math.max(0, gameIdx)];
+  }
 
   const terms: LinearTerm[] = [];
   targetGame.indexes.forEach((idx) => {
@@ -1655,6 +1706,57 @@ const addGameStackConstraint = (
 
   if (terms.length >= stackMinPlayers) {
     addConstraint(model.constraints, 'game_stack_min', terms, '>=', stackMinPlayers);
+  }
+
+  // Fix 2: Bring-back — require >=1 player from each side of the targeted game
+  if (bringBackEnable && stackMinPlayers >= 2) {
+    const applyBringBack = lineupIndex / Math.max(1, numLineups) < bringBackRate;
+    if (applyBringBack) {
+      const teamPlayerMap = new Map<string, number[]>();
+      targetGame.indexes.forEach((idx) => {
+        const team = getTeamMaybe(players[idx]);
+        if (!team) return;
+        if (!teamPlayerMap.has(team)) teamPlayerMap.set(team, []);
+        teamPlayerMap.get(team)!.push(idx);
+      });
+
+      if (teamPlayerMap.size >= 2) {
+        const teamsRanked = Array.from(teamPlayerMap.entries())
+          .map(([team, indexes]) => ({
+            team,
+            indexes,
+            avgProj: indexes.reduce(
+              (s, idx) => s + Math.max(0, safeNumber(players[idx]?.projection, 0)), 0,
+            ) / indexes.length,
+          }))
+          .sort((a, b) => b.avgProj - a.avgProj);
+
+        const primaryTeam  = teamsRanked[0];
+        const opponentTeam = teamsRanked[1];
+
+        // Require >=2 from primary (stack anchor)
+        const primaryTerms: LinearTerm[] = [];
+        primaryTeam.indexes.forEach((idx) => {
+          (model.assignmentVarsByPlayer.get(idx) || []).forEach((varName) => {
+            primaryTerms.push({ varName, coeff: 1 });
+          });
+        });
+        if (primaryTerms.length >= 2) {
+          addConstraint(model.constraints, 'team_stack_primary_min', primaryTerms, '>=', 2);
+        }
+
+        // Require >=1 from opponent (bring-back)
+        const oppTerms: LinearTerm[] = [];
+        opponentTeam.indexes.forEach((idx) => {
+          (model.assignmentVarsByPlayer.get(idx) || []).forEach((varName) => {
+            oppTerms.push({ varName, coeff: 1 });
+          });
+        });
+        if (oppTerms.length >= 1) {
+          addConstraint(model.constraints, 'bringback_opponent_min', oppTerms, '>=', 1);
+        }
+      }
+    }
   }
 };
 
@@ -1919,7 +2021,17 @@ const solveLineup = async (context: BuildContext): Promise<SolveLineupResult> =>
       0,
       safeNumber(config.stackMinGameTotal ?? (config as any).stack_min_game_total, 215),
     );
-    addGameStackConstraint(baseModel, players, stackMinPlayers, stackMinGameTotal);
+    addGameStackConstraint(
+      baseModel,
+      players,
+      stackMinPlayers,
+      stackMinGameTotal,
+      context.lineupIndex,
+      config.numLineups,
+      (config as any).bringBackEnable ?? true,
+      clamp(safeNumber((config as any).bringBackRate, 0.65), 0, 1),
+      Math.max(1, Math.floor(safeNumber((config as any).maxStackGames, 3))),
+    );
   }
   if (
     bestProjectionSum !== null
