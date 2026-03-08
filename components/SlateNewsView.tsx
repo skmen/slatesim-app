@@ -30,26 +30,64 @@ interface PlayerMention {
   in_update: boolean;
 }
 
-interface BriefMeta {
-  section_count: number;
-  update_count: number;
-  player_mention_count: number;
-  high_severity_count: number;
-  has_updates: boolean;
-}
-
 interface ParsedBrief {
   slate_date: string;
-  generated_at: string | null;
   last_updated_at: string | null;
-  update_count: number;
   sections: BriefSection[];
   updates: BriefUpdate[];
   player_mentions: PlayerMention[];
-  meta: BriefMeta;
+  meta: {
+    section_count: number;
+    update_count: number;
+    high_severity_count: number;
+    has_updates: boolean;
+  };
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Category definitions ─────────────────────────────────────────────────────
+
+const CATEGORIES = [
+  {
+    id: 'injuries',
+    label: 'Injury Report',
+    icon: '🩹',
+    keywords: ['out', 'questionable', 'doubtful', 'gtd', 'injury', 'injured', 'inactive',
+               'ruled out', 'upgraded', 'cleared', 'dnp', 'health', 'will not play',
+               'out tonight', 'scratched'],
+  },
+  {
+    id: 'referees',
+    label: 'Officials',
+    icon: '🦺',
+    keywords: ['referee', 'crew', 'foul', 'officiating', 'fta', 'calls', 'whistles'],
+  },
+  {
+    id: 'coaches',
+    label: 'Rotations',
+    icon: '📋',
+    keywords: ['coach', 'rotation', 'bench', 'starter', 'minutes', 'substitution',
+               'depth chart', 'lineup', 'blowout'],
+  },
+  {
+    id: 'totals',
+    label: 'Game Environment',
+    icon: '📊',
+    keywords: ['total', 'over/under', 'o/u', 'spread', 'line', 'odds', 'implied',
+               'vegas', 'pace', 'points'],
+  },
+  {
+    id: 'exposure',
+    label: 'Exposure Recommendations',
+    icon: '🎯',
+    keywords: ['exposure', 'increase exposure', 'reduce exposure', 'fade', 'target',
+               'leverage', 'stack', 'ownership', 'gpp', 'overweight', 'underweight',
+               'differentiator', 'hvm', 'ceiling', 'salary'],
+  },
+] as const;
+
+type CategoryId = typeof CATEGORIES[number]['id'] | 'overview';
+
+const OVERVIEW_CATEGORY = { id: 'overview' as const, label: 'Overview', icon: '📰' };
 
 const SEVERITY_COLOR: Record<string, string> = {
   high: '#EF4444',
@@ -65,46 +103,237 @@ const SEVERITY_LABEL: Record<string, string> = {
   none: '',
 };
 
-// Exposure tab definitions — matched against markdown headings
 const EXPOSURE_TABS = [
-  { key: 'target',   label: '🔼 Target',       anchor: 'Increase Exposure' },
-  { key: 'fade',     label: '🔽 Fade',          anchor: 'Reduce Exposure' },
-  { key: 'leverage', label: '⚖️ Leverage',      anchor: 'Ownership Leverage' },
-  { key: 'injury',   label: '⚠️ Injury Watch',  anchor: 'Injury' },
-  { key: 'stacks',   label: '📊 Stacks',         anchor: 'Game Stack' },
+  { key: 'target',   label: '🔼 Target',      anchor: /increase exposure/i },
+  { key: 'fade',     label: '🔽 Fade',         anchor: /reduce exposure/i },
+  { key: 'leverage', label: '⚖️ Leverage',     anchor: /ownership leverage/i },
+  { key: 'injury',   label: '⚠️ Injury Watch', anchor: /injury/i },
+  { key: 'stacks',   label: '📊 Stacks',        anchor: /game stack/i },
 ] as const;
 
 type ExposureTabKey = typeof EXPOSURE_TABS[number]['key'];
 
-function formatSlateDate(dateStr: string): string {
-  const parts = dateStr.split('-');
-  if (parts.length !== 3) return dateStr;
-  const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
-  if (!Number.isFinite(d.getTime())) return dateStr;
-  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
-}
+// ─── Rule-based parser ────────────────────────────────────────────────────────
 
-/**
- * Split exposure section markdown into per-tab content by heading anchors.
- * Returns a map of tab key → markdown text for that subsection.
- */
-function parseExposureTabs(content: string): Record<ExposureTabKey, string> {
-  const result = {} as Record<ExposureTabKey, string>;
-  // Split on any ## / ### heading
-  const chunks = content.split(/\n(?=#{2,3}\s)/);
+function classifyText(text: string): typeof CATEGORIES[number] | typeof OVERVIEW_CATEGORY {
+  const lower = text.toLowerCase();
+  let best = OVERVIEW_CATEGORY as any;
+  let bestCount = 0;
 
-  for (const tab of EXPOSURE_TABS) {
-    const chunk = chunks.find((c) =>
-      c.match(new RegExp(`^#{2,3}\\s+.*${tab.anchor}`, 'i'))
-    );
-    result[tab.key] = chunk
-      ? chunk.replace(/^#{2,3}\s+[^\n]+\n?/, '').trim()
-      : '';
+  for (const cat of CATEGORIES) {
+    const count = cat.keywords.filter((kw) => lower.includes(kw)).length;
+    if (count > bestCount) {
+      bestCount = count;
+      best = cat;
+    }
   }
-  return result;
+  return best;
 }
 
-/** Minimal markdown → React: handles headers, bullets, bold, italic. */
+function getSeverity(text: string): 'high' | 'medium' | 'low' | 'none' {
+  const lower = text.toLowerCase();
+  if (/ruled out|out tonight|scratched|will not play/.test(lower)) return 'high';
+  if (/questionable|gtd|upgraded|downgraded/.test(lower)) return 'medium';
+  if (/probable|listed|expected|trending/.test(lower)) return 'low';
+  return 'none';
+}
+
+function extractDateFromH1(line: string): string | null {
+  const m = line.match(/(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1] : null;
+}
+
+function extractUpdateTimestamp(line: string): string | null {
+  // Matches "### 🔄 Update — 14:32 PST" or "### Update — 2:32 PM PST"
+  const m = line.match(/update\s*[—\-]\s*(.+?)(?:\s*pst)?$/i);
+  return m ? m[1].trim() : null;
+}
+
+function makeHeadline(content: string): string {
+  // Take first non-empty sentence or first line, cap at 12 words
+  const first = content
+    .replace(/^#{1,3}\s+[^\n]+\n?/, '') // strip leading heading
+    .replace(/\*\*/g, '')
+    .split(/[.\n]/)[0]
+    .trim();
+  const words = first.split(/\s+/).slice(0, 12);
+  return words.join(' ') + (words.length < first.split(/\s+/).length ? '…' : '');
+}
+
+function makeSummary(content: string): string {
+  return content
+    .replace(/^#{1,3}\s+[^\n]+\n?/gm, '')
+    .replace(/\*\*/g, '')
+    .replace(/\*/g, '')
+    .replace(/\n+/g, ' ')
+    .trim()
+    .slice(0, 180)
+    .trim();
+}
+
+/** Very light player-name detection: capitalised First Last pairs. */
+function extractPlayerMentions(
+  content: string,
+  sectionId: string,
+  inUpdate: boolean
+): PlayerMention[] {
+  const mentions: PlayerMention[] = [];
+  const seen = new Set<string>();
+  // Match "Firstname Lastname" — both capitalised, preceded by space/newline/bullet
+  const re = /(?:^|[\s*\-•])([A-Z][a-z]+(?:\s[A-Z][a-z']+)+)/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    const name = m[1].trim();
+    if (seen.has(name)) continue;
+    // Skip common false-positives (headings, labels)
+    if (/^(The|This|In|For|On|At|All|Key|Game|Last|Next|Week|Note|NBA|DFS|GPP|GTD|DNP)/.test(name)) continue;
+    seen.add(name);
+    // Try to extract team abbr — look for (XXX) immediately after the name
+    const teamMatch = content.slice(m.index).match(new RegExp(`${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(([A-Z]{2,4})\\)`));
+    mentions.push({
+      player_name: name,
+      team_abbr: teamMatch ? teamMatch[1] : null,
+      context: makeSummary(content).slice(0, 120),
+      section_id: sectionId,
+      in_update: inUpdate,
+    });
+  }
+  return mentions;
+}
+
+function parseBriefMarkdown(md: string): ParsedBrief {
+  // Split into blocks on horizontal rules
+  const blocks = md.split(/\n---+\n/);
+  const initialBlock = blocks[0] ?? '';
+  const updateRawBlocks = blocks.slice(1);
+
+  // ── Slate date from H1 ──────────────────────────────────────────────────
+  let slateDate = new Date().toISOString().slice(0, 10);
+  for (const line of initialBlock.split('\n')) {
+    if (line.startsWith('# ')) {
+      const d = extractDateFromH1(line);
+      if (d) { slateDate = d; break; }
+    }
+  }
+
+  // ── Initial sections: split on ## / ### headings ─────────────────────
+  const sections: BriefSection[] = [];
+  const initialLines = initialBlock.split('\n');
+  let currentHeading = '';
+  let currentLines: string[] = [];
+  let order = 0;
+
+  const flushSection = () => {
+    const raw = currentLines.join('\n').trim();
+    if (!raw) return;
+    const fullText = currentHeading ? `${currentHeading}\n${raw}` : raw;
+    // Skip if it's just the H1 title
+    if (/^#\s/.test(fullText.split('\n')[0])) return;
+    const cat = classifyText(fullText);
+    sections.push({
+      id: cat.id,
+      label: cat.label,
+      icon: cat.icon,
+      content: fullText,
+      summary: makeSummary(raw),
+      order: order++,
+    });
+  };
+
+  for (const line of initialLines) {
+    if (/^##\s/.test(line) || /^###\s/.test(line)) {
+      flushSection();
+      currentHeading = line;
+      currentLines = [];
+    } else if (/^#\s/.test(line)) {
+      // H1 — skip into next section
+      currentHeading = '';
+      currentLines = [];
+    } else {
+      currentLines.push(line);
+    }
+  }
+  flushSection();
+
+  // If no sub-sections were found, treat entire initial block (minus H1) as one overview section
+  if (sections.length === 0) {
+    const body = initialLines.filter((l) => !/^#\s/.test(l)).join('\n').trim();
+    if (body) {
+      sections.push({
+        id: 'overview',
+        label: 'Overview',
+        icon: '📰',
+        content: body,
+        summary: makeSummary(body),
+        order: 0,
+      });
+    }
+  }
+
+  // ── Update blocks ────────────────────────────────────────────────────
+  const updates: BriefUpdate[] = [];
+  let lastTimestamp: string | null = null;
+
+  for (const raw of updateRawBlocks) {
+    const lines = raw.trim().split('\n');
+    let timestamp = '';
+    let contentStartIdx = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const ts = extractUpdateTimestamp(lines[i]);
+      if (ts) {
+        timestamp = ts;
+        lastTimestamp = ts;
+        contentStartIdx = i + 1;
+        break;
+      }
+    }
+
+    const content = lines.slice(contentStartIdx).join('\n').trim();
+    if (!content) continue;
+
+    const cat = classifyText(content);
+    const severity = getSeverity(content);
+
+    updates.push({
+      timestamp,
+      category: cat.id,
+      label: cat.label,
+      icon: cat.icon,
+      severity,
+      headline: makeHeadline(content),
+      content,
+    });
+  }
+
+  // ── Player mentions ──────────────────────────────────────────────────
+  const playerMentions: PlayerMention[] = [];
+  for (const sec of sections) {
+    playerMentions.push(...extractPlayerMentions(sec.content, sec.id, false));
+  }
+  for (const upd of updates) {
+    playerMentions.push(...extractPlayerMentions(upd.content, upd.category, true));
+  }
+
+  const highCount = updates.filter((u) => u.severity === 'high').length;
+
+  return {
+    slate_date: slateDate,
+    last_updated_at: lastTimestamp,
+    sections,
+    updates,
+    player_mentions: playerMentions,
+    meta: {
+      section_count: sections.length,
+      update_count: updates.length,
+      high_severity_count: highCount,
+      has_updates: updates.length > 0,
+    },
+  };
+}
+
+// ─── Markdown renderer ────────────────────────────────────────────────────────
+
 function renderMarkdown(md: string): React.ReactNode {
   const lines = md.split('\n');
   const nodes: React.ReactNode[] = [];
@@ -122,7 +351,7 @@ function renderMarkdown(md: string): React.ReactNode {
       nodes.push(
         <div key={key++} className="flex gap-1.5 items-start ml-2 mb-0.5">
           <span className="text-drafting-orange mt-0.5 text-[10px] shrink-0">▪</span>
-          <span className="text-[12px] text-ink/80 leading-snug">{inlineMarkdown(trimmed.replace(/^[-*]\s+/, ''))}</span>
+          <span className="text-[12px] text-ink/80 leading-snug">{inlineMd(trimmed.replace(/^[-*]\s+/, ''))}</span>
         </div>
       );
     } else if (trimmed === '') {
@@ -130,7 +359,7 @@ function renderMarkdown(md: string): React.ReactNode {
     } else {
       nodes.push(
         <p key={key++} className="text-[12px] text-ink/80 leading-snug mb-1">
-          {inlineMarkdown(trimmed)}
+          {inlineMd(trimmed)}
         </p>
       );
     }
@@ -138,7 +367,7 @@ function renderMarkdown(md: string): React.ReactNode {
   return <>{nodes}</>;
 }
 
-function inlineMarkdown(text: string): React.ReactNode {
+function inlineMd(text: string): React.ReactNode {
   const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g);
   return parts.map((part, i) => {
     if (part.startsWith('**') && part.endsWith('**'))
@@ -149,25 +378,43 @@ function inlineMarkdown(text: string): React.ReactNode {
   });
 }
 
-// ─── ExposurePanel ────────────────────────────────────────────────────────────
+// ─── Exposure tab parser ──────────────────────────────────────────────────────
 
-interface ExposurePanelProps {
-  section: BriefSection;
+function parseExposureTabs(content: string): Record<ExposureTabKey, string> {
+  const result = {} as Record<ExposureTabKey, string>;
+  const chunks = content.split(/\n(?=#{2,3}\s)/);
+
+  for (const tab of EXPOSURE_TABS) {
+    const chunk = chunks.find((c) => tab.anchor.test(c.split('\n')[0]));
+    result[tab.key] = chunk
+      ? chunk.replace(/^#{2,3}\s+[^\n]+\n?/, '').trim()
+      : '';
+  }
+  return result;
 }
 
-const ExposurePanel: React.FC<ExposurePanelProps> = ({ section }) => {
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function formatSlateDate(dateStr: string): string {
+  const parts = dateStr.split('-');
+  if (parts.length !== 3) return dateStr;
+  const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  if (!Number.isFinite(d.getTime())) return dateStr;
+  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+const ExposurePanel: React.FC<{ section: BriefSection }> = ({ section }) => {
   const [activeTab, setActiveTab] = useState<ExposureTabKey>('target');
   const tabs = parseExposureTabs(section.content);
 
   return (
     <div className="bg-white/60 border border-ink/10 rounded-xl overflow-hidden">
-      {/* Panel header */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-ink/10">
         <span className="text-base leading-none">{section.icon}</span>
         <span className="font-black uppercase tracking-tighter text-xs text-ink">{section.label}</span>
       </div>
-
-      {/* Tab bar */}
       <div className="flex overflow-x-auto border-b border-ink/10 bg-ink/[0.02]">
         {EXPOSURE_TABS.map((tab) => (
           <button
@@ -183,28 +430,21 @@ const ExposurePanel: React.FC<ExposurePanelProps> = ({ section }) => {
           </button>
         ))}
       </div>
-
-      {/* Tab content */}
       <div className="px-4 py-4 min-h-[80px]">
         {tabs[activeTab]
           ? renderMarkdown(tabs[activeTab])
-          : <p className="text-[11px] text-ink/30 font-mono">No content for this section.</p>
+          : <p className="text-[11px] text-ink/30 font-mono">No content for this tab.</p>
         }
       </div>
     </div>
   );
 };
 
-// ─── SectionCard ──────────────────────────────────────────────────────────────
-
-interface SectionCardProps {
-  section: BriefSection;
-  defaultExpanded?: boolean;
-}
-
-const SectionCard: React.FC<SectionCardProps> = ({ section, defaultExpanded = false }) => {
+const SectionCard: React.FC<{ section: BriefSection; defaultExpanded?: boolean }> = ({
+  section,
+  defaultExpanded = false,
+}) => {
   const [expanded, setExpanded] = useState(defaultExpanded);
-
   return (
     <div className="bg-white/60 border border-ink/10 rounded-xl overflow-hidden">
       <button
@@ -220,13 +460,11 @@ const SectionCard: React.FC<SectionCardProps> = ({ section, defaultExpanded = fa
           : <ChevronDown className="w-3.5 h-3.5 text-ink/40 shrink-0" />
         }
       </button>
-
       {!expanded && section.summary && (
         <div className="px-4 pb-3 -mt-1">
           <p className="text-[11px] text-ink/60 leading-snug">{section.summary}</p>
         </div>
       )}
-
       {expanded && (
         <div className="px-4 pb-4 border-t border-ink/5 pt-3">
           {renderMarkdown(section.content)}
@@ -236,13 +474,7 @@ const SectionCard: React.FC<SectionCardProps> = ({ section, defaultExpanded = fa
   );
 };
 
-// ─── UpdateItem ───────────────────────────────────────────────────────────────
-
-interface UpdateItemProps {
-  update: BriefUpdate;
-}
-
-const UpdateItem: React.FC<UpdateItemProps> = ({ update }) => {
+const UpdateItem: React.FC<{ update: BriefUpdate }> = ({ update }) => {
   const [expanded, setExpanded] = useState(false);
   const borderColor = SEVERITY_COLOR[update.severity] ?? SEVERITY_COLOR.none;
   const severityLabel = SEVERITY_LABEL[update.severity];
@@ -279,7 +511,6 @@ const UpdateItem: React.FC<UpdateItemProps> = ({ update }) => {
           }
         </div>
       </button>
-
       {expanded && (
         <div className="px-4 pb-4 border-t border-ink/5 pt-3">
           {renderMarkdown(update.content)}
@@ -311,7 +542,8 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
         setError((body as any)?.error ?? `HTTP ${resp.status}`);
         return;
       }
-      setBrief(await resp.json());
+      const md = await resp.text();
+      setBrief(parseBriefMarkdown(md));
     } catch (e: any) {
       setError(e?.message ?? 'Network error');
     } finally {
@@ -325,7 +557,7 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-24 text-ink/40">
         <RefreshCw className="w-6 h-6 animate-spin" />
-        <p className="text-[11px] font-black uppercase tracking-widest">Parsing brief…</p>
+        <p className="text-[11px] font-black uppercase tracking-widest">Loading brief…</p>
       </div>
     );
   }
@@ -348,16 +580,14 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
   if (!brief) return null;
 
   const exposureSection = brief.sections.find((s) => s.id === 'exposure');
-  const regularSections = brief.sections
-    .filter((s) => s.id !== 'exposure')
-    .sort((a, b) => a.order - b.order);
+  const regularSections = brief.sections.filter((s) => s.id !== 'exposure').sort((a, b) => a.order - b.order);
   const sortedUpdates = [...brief.updates].reverse();
   const tickerPlayers = brief.player_mentions.filter((m) => m.in_update);
 
   return (
     <div className="space-y-4">
 
-      {/* ── Hero band ────────────────────────────────────────────────────── */}
+      {/* Hero band */}
       <div className="bg-white/60 border border-ink/10 rounded-xl px-5 py-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
@@ -389,7 +619,6 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
           </div>
         </div>
 
-        {/* Player ticker */}
         {tickerPlayers.length > 0 && (
           <div className="mt-3 pt-3 border-t border-ink/10">
             <p className="text-[9px] font-black uppercase tracking-widest text-ink/40 mb-2">In Updates</p>
@@ -409,13 +638,11 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
         )}
       </div>
 
-      {/* ── Exposure panel (full-width, below hero) ───────────────────────── */}
+      {/* Exposure panel — full width below hero */}
       {exposureSection && <ExposurePanel section={exposureSection} />}
 
-      {/* ── Two-column layout ─────────────────────────────────────────────── */}
+      {/* Two-column layout */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-
-        {/* Left — initial brief sections */}
         <div className="space-y-3">
           <p className="text-[10px] font-black uppercase tracking-widest text-ink/40 px-1">Pre-Slate Brief</p>
           {regularSections.map((section) => (
@@ -427,7 +654,6 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
           ))}
         </div>
 
-        {/* Right — update timeline */}
         <div className="space-y-3">
           <p className="text-[10px] font-black uppercase tracking-widest text-ink/40 px-1">
             Live Updates
