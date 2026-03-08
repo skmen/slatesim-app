@@ -103,6 +103,7 @@ export enum ViewState {
   LOAD = 'load',
   ENTRY_MANAGER = 'entry_manager',
   REPORT = 'report',
+  SLATE_NEWS = 'slate_news',
 }
 
 // --- CONTEST & SLATE ---
