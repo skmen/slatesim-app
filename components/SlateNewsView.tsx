@@ -587,7 +587,8 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
   if (!brief) return null;
 
   const exposureSection = brief.sections.find((s) => s.id === 'exposure');
-  const regularSections = brief.sections.filter((s) => ['coaches', 'referees'].includes(s.id)).sort((a, b) => a.order - b.order);
+  const rotationSection = brief.sections.find((s) => s.id === 'coaches');
+  const refereeSection = brief.sections.find((s) => s.id === 'referees');
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
@@ -622,18 +623,13 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
       {/* Main content layout */}
       <div className="grid grid-cols-1 gap-5 items-start">
         <section className="space-y-3">
-          {regularSections.length === 0 && (
+          {(!rotationSection && !refereeSection) && (
             <div className="bg-white/60 border border-ink/10 rounded-2xl px-5 py-6">
               <p className="text-sm text-ink/45">No pre-slate sections available.</p>
             </div>
           )}
-          {regularSections.map((section) => (
-            <SectionCard
-              key={section.id + section.order}
-              section={section}
-              defaultExpanded={true}
-            />
-          ))}
+          {rotationSection && <SectionCard section={rotationSection} defaultExpanded={true} />}
+          {refereeSection && <SectionCard section={refereeSection} defaultExpanded={true} />}
         </section>
       </div>
     </div>
