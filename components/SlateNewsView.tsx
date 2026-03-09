@@ -338,32 +338,53 @@ function renderMarkdown(md: string): React.ReactNode {
   const lines = md.split('\n');
   const nodes: React.ReactNode[] = [];
   let key = 0;
+  let listItems: string[] = [];
+
+  const flushList = () => {
+    if (listItems.length === 0) return;
+    const items = listItems;
+    listItems = [];
+    nodes.push(
+      <ul key={key++} className="space-y-1.5 pl-5 list-disc marker:text-drafting-orange">
+        {items.map((item, idx) => (
+          <li key={`${key}-${idx}`} className="text-sm text-ink/85 leading-6">
+            {inlineMd(item)}
+          </li>
+        ))}
+      </ul>
+    );
+  };
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (/^#{1,3}\s/.test(trimmed)) {
+      flushList();
+      const level = (trimmed.match(/^#{1,3}/)?.[0].length ?? 2);
       nodes.push(
-        <p key={key++} className="font-black uppercase tracking-tighter text-xs text-ink/70 mt-3 mb-1">
+        <p
+          key={key++}
+          className={`font-semibold text-ink mt-4 mb-1 ${
+            level === 1 ? 'text-base' : level === 2 ? 'text-sm' : 'text-sm text-ink/80'
+          }`}
+        >
           {trimmed.replace(/^#{1,3}\s+/, '')}
         </p>
       );
     } else if (/^[-*]\s/.test(trimmed)) {
-      nodes.push(
-        <div key={key++} className="flex gap-1.5 items-start ml-2 mb-0.5">
-          <span className="text-drafting-orange mt-0.5 text-[10px] shrink-0">▪</span>
-          <span className="text-[12px] text-ink/80 leading-snug">{inlineMd(trimmed.replace(/^[-*]\s+/, ''))}</span>
-        </div>
-      );
+      listItems.push(trimmed.replace(/^[-*]\s+/, ''));
     } else if (trimmed === '') {
-      nodes.push(<div key={key++} className="h-1.5" />);
+      flushList();
+      nodes.push(<div key={key++} className="h-1" />);
     } else {
+      flushList();
       nodes.push(
-        <p key={key++} className="text-[12px] text-ink/80 leading-snug mb-1">
+        <p key={key++} className="text-sm text-ink/85 leading-6">
           {inlineMd(trimmed)}
         </p>
       );
     }
   }
+  flushList();
   return <>{nodes}</>;
 }
 
@@ -410,17 +431,17 @@ const ExposurePanel: React.FC<{ section: BriefSection }> = ({ section }) => {
   const tabs = parseExposureTabs(section.content);
 
   return (
-    <div className="bg-white/60 border border-ink/10 rounded-xl overflow-hidden">
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-ink/10">
+    <div className="bg-white/75 border border-ink/10 rounded-2xl overflow-hidden shadow-sm">
+      <div className="flex items-center gap-2 px-5 py-4 border-b border-ink/10 bg-white/70">
         <span className="text-base leading-none">{section.icon}</span>
-        <span className="font-black uppercase tracking-tighter text-xs text-ink">{section.label}</span>
+        <span className="font-semibold text-sm text-ink">{section.label}</span>
       </div>
       <div className="flex overflow-x-auto border-b border-ink/10 bg-ink/[0.02]">
         {EXPOSURE_TABS.map((tab) => (
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
-            className={`shrink-0 px-3 py-2 text-[10px] font-black uppercase tracking-tighter whitespace-nowrap transition-colors border-b-2 ${
+            className={`shrink-0 px-4 py-2.5 text-xs font-semibold whitespace-nowrap transition-colors border-b-2 ${
               activeTab === tab.key
                 ? 'border-drafting-orange text-drafting-orange'
                 : 'border-transparent text-ink/40 hover:text-ink/70'
@@ -430,10 +451,10 @@ const ExposurePanel: React.FC<{ section: BriefSection }> = ({ section }) => {
           </button>
         ))}
       </div>
-      <div className="px-4 py-4 min-h-[80px]">
+      <div className="px-5 py-5 min-h-[96px]">
         {tabs[activeTab]
           ? renderMarkdown(tabs[activeTab])
-          : <p className="text-[11px] text-ink/30 font-mono">No content for this tab.</p>
+          : <p className="text-sm text-ink/35">No content for this tab.</p>
         }
       </div>
     </div>
@@ -446,28 +467,30 @@ const SectionCard: React.FC<{ section: BriefSection; defaultExpanded?: boolean }
 }) => {
   const [expanded, setExpanded] = useState(defaultExpanded);
   return (
-    <div className="bg-white/60 border border-ink/10 rounded-xl overflow-hidden">
+    <div className="bg-white/75 border border-ink/10 rounded-2xl overflow-hidden shadow-sm">
       <button
         onClick={() => setExpanded((p) => !p)}
-        className="w-full flex items-center justify-between gap-3 px-4 py-3 hover:bg-ink/5 transition-colors text-left"
+        className="w-full flex items-center justify-between gap-3 px-5 py-4 hover:bg-ink/5 transition-colors text-left"
       >
         <div className="flex items-center gap-2">
           <span className="text-base leading-none">{section.icon}</span>
-          <span className="font-black uppercase tracking-tighter text-xs text-ink">{section.label}</span>
+          <span className="font-semibold text-sm text-ink">{section.label}</span>
         </div>
         {expanded
-          ? <ChevronUp className="w-3.5 h-3.5 text-ink/40 shrink-0" />
-          : <ChevronDown className="w-3.5 h-3.5 text-ink/40 shrink-0" />
+          ? <ChevronUp className="w-4 h-4 text-ink/40 shrink-0" />
+          : <ChevronDown className="w-4 h-4 text-ink/40 shrink-0" />
         }
       </button>
       {!expanded && section.summary && (
-        <div className="px-4 pb-3 -mt-1">
-          <p className="text-[11px] text-ink/60 leading-snug">{section.summary}</p>
+        <div className="px-5 pb-4 -mt-1">
+          <p className="text-sm text-ink/65 leading-6">{section.summary}</p>
         </div>
       )}
       {expanded && (
-        <div className="px-4 pb-4 border-t border-ink/5 pt-3">
-          {renderMarkdown(section.content)}
+        <div className="px-5 pb-5 border-t border-ink/5 pt-4">
+          <div className="max-w-3xl">
+            {renderMarkdown(section.content)}
+          </div>
         </div>
       )}
     </div>
@@ -481,39 +504,41 @@ const UpdateItem: React.FC<{ update: BriefUpdate }> = ({ update }) => {
 
   return (
     <div
-      className="bg-white/60 border border-ink/10 rounded-xl overflow-hidden"
+      className="bg-white/75 border border-ink/10 rounded-2xl overflow-hidden shadow-sm"
       style={{ borderLeftWidth: 3, borderLeftColor: borderColor }}
     >
       <button
         onClick={() => setExpanded((p) => !p)}
-        className="w-full text-left px-4 py-3 hover:bg-ink/5 transition-colors"
+        className="w-full text-left px-5 py-4 hover:bg-ink/5 transition-colors"
       >
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-              <span className="text-[11px] text-ink/40 font-mono">{update.timestamp}</span>
-              <span className="text-[10px]">{update.icon}</span>
-              <span className="text-[10px] font-black uppercase tracking-tighter text-ink/50">{update.label}</span>
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
+              <span className="text-xs text-ink/45 font-mono">{update.timestamp}</span>
+              <span className="text-xs">{update.icon}</span>
+              <span className="text-xs font-semibold text-ink/60">{update.label}</span>
               {severityLabel && (
                 <span
-                  className="text-[9px] font-black px-1 py-0.5 rounded uppercase tracking-widest text-white"
+                  className="text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase tracking-wide text-white"
                   style={{ backgroundColor: borderColor }}
                 >
                   {severityLabel}
                 </span>
               )}
             </div>
-            <p className="font-bold text-[12px] text-ink leading-tight">{update.headline}</p>
+            <p className="font-semibold text-sm text-ink leading-6">{update.headline}</p>
           </div>
           {expanded
-            ? <ChevronUp className="w-3.5 h-3.5 text-ink/40 shrink-0 mt-1" />
-            : <ChevronDown className="w-3.5 h-3.5 text-ink/40 shrink-0 mt-1" />
+            ? <ChevronUp className="w-4 h-4 text-ink/40 shrink-0 mt-1" />
+            : <ChevronDown className="w-4 h-4 text-ink/40 shrink-0 mt-1" />
           }
         </div>
       </button>
       {expanded && (
-        <div className="px-4 pb-4 border-t border-ink/5 pt-3">
-          {renderMarkdown(update.content)}
+        <div className="px-5 pb-5 border-t border-ink/5 pt-4">
+          <div className="max-w-3xl">
+            {renderMarkdown(update.content)}
+          </div>
         </div>
       )}
     </div>
@@ -557,7 +582,7 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-24 text-ink/40">
         <RefreshCw className="w-6 h-6 animate-spin" />
-        <p className="text-[11px] font-black uppercase tracking-widest">Loading brief…</p>
+        <p className="text-sm font-semibold">Loading brief…</p>
       </div>
     );
   }
@@ -566,10 +591,10 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
     return (
       <div className="flex flex-col items-center justify-center gap-3 py-24">
         <AlertCircle className="w-6 h-6 text-red-400" />
-        <p className="text-[11px] font-black uppercase tracking-widest text-red-400">{error}</p>
+        <p className="text-sm font-semibold text-red-500">{error}</p>
         <button
           onClick={fetchBrief}
-          className="text-[10px] font-black border border-ink/20 px-3 py-1.5 rounded uppercase tracking-widest hover:border-drafting-orange hover:text-drafting-orange transition-all"
+          className="text-xs font-semibold border border-ink/20 px-3 py-1.5 rounded-md hover:border-drafting-orange hover:text-drafting-orange transition-all"
         >
           Retry
         </button>
@@ -583,57 +608,55 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
   const regularSections = brief.sections.filter((s) => s.id !== 'exposure').sort((a, b) => a.order - b.order);
   const sortedUpdates = [...brief.updates].reverse();
   const tickerPlayers = brief.player_mentions.filter((m) => m.in_update);
+  const tickerPlayerNames = Array.from(
+    new Set(
+      tickerPlayers.map((m) => (m.team_abbr ? `${m.player_name} (${m.team_abbr})` : m.player_name))
+    )
+  );
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6 max-w-6xl mx-auto">
 
       {/* Hero band */}
-      <div className="bg-white/60 border border-ink/10 rounded-xl px-5 py-4">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
+      <div className="bg-white/80 border border-ink/10 rounded-2xl px-6 py-5 shadow-sm">
+        <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 mb-1.5">
               <Newspaper className="w-4 h-4 text-drafting-orange" />
-              <span className="font-black uppercase tracking-tighter text-xs text-ink/50">Slate News</span>
+              <span className="text-sm font-semibold text-ink/60">Slate News</span>
             </div>
-            <h2 className="font-black text-xl tracking-tighter italic text-ink uppercase leading-none">
+            <h2 className="text-2xl font-semibold tracking-tight text-ink leading-tight">
               {formatSlateDate(brief.slate_date)}
             </h2>
-            <p className="text-[11px] text-ink/50 mt-1 font-mono">
+            <p className="text-sm text-ink/55 mt-1">
               {brief.last_updated_at ? `Last updated ${brief.last_updated_at}` : 'No updates yet'}
             </p>
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            {brief.meta.update_count > 0 && (
-              <span className="text-[10px] font-black px-2 py-1 rounded-full bg-ink/10 text-ink uppercase tracking-widest">
-                {brief.meta.update_count} update{brief.meta.update_count !== 1 ? 's' : ''}
-              </span>
-            )}
-            {brief.meta.high_severity_count > 0 && (
-              <span
-                className="text-[10px] font-black px-2 py-1 rounded-full text-white uppercase tracking-widest"
-                style={{ backgroundColor: SEVERITY_COLOR.high }}
-              >
-                {brief.meta.high_severity_count} high severity
-              </span>
-            )}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 w-full lg:w-auto">
+            <div className="bg-ink/[0.03] rounded-lg border border-ink/10 px-3 py-2">
+              <p className="text-[11px] text-ink/50">Updates</p>
+              <p className="text-base font-semibold text-ink">{brief.meta.update_count}</p>
+            </div>
+            <div className="bg-ink/[0.03] rounded-lg border border-ink/10 px-3 py-2">
+              <p className="text-[11px] text-ink/50">High severity</p>
+              <p className="text-base font-semibold" style={{ color: brief.meta.high_severity_count ? SEVERITY_COLOR.high : 'inherit' }}>
+                {brief.meta.high_severity_count}
+              </p>
+            </div>
+            <div className="bg-ink/[0.03] rounded-lg border border-ink/10 px-3 py-2 col-span-2 sm:col-span-1">
+              <p className="text-[11px] text-ink/50">Sections</p>
+              <p className="text-base font-semibold text-ink">{brief.meta.section_count}</p>
+            </div>
           </div>
         </div>
 
-        {tickerPlayers.length > 0 && (
-          <div className="mt-3 pt-3 border-t border-ink/10">
-            <p className="text-[9px] font-black uppercase tracking-widest text-ink/40 mb-2">In Updates</p>
-            <div className="flex flex-wrap gap-1.5">
-              {tickerPlayers.map((m, i) => (
-                <span
-                  key={i}
-                  title={m.context}
-                  className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-drafting-orange/10 border border-drafting-orange/20 text-drafting-orange cursor-default"
-                >
-                  {m.player_name}
-                  {m.team_abbr && <span className="text-ink/40 ml-1">{m.team_abbr}</span>}
-                </span>
-              ))}
-            </div>
+        {tickerPlayerNames.length > 0 && (
+          <div className="mt-4 pt-4 border-t border-ink/10">
+            <p className="text-xs font-semibold text-ink/55 mb-1.5">Players mentioned in updates</p>
+            <p className="text-sm text-ink/75 leading-6">
+              {tickerPlayerNames.slice(0, 18).join(' • ')}
+              {tickerPlayerNames.length > 18 ? ` • +${tickerPlayerNames.length - 18} more` : ''}
+            </p>
           </div>
         )}
       </div>
@@ -641,10 +664,15 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
       {/* Exposure panel — full width below hero */}
       {exposureSection && <ExposurePanel section={exposureSection} />}
 
-      {/* Two-column layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-        <div className="space-y-3">
-          <p className="text-[10px] font-black uppercase tracking-widest text-ink/40 px-1">Pre-Slate Brief</p>
+      {/* Main content layout */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
+        <section className="space-y-3">
+          <p className="text-sm font-semibold text-ink/55 px-1">Pre-slate brief</p>
+          {regularSections.length === 0 && (
+            <div className="bg-white/60 border border-ink/10 rounded-2xl px-5 py-6">
+              <p className="text-sm text-ink/45">No pre-slate sections available.</p>
+            </div>
+          )}
           {regularSections.map((section) => (
             <SectionCard
               key={section.id + section.order}
@@ -652,23 +680,23 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
               defaultExpanded={section.id === 'overview'}
             />
           ))}
-        </div>
+        </section>
 
-        <div className="space-y-3">
-          <p className="text-[10px] font-black uppercase tracking-widest text-ink/40 px-1">
+        <section className="space-y-3">
+          <p className="text-sm font-semibold text-ink/55 px-1">
             Live Updates
             {sortedUpdates.length === 0 && (
-              <span className="text-ink/30 ml-2 normal-case font-normal tracking-normal">— none yet</span>
+              <span className="text-ink/35 ml-2 normal-case font-normal tracking-normal">No updates yet</span>
             )}
           </p>
           {sortedUpdates.length === 0 ? (
-            <div className="bg-white/40 border border-ink/10 rounded-xl px-5 py-8 text-center">
-              <p className="text-[11px] text-ink/30 font-mono">No updates for this slate yet.</p>
+            <div className="bg-white/60 border border-ink/10 rounded-2xl px-5 py-8 text-center">
+              <p className="text-sm text-ink/40">No updates for this slate yet.</p>
             </div>
           ) : (
             sortedUpdates.map((update, i) => <UpdateItem key={i} update={update} />)
           )}
-        </div>
+        </section>
       </div>
     </div>
   );
