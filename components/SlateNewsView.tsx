@@ -388,6 +388,34 @@ function renderMarkdown(md: string): React.ReactNode {
   return <>{nodes}</>;
 }
 
+function renderAsList(md: string): React.ReactNode {
+  // First, strip out any markdown headings from the content.
+  const contentWithoutHeading = md.replace(/^#{1,3}\s[^\n]+\n?/, '');
+
+  const lines = contentWithoutHeading.split('\n');
+  const nodes: React.ReactNode[] = [];
+  let key = 0;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+
+    // Treat every non-empty line as a list item.
+    nodes.push(
+      <li key={key++} className="text-sm text-ink/85 leading-6">
+        {inlineMd(trimmed.replace(/^[-*]\s+/, ''))}
+      </li>
+    );
+  }
+
+  return (
+    <ul className="space-y-1.5 pl-5 list-disc marker:text-drafting-orange">
+      {nodes}
+    </ul>
+  );
+}
+
+
 function inlineMd(text: string): React.ReactNode {
   const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g);
   return parts.map((part, i) => {
@@ -489,55 +517,9 @@ const SectionCard: React.FC<{ section: BriefSection; defaultExpanded?: boolean }
       {expanded && (
         <div className="px-5 pb-5 border-t border-ink/5 pt-4">
           <div className="max-w-3xl">
-            {renderMarkdown(section.content)}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-const UpdateItem: React.FC<{ update: BriefUpdate }> = ({ update }) => {
-  const [expanded, setExpanded] = useState(false);
-  const borderColor = SEVERITY_COLOR[update.severity] ?? SEVERITY_COLOR.none;
-  const severityLabel = SEVERITY_LABEL[update.severity];
-
-  return (
-    <div
-      className="bg-white/75 border border-ink/10 rounded-2xl overflow-hidden shadow-sm"
-      style={{ borderLeftWidth: 3, borderLeftColor: borderColor }}
-    >
-      <button
-        onClick={() => setExpanded((p) => !p)}
-        className="w-full text-left px-5 py-4 hover:bg-ink/5 transition-colors"
-      >
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1 flex-wrap">
-              <span className="text-xs text-ink/45 font-mono">{update.timestamp}</span>
-              <span className="text-xs">{update.icon}</span>
-              <span className="text-xs font-semibold text-ink/60">{update.label}</span>
-              {severityLabel && (
-                <span
-                  className="text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase tracking-wide text-white"
-                  style={{ backgroundColor: borderColor }}
-                >
-                  {severityLabel}
-                </span>
-              )}
-            </div>
-            <p className="font-semibold text-sm text-ink leading-6">{update.headline}</p>
-          </div>
-          {expanded
-            ? <ChevronUp className="w-4 h-4 text-ink/40 shrink-0 mt-1" />
-            : <ChevronDown className="w-4 h-4 text-ink/40 shrink-0 mt-1" />
-          }
-        </div>
-      </button>
-      {expanded && (
-        <div className="px-5 pb-5 border-t border-ink/5 pt-4">
-          <div className="max-w-3xl">
-            {renderMarkdown(update.content)}
+            {['coaches', 'referees'].includes(section.id)
+              ? renderAsList(section.content)
+              : renderMarkdown(section.content)}
           </div>
         </div>
       )}
@@ -605,14 +587,7 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
   if (!brief) return null;
 
   const exposureSection = brief.sections.find((s) => s.id === 'exposure');
-  const regularSections = brief.sections.filter((s) => s.id !== 'exposure').sort((a, b) => a.order - b.order);
-  const sortedUpdates = [...brief.updates].reverse();
-  const tickerPlayers = brief.player_mentions.filter((m) => m.in_update);
-  const tickerPlayerNames = Array.from(
-    new Set(
-      tickerPlayers.map((m) => (m.team_abbr ? `${m.player_name} (${m.team_abbr})` : m.player_name))
-    )
-  );
+  const regularSections = brief.sections.filter((s) => ['coaches', 'referees'].includes(s.id)).sort((a, b) => a.order - b.order);
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
@@ -629,45 +604,24 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
               {formatSlateDate(brief.slate_date)}
             </h2>
             <p className="text-sm text-ink/55 mt-1">
-              {brief.last_updated_at ? `Last updated ${brief.last_updated_at}` : 'No updates yet'}
+              Daily pre-slate breakdown and recommendations
             </p>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 w-full lg:w-auto">
-            <div className="bg-ink/[0.03] rounded-lg border border-ink/10 px-3 py-2">
-              <p className="text-[11px] text-ink/50">Updates</p>
-              <p className="text-base font-semibold text-ink">{brief.meta.update_count}</p>
-            </div>
-            <div className="bg-ink/[0.03] rounded-lg border border-ink/10 px-3 py-2">
-              <p className="text-[11px] text-ink/50">High severity</p>
-              <p className="text-base font-semibold" style={{ color: brief.meta.high_severity_count ? SEVERITY_COLOR.high : 'inherit' }}>
-                {brief.meta.high_severity_count}
-              </p>
-            </div>
             <div className="bg-ink/[0.03] rounded-lg border border-ink/10 px-3 py-2 col-span-2 sm:col-span-1">
               <p className="text-[11px] text-ink/50">Sections</p>
               <p className="text-base font-semibold text-ink">{brief.meta.section_count}</p>
             </div>
           </div>
         </div>
-
-        {tickerPlayerNames.length > 0 && (
-          <div className="mt-4 pt-4 border-t border-ink/10">
-            <p className="text-xs font-semibold text-ink/55 mb-1.5">Players mentioned in updates</p>
-            <p className="text-sm text-ink/75 leading-6">
-              {tickerPlayerNames.slice(0, 18).join(' • ')}
-              {tickerPlayerNames.length > 18 ? ` • +${tickerPlayerNames.length - 18} more` : ''}
-            </p>
-          </div>
-        )}
       </div>
 
       {/* Exposure panel — full width below hero */}
       {exposureSection && <ExposurePanel section={exposureSection} />}
 
       {/* Main content layout */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
+      <div className="grid grid-cols-1 gap-5 items-start">
         <section className="space-y-3">
-          <p className="text-sm font-semibold text-ink/55 px-1">Pre-slate brief</p>
           {regularSections.length === 0 && (
             <div className="bg-white/60 border border-ink/10 rounded-2xl px-5 py-6">
               <p className="text-sm text-ink/45">No pre-slate sections available.</p>
@@ -677,25 +631,9 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
             <SectionCard
               key={section.id + section.order}
               section={section}
-              defaultExpanded={section.id === 'overview'}
+              defaultExpanded={true}
             />
           ))}
-        </section>
-
-        <section className="space-y-3">
-          <p className="text-sm font-semibold text-ink/55 px-1">
-            Live Updates
-            {sortedUpdates.length === 0 && (
-              <span className="text-ink/35 ml-2 normal-case font-normal tracking-normal">No updates yet</span>
-            )}
-          </p>
-          {sortedUpdates.length === 0 ? (
-            <div className="bg-white/60 border border-ink/10 rounded-2xl px-5 py-8 text-center">
-              <p className="text-sm text-ink/40">No updates for this slate yet.</p>
-            </div>
-          ) : (
-            sortedUpdates.map((update, i) => <UpdateItem key={i} update={update} />)
-          )}
         </section>
       </div>
     </div>
