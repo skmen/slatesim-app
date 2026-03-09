@@ -201,53 +201,58 @@ function extractPlayerMentions(
 }
 
 function parseBriefMarkdown(md: string): ParsedBrief {
-  const unifiedMd = md.replace(/\n---+\n/g, '\n');
-
   const sections: BriefSection[] = [];
-  // Split content into sections based on `##` headings
-  const sectionBlocks = unifiedMd.split(/\n(?=##\s)/);
-
   let slateDate = new Date().toISOString().slice(0, 10);
   let order = 0;
 
-  for (const block of sectionBlocks) {
-    const trimmedBlock = block.trim();
-    if (trimmedBlock === '') continue;
+  // Treat the entire markdown as a single string, removing separators
+  const content = md.replace(/\n---+\n/g, '\n');
 
-    const lines = trimmedBlock.split('\n');
-    const heading = lines[0];
+  // Split the content into lines
+  const lines = content.split('\n');
 
-    // Extract slate date from H1 heading, but don't treat it as a section
-    if (heading.startsWith('# ')) {
-      const d = extractDateFromH1(heading);
-      if (d) { slateDate = d; }
-      continue;
-    }
+  let currentHeading = '';
+  let currentLines: string[] = [];
 
-    const content = lines.slice(1).join('\n');
-    // The full text including the heading is used for classification
-    const fullText = heading + '\n' + content;
+  const flushSection = () => {
+    if (currentHeading === '') return;
     
+    const raw = currentLines.join('\n').trim();
+    const fullText = currentHeading + '\n' + raw;
     const cat = classifyText(fullText);
+
     sections.push({
       id: cat.id,
-      label: heading.replace(/^##\s+/, '').replace(/[🎯-9.]/g, '').trim(),
+      label: currentHeading.replace(/^##\s+/, '').replace(/[🎯-9.]/g, '').trim(),
       icon: cat.icon,
-      content: fullText, // Pass the full markdown, including sub-headings
-      summary: makeSummary(content),
+      content: fullText,
+      summary: makeSummary(raw),
       order: order++,
     });
-  }
+  };
 
-  // Updates are no longer parsed from separate blocks
-  const updates: BriefUpdate[] = [];
+  for (const line of lines) {
+    if (line.startsWith('# ')) { // H1
+      const d = extractDateFromH1(line);
+      if (d) slateDate = d;
+    } else if (line.startsWith('## ')) { // H2 is a section separator
+      flushSection(); // Flush previous section
+      currentHeading = line;
+      currentLines = [];
+    } else {
+      if (currentHeading !== '') { // Only collect lines if we are inside a section
+        currentLines.push(line);
+      }
+    }
+  }
+  flushSection(); // Flush the last section
 
   return {
     slate_date: slateDate,
     last_updated_at: null,
     sections,
-    updates,
-    player_mentions: [], // Player mentions are not required for the new design
+    updates: [],
+    player_mentions: [],
     meta: {
       section_count: sections.length,
       update_count: 0,
