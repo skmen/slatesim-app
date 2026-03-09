@@ -219,7 +219,16 @@ function parseBriefMarkdown(md: string): ParsedBrief {
     
     const raw = currentLines.join('\n').trim();
     const fullText = currentHeading + '\n' + raw;
-    const cat = classifyText(fullText);
+    
+    let cat;
+    // Forcefully classify the Exposure Recommendations section
+    if (currentHeading.includes('Exposure Recommendations')) {
+      cat = CATEGORIES.find(c => c.id === 'exposure');
+    } else {
+      cat = classifyText(fullText);
+    }
+    // Fallback if classification fails
+    if (!cat) cat = OVERVIEW_CATEGORY;
 
     sections.push({
       id: cat.id,
