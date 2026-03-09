@@ -201,132 +201,58 @@ function extractPlayerMentions(
 }
 
 function parseBriefMarkdown(md: string): ParsedBrief {
-  // Split into blocks on horizontal rules
-  const blocks = md.split(/\n---+\n/);
-  const initialBlock = blocks[0] ?? '';
-  const updateRawBlocks = blocks.slice(1);
+  const unifiedMd = md.replace(/\n---+\n/g, '\n');
 
-  // ── Slate date from H1 ──────────────────────────────────────────────────
-  let slateDate = new Date().toISOString().slice(0, 10);
-  for (const line of initialBlock.split('\n')) {
-    if (line.startsWith('# ')) {
-      const d = extractDateFromH1(line);
-      if (d) { slateDate = d; break; }
-    }
-  }
-
-  // ── Initial sections: split on ## / ### headings ─────────────────────
   const sections: BriefSection[] = [];
-  const initialLines = initialBlock.split('\n');
-  let currentHeading = '';
-  let currentLines: string[] = [];
+  // Split content into sections based on `##` headings
+  const sectionBlocks = unifiedMd.split(/\n(?=##\s)/);
+
+  let slateDate = new Date().toISOString().slice(0, 10);
   let order = 0;
 
-  const flushSection = () => {
-    const raw = currentLines.join('\n').trim();
-    if (!raw) return;
-    const fullText = currentHeading ? `${currentHeading}\n${raw}` : raw;
-    // Skip if it's just the H1 title
-    if (/^#\s/.test(fullText.split('\n')[0])) return;
+  for (const block of sectionBlocks) {
+    const trimmedBlock = block.trim();
+    if (trimmedBlock === '') continue;
+
+    const lines = trimmedBlock.split('\n');
+    const heading = lines[0];
+
+    // Extract slate date from H1 heading, but don't treat it as a section
+    if (heading.startsWith('# ')) {
+      const d = extractDateFromH1(heading);
+      if (d) { slateDate = d; }
+      continue;
+    }
+
+    const content = lines.slice(1).join('\n');
+    // The full text including the heading is used for classification
+    const fullText = heading + '\n' + content;
+    
     const cat = classifyText(fullText);
     sections.push({
       id: cat.id,
-      label: cat.label,
+      label: heading.replace(/^##\s+/, '').replace(/[🎯-9.]/g, '').trim(),
       icon: cat.icon,
-      content: fullText,
-      summary: makeSummary(raw),
+      content: fullText, // Pass the full markdown, including sub-headings
+      summary: makeSummary(content),
       order: order++,
     });
-  };
-
-  for (const line of initialLines) {
-    if (/^##\s/.test(line) || /^###\s/.test(line)) {
-      flushSection();
-      currentHeading = line;
-      currentLines = [];
-    } else if (/^#\s/.test(line)) {
-      // H1 — skip into next section
-      currentHeading = '';
-      currentLines = [];
-    } else {
-      currentLines.push(line);
-    }
-  }
-  flushSection();
-
-  // If no sub-sections were found, treat entire initial block (minus H1) as one overview section
-  if (sections.length === 0) {
-    const body = initialLines.filter((l) => !/^#\s/.test(l)).join('\n').trim();
-    if (body) {
-      sections.push({
-        id: 'overview',
-        label: 'Overview',
-        icon: '📰',
-        content: body,
-        summary: makeSummary(body),
-        order: 0,
-      });
-    }
   }
 
-  // ── Update blocks ────────────────────────────────────────────────────
+  // Updates are no longer parsed from separate blocks
   const updates: BriefUpdate[] = [];
-  let lastTimestamp: string | null = null;
-
-  for (const raw of updateRawBlocks) {
-    const lines = raw.trim().split('\n');
-    let timestamp = '';
-    let contentStartIdx = 0;
-
-    for (let i = 0; i < lines.length; i++) {
-      const ts = extractUpdateTimestamp(lines[i]);
-      if (ts) {
-        timestamp = ts;
-        lastTimestamp = ts;
-        contentStartIdx = i + 1;
-        break;
-      }
-    }
-
-    const content = lines.slice(contentStartIdx).join('\n').trim();
-    if (!content) continue;
-
-    const cat = classifyText(content);
-    const severity = getSeverity(content);
-
-    updates.push({
-      timestamp,
-      category: cat.id,
-      label: cat.label,
-      icon: cat.icon,
-      severity,
-      headline: makeHeadline(content),
-      content,
-    });
-  }
-
-  // ── Player mentions ──────────────────────────────────────────────────
-  const playerMentions: PlayerMention[] = [];
-  for (const sec of sections) {
-    playerMentions.push(...extractPlayerMentions(sec.content, sec.id, false));
-  }
-  for (const upd of updates) {
-    playerMentions.push(...extractPlayerMentions(upd.content, upd.category, true));
-  }
-
-  const highCount = updates.filter((u) => u.severity === 'high').length;
 
   return {
     slate_date: slateDate,
-    last_updated_at: lastTimestamp,
+    last_updated_at: null,
     sections,
     updates,
-    player_mentions: playerMentions,
+    player_mentions: [], // Player mentions are not required for the new design
     meta: {
       section_count: sections.length,
-      update_count: updates.length,
-      high_severity_count: highCount,
-      has_updates: updates.length > 0,
+      update_count: 0,
+      high_severity_count: 0,
+      has_updates: false,
     },
   };
 }
@@ -429,16 +355,49 @@ function inlineMd(text: string): React.ReactNode {
 // ─── Exposure tab parser ──────────────────────────────────────────────────────
 
 function parseExposureTabs(content: string): Record<ExposureTabKey, string> {
-  const result = {} as Record<ExposureTabKey, string>;
-  const chunks = content.split(/\n(?=#{2,3}\s)/);
+  const result: Record<string, string> = { target: '', fade: '' };
 
-  for (const tab of EXPOSURE_TABS) {
-    const chunk = chunks.find((c) => tab.anchor.test(c.split('\n')[0]));
-    result[tab.key] = chunk
-      ? chunk.replace(/^#{2,3}\s+[^\n]+\n?/, '').trim()
-      : '';
+  // Split content by tier headings (###)
+  const tierBlocks = content.split('\n### ').slice(1);
+
+  for (const tierBlock of tierBlocks) {
+    const lines = tierBlock.split('\n');
+    const tierName = lines[0];
+
+    const targetLines: string[] = [];
+    const fadeLines: string[] = [];
+    
+    let currentSection = '';
+    for (const line of lines.slice(1)) {
+        if (line.startsWith('#### Target')) {
+            currentSection = 'target';
+            continue;
+        }
+        if (line.startsWith('#### Fade')) {
+            currentSection = 'fade';
+            continue;
+        }
+
+        if (currentSection === 'target' && line.trim().startsWith('-')) {
+            targetLines.push(line);
+        }
+        if (currentSection === 'fade' && line.trim().startsWith('-')) {
+            fadeLines.push(line);
+        }
+    }
+
+    if (targetLines.length > 0) {
+        result.target += `### ${tierName}\n${targetLines.join('\n')}\n\n`;
+    }
+    if (fadeLines.length > 0) {
+        result.fade += `### ${tierName}\n${fadeLines.join('\n')}\n\n`;
+    }
   }
-  return result;
+  
+  result.target = result.target.trim();
+  result.fade = result.fade.trim();
+
+  return result as Record<ExposureTabKey, string>;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
