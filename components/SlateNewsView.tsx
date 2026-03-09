@@ -107,7 +107,6 @@ const EXPOSURE_TABS = [
   { key: 'target',   label: '🔼 Target',      anchor: /increase exposure/i },
   { key: 'fade',     label: '🔽 Fade',         anchor: /reduce exposure/i },
   { key: 'leverage', label: '⚖️ Leverage',     anchor: /ownership leverage/i },
-  { key: 'injury',   label: '⚠️ Injury Watch', anchor: /injury/i },
   { key: 'stacks',   label: '📊 Stacks',        anchor: /game stack/i },
 ] as const;
 
