@@ -44,6 +44,20 @@ interface ParsedBrief {
   };
 }
 
+interface BriefApiEntry {
+  id?: string;
+  filename?: string;
+  timestamp?: string | null;
+  content?: string;
+}
+
+interface BlogBriefEntry {
+  id: string;
+  filename: string;
+  timestamp: string | null;
+  brief: ParsedBrief;
+}
+
 // ─── Category definitions ─────────────────────────────────────────────────────
 
 const CATEGORIES = [
@@ -232,7 +246,7 @@ function parseBriefMarkdown(md: string): ParsedBrief {
 
     sections.push({
       id: cat.id,
-      label: currentHeading.replace(/^##\s+/, '').replace(/[🎯-9.]/g, '').trim(),
+      label: currentHeading.replace(/^##\s+/, '').replace(/🎯/g, '').replace(/[0-9.]/g, '').trim(),
       icon: cat.icon,
       content: fullText,
       summary: makeSummary(raw),
@@ -424,6 +438,20 @@ function formatSlateDate(dateStr: string): string {
   return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
+function formatEntryTimestamp(timestamp: string | null): string {
+  if (!timestamp) return 'Timestamp unavailable';
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return timestamp;
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 const ExposurePanel: React.FC<{ section: BriefSection }> = ({ section }) => {
@@ -499,6 +527,47 @@ const SectionCard: React.FC<{ section: BriefSection; defaultExpanded?: boolean }
   );
 };
 
+const BriefEntryCard: React.FC<{ entry: BlogBriefEntry; latest: boolean }> = ({ entry, latest }) => {
+  const exposureSection = entry.brief.sections.find((s) => s.id === 'exposure');
+  const rotationSection = entry.brief.sections.find((s) => s.id === 'coaches');
+  const refereeSection = entry.brief.sections.find((s) => s.id === 'referees');
+
+  return (
+    <article className="bg-white/80 border border-ink/10 rounded-2xl overflow-hidden shadow-sm">
+      <header className="px-6 py-5 border-b border-ink/10 bg-white/70">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Newspaper className="w-4 h-4 text-drafting-orange" />
+            <span className="text-xs font-semibold tracking-wide uppercase text-ink/60">
+              {latest ? 'Latest Brief' : 'Brief Entry'}
+            </span>
+          </div>
+          <span className="text-xs font-semibold text-ink/55">
+            {formatEntryTimestamp(entry.timestamp)}
+          </span>
+        </div>
+        <h3 className="text-xl font-semibold tracking-tight text-ink leading-tight mt-2">
+          {formatSlateDate(entry.brief.slate_date)}
+        </h3>
+        <p className="text-xs text-ink/45 mt-1">Source: {entry.filename}</p>
+      </header>
+
+      <div className="px-6 py-5 space-y-5">
+        {exposureSection && <ExposurePanel section={exposureSection} />}
+        <section className="space-y-3">
+          {(!rotationSection && !refereeSection) && (
+            <div className="bg-white/60 border border-ink/10 rounded-2xl px-5 py-6">
+              <p className="text-sm text-ink/45">No pre-slate sections available.</p>
+            </div>
+          )}
+          {rotationSection && <SectionCard section={rotationSection} defaultExpanded={latest} />}
+          {refereeSection && <SectionCard section={refereeSection} defaultExpanded={latest} />}
+        </section>
+      </div>
+    </article>
+  );
+};
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -506,14 +575,14 @@ interface Props {
 }
 
 const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
-  const [brief, setBrief] = useState<ParsedBrief | null>(null);
+  const [entries, setEntries] = useState<BlogBriefEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchBrief = useCallback(async () => {
+  const fetchBriefs = useCallback(async () => {
     setLoading(true);
     setError(null);
-    setBrief(null);
+    setEntries([]);
     try {
       const resp = await fetch(`/api/brief?date=${slateDate}`);
       if (!resp.ok) {
@@ -521,8 +590,53 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
         setError((body as any)?.error ?? `HTTP ${resp.status}`);
         return;
       }
-      const md = await resp.text();
-      setBrief(parseBriefMarkdown(md));
+
+      const contentType = resp.headers.get('content-type') ?? '';
+      let rawEntries: BriefApiEntry[] = [];
+
+      if (contentType.includes('application/json')) {
+        const body = await resp.json().catch(() => ({} as any));
+        if (Array.isArray((body as any)?.entries)) {
+          rawEntries = (body as any).entries;
+        } else if (typeof (body as any)?.content === 'string') {
+          rawEntries = [{
+            id: `${slateDate}/brief.md`,
+            filename: 'brief.md',
+            timestamp: null,
+            content: (body as any).content,
+          }];
+        }
+      } else {
+        const md = await resp.text();
+        rawEntries = [{
+          id: `${slateDate}/brief.md`,
+          filename: 'brief.md',
+          timestamp: resp.headers.get('last-modified'),
+          content: md,
+        }];
+      }
+
+      const parsedEntries = rawEntries
+        .filter((entry): entry is Required<Pick<BriefApiEntry, 'content'>> & BriefApiEntry => typeof entry?.content === 'string' && entry.content.trim().length > 0)
+        .map((entry, index) => ({
+          id: entry.id || `${slateDate}/${entry.filename || `brief-${index + 1}.md`}`,
+          filename: entry.filename || `brief-${index + 1}.md`,
+          timestamp: entry.timestamp ?? null,
+          brief: parseBriefMarkdown(entry.content),
+        }))
+        .sort((a, b) => {
+          const ta = a.timestamp ? Date.parse(a.timestamp) : Number.NEGATIVE_INFINITY;
+          const tb = b.timestamp ? Date.parse(b.timestamp) : Number.NEGATIVE_INFINITY;
+          if (ta !== tb) return tb - ta;
+          return b.filename.localeCompare(a.filename);
+        });
+
+      if (parsedEntries.length === 0) {
+        setError('No briefs available for this slate date.');
+        return;
+      }
+
+      setEntries(parsedEntries);
     } catch (e: any) {
       setError(e?.message ?? 'Network error');
     } finally {
@@ -530,13 +644,13 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
     }
   }, [slateDate]);
 
-  useEffect(() => { fetchBrief(); }, [fetchBrief]);
+  useEffect(() => { fetchBriefs(); }, [fetchBriefs]);
 
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-24 text-ink/40">
         <RefreshCw className="w-6 h-6 animate-spin" />
-        <p className="text-sm font-semibold">Loading brief…</p>
+        <p className="text-sm font-semibold">Loading briefs…</p>
       </div>
     );
   }
@@ -547,7 +661,7 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
         <AlertCircle className="w-6 h-6 text-red-400" />
         <p className="text-sm font-semibold text-red-500">{error}</p>
         <button
-          onClick={fetchBrief}
+          onClick={fetchBriefs}
           className="text-xs font-semibold border border-ink/20 px-3 py-1.5 rounded-md hover:border-drafting-orange hover:text-drafting-orange transition-all"
         >
           Retry
@@ -556,16 +670,11 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
     );
   }
 
-  if (!brief) return null;
-
-  const exposureSection = brief.sections.find((s) => s.id === 'exposure');
-  const rotationSection = brief.sections.find((s) => s.id === 'coaches');
-  const refereeSection = brief.sections.find((s) => s.id === 'referees');
+  if (entries.length === 0) return null;
+  const latestEntry = entries[0];
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
-
-      {/* Hero band */}
       <div className="bg-white/80 border border-ink/10 rounded-2xl px-6 py-5 shadow-sm">
         <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5">
           <div className="min-w-0">
@@ -574,36 +683,30 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
               <span className="text-sm font-semibold text-ink/60">Slate News</span>
             </div>
             <h2 className="text-2xl font-semibold tracking-tight text-ink leading-tight">
-              {formatSlateDate(brief.slate_date)}
+              {formatSlateDate(latestEntry.brief.slate_date)}
             </h2>
             <p className="text-sm text-ink/55 mt-1">
-              Daily pre-slate breakdown and recommendations
+              Blog feed of slate briefs, newest entry first
             </p>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 w-full lg:w-auto">
             <div className="bg-ink/[0.03] rounded-lg border border-ink/10 px-3 py-2 col-span-2 sm:col-span-1">
-              <p className="text-[11px] text-ink/50">Sections</p>
-              <p className="text-base font-semibold text-ink">{brief.meta.section_count}</p>
+              <p className="text-[11px] text-ink/50">Entries</p>
+              <p className="text-base font-semibold text-ink">{entries.length}</p>
+            </div>
+            <div className="bg-ink/[0.03] rounded-lg border border-ink/10 px-3 py-2 col-span-2 sm:col-span-1">
+              <p className="text-[11px] text-ink/50">Latest Timestamp</p>
+              <p className="text-xs font-semibold text-ink">{formatEntryTimestamp(latestEntry.timestamp)}</p>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Exposure panel — full width below hero */}
-      {exposureSection && <ExposurePanel section={exposureSection} />}
-
-      {/* Main content layout */}
-      <div className="grid grid-cols-1 gap-5 items-start">
-        <section className="space-y-3">
-          {(!rotationSection && !refereeSection) && (
-            <div className="bg-white/60 border border-ink/10 rounded-2xl px-5 py-6">
-              <p className="text-sm text-ink/45">No pre-slate sections available.</p>
-            </div>
-          )}
-          {rotationSection && <SectionCard section={rotationSection} defaultExpanded={true} />}
-          {refereeSection && <SectionCard section={refereeSection} defaultExpanded={true} />}
-        </section>
-      </div>
+      <section className="space-y-6">
+        {entries.map((entry, index) => (
+          <BriefEntryCard key={entry.id} entry={entry} latest={index === 0} />
+        ))}
+      </section>
     </div>
   );
 };
