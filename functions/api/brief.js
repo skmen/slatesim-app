@@ -147,6 +147,66 @@ function sortNewestFirst(entries) {
   });
 }
 
+function detectR2BucketBinding(env) {
+  if (!env || typeof env !== 'object') return null;
+  for (const value of Object.values(env)) {
+    if (
+      value &&
+      typeof value === 'object' &&
+      typeof value.list === 'function' &&
+      typeof value.get === 'function'
+    ) {
+      return value;
+    }
+  }
+  return null;
+}
+
+async function listBriefObjectsFromBinding(bucket, date) {
+  const compactDate = compactSlateDate(date);
+  const prefix = `${date}/brief_${compactDate}_`;
+  const out = [];
+  let cursor;
+
+  do {
+    const page = await bucket.list({ prefix, cursor, limit: 1000 });
+    for (const obj of page?.objects || []) {
+      const filename = basename(obj.key || '');
+      if (!isBriefFileForSlate(filename, date)) continue;
+      out.push({
+        key: obj.key,
+        filename,
+        uploaded: obj.uploaded ? new Date(obj.uploaded).toISOString() : null,
+      });
+    }
+    cursor = page?.truncated ? page?.cursor : undefined;
+  } while (cursor);
+
+  return out;
+}
+
+async function fetchBriefEntryFromBinding(bucket, date, listedObject) {
+  const object = await bucket.get(listedObject.key);
+  if (!object) return null;
+
+  const content = (await object.text()).trim();
+  if (!content) return null;
+
+  const filenameTimestamp = inferTimestampFromFilename(listedObject.filename, date);
+  const uploadedIso = toIsoOrNull(listedObject.uploaded);
+  const uploadedEpochUs = toEpochUsOrNull(listedObject.uploaded);
+  const timestamp = filenameTimestamp?.iso || uploadedIso || null;
+  const timestampEpochUs = filenameTimestamp?.epochUs ?? uploadedEpochUs ?? null;
+
+  return {
+    id: `${date}/${listedObject.filename}`,
+    filename: listedObject.filename,
+    timestamp,
+    timestamp_epoch_us: timestampEpochUs,
+    content,
+  };
+}
+
 async function listBriefMarkdownFilesFromManifest(baseUrl, date) {
   const manifestUrls = [
     `${baseUrl}/${date}/briefs.json`,
@@ -238,15 +298,43 @@ export const onRequest = async ({ request, env }) => {
     const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
     const baseUrl = (env.DATA_BASE_URL || DEFAULT_DATA_BASE_URL).replace(/\/$/, '');
 
+    const bindingBucket = detectR2BucketBinding(env);
+    if (bindingBucket) {
+      try {
+        const boundObjects = await listBriefObjectsFromBinding(bindingBucket, date);
+        const boundEntries = sortNewestFirst(
+          (await Promise.all(boundObjects.map((obj) => fetchBriefEntryFromBinding(bindingBucket, date, obj)))).filter(Boolean)
+        );
+        if (boundEntries.length > 0) {
+          return new Response(
+            JSON.stringify({
+              date,
+              count: boundEntries.length,
+              entries: boundEntries,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
+          );
+        }
+      } catch (bindingErr) {
+        console.error('Brief binding list error', bindingErr?.message);
+      }
+    }
+
     const manifestFiles = await listBriefMarkdownFilesFromManifest(baseUrl, date);
     const discoveredFiles = manifestFiles.length > 0 ? manifestFiles : await listBriefMarkdownFiles(baseUrl, date);
     const filesToFetch = discoveredFiles;
     const fetched = await Promise.all(filesToFetch.map((filename) => fetchBriefEntry(baseUrl, date, filename)));
-    const entries = sortNewestFirst(fetched.filter(Boolean));
+    let entries = sortNewestFirst(fetched.filter(Boolean));
+
+    // Public R2 URLs often disallow object listing; keep legacy fallback available.
+    if (entries.length === 0) {
+      const fallback = await fetchBriefEntry(baseUrl, date, 'brief.md');
+      if (fallback) entries = [fallback];
+    }
 
     if (entries.length === 0) {
       return new Response(
-        JSON.stringify({ error: 'No brief_YYYYMMDD_HHMMSS_stamp.md files for this date', date }),
+        JSON.stringify({ error: 'No discoverable brief files for this date', date }),
         { status: 404, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
       );
     }
