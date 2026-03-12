@@ -48,6 +48,7 @@ interface BriefApiEntry {
   id?: string;
   filename?: string;
   timestamp?: string | null;
+  timestamp_epoch_us?: number | null;
   content?: string;
 }
 
@@ -55,6 +56,7 @@ interface BlogBriefEntry {
   id: string;
   filename: string;
   timestamp: string | null;
+  timestampEpochUs: number | null;
   brief: ParsedBrief;
 }
 
@@ -622,11 +624,18 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
           id: entry.id || `${slateDate}/${entry.filename || `brief-${index + 1}.md`}`,
           filename: entry.filename || `brief-${index + 1}.md`,
           timestamp: entry.timestamp ?? null,
+          timestampEpochUs: typeof entry.timestamp_epoch_us === 'number' ? entry.timestamp_epoch_us : null,
           brief: parseBriefMarkdown(entry.content),
         }))
         .sort((a, b) => {
-          const ta = a.timestamp ? Date.parse(a.timestamp) : Number.NEGATIVE_INFINITY;
-          const tb = b.timestamp ? Date.parse(b.timestamp) : Number.NEGATIVE_INFINITY;
+          const fallbackA = a.timestamp ? Date.parse(a.timestamp) : Number.NaN;
+          const fallbackB = b.timestamp ? Date.parse(b.timestamp) : Number.NaN;
+          const ta = Number.isFinite(a.timestampEpochUs)
+            ? (a.timestampEpochUs as number)
+            : (Number.isFinite(fallbackA) ? fallbackA * 1000 : Number.NEGATIVE_INFINITY);
+          const tb = Number.isFinite(b.timestampEpochUs)
+            ? (b.timestampEpochUs as number)
+            : (Number.isFinite(fallbackB) ? fallbackB * 1000 : Number.NEGATIVE_INFINITY);
           if (ta !== tb) return tb - ta;
           return b.filename.localeCompare(a.filename);
         });

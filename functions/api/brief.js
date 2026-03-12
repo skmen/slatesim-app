@@ -33,6 +33,13 @@ function toIsoOrNull(value) {
   return d.toISOString();
 }
 
+function toEpochUsOrNull(value) {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return null;
+  return ms * 1000;
+}
+
 function decodeXmlEntities(value) {
   return value
     .replace(/&amp;/g, '&')
@@ -45,29 +52,58 @@ function decodeXmlEntities(value) {
 function inferTimestampFromFilename(filename, date) {
   const stem = filename.replace(/\.md$/i, '');
 
-  const explicit = stem.match(/^brief_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_(\d+)$/i);
+  const explicit = stem.match(/^brief_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_(\d{1,6})$/i);
   if (explicit) {
-    const [, year, month, day, hour, minute, second, frac] = explicit;
-    const millis = String(frac).slice(0, 3).padEnd(3, '0');
-    return `${year}-${month}-${day}T${hour}:${minute}:${second}.${millis}Z`;
+    // Equivalent to Python:
+    // datetime.strptime("YYYYMMDD_HHMMSS_micro", "%Y%m%d_%H%M%S_%f")
+    const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr, microStr] = explicit;
+    const year = Number(yearStr);
+    const month = Number(monthStr);
+    const day = Number(dayStr);
+    const hour = Number(hourStr);
+    const minute = Number(minuteStr);
+    const second = Number(secondStr);
+    const micro = String(microStr).padEnd(6, '0').slice(0, 6);
+    const millisecond = Number(micro.slice(0, 3));
+    const microRemainder = Number(micro.slice(3));
+
+    const dt = new Date(Date.UTC(year, month - 1, day, hour, minute, second, millisecond));
+    const valid =
+      dt.getUTCFullYear() === year &&
+      dt.getUTCMonth() === month - 1 &&
+      dt.getUTCDate() === day &&
+      dt.getUTCHours() === hour &&
+      dt.getUTCMinutes() === minute &&
+      dt.getUTCSeconds() === second &&
+      dt.getUTCMilliseconds() === millisecond;
+
+    if (valid) {
+      return {
+        iso: dt.toISOString(),
+        epochUs: dt.getTime() * 1000 + microRemainder,
+      };
+    }
   }
 
   const compact = stem.match(/(20\d{2})(\d{2})(\d{2})[T_\-]?(\d{2})(\d{2})(\d{2})?/);
   if (compact) {
     const [, year, month, day, hour, minute, second] = compact;
-    return `${year}-${month}-${day}T${hour}:${minute}:${second || '00'}.000Z`;
+    const iso = `${year}-${month}-${day}T${hour}:${minute}:${second || '00'}.000Z`;
+    return { iso, epochUs: toEpochUsOrNull(iso) };
   }
 
   const dateTime = stem.match(/(20\d{2}-\d{2}-\d{2})[T_\-](\d{2})[:\-]?(\d{2})(?:[:\-]?(\d{2}))?/);
   if (dateTime) {
     const [, day, hour, minute, second] = dateTime;
-    return `${day}T${hour}:${minute}:${second || '00'}.000Z`;
+    const iso = `${day}T${hour}:${minute}:${second || '00'}.000Z`;
+    return { iso, epochUs: toEpochUsOrNull(iso) };
   }
 
   const timeOnly = stem.match(/(?:^|[_-])(\d{2})[:\-]?(\d{2})(?:[:\-]?(\d{2}))?(?:[_-]|$)/);
   if (timeOnly) {
     const [, hour, minute, second] = timeOnly;
-    return `${date}T${hour}:${minute}:${second || '00'}.000Z`;
+    const iso = `${date}T${hour}:${minute}:${second || '00'}.000Z`;
+    return { iso, epochUs: toEpochUsOrNull(iso) };
   }
 
   return null;
@@ -104,8 +140,8 @@ function normalizeManifestFiles(data, date) {
 
 function sortNewestFirst(entries) {
   return entries.sort((a, b) => {
-    const ta = a.timestamp ? Date.parse(a.timestamp) : Number.NEGATIVE_INFINITY;
-    const tb = b.timestamp ? Date.parse(b.timestamp) : Number.NEGATIVE_INFINITY;
+    const ta = Number.isFinite(a.timestamp_epoch_us) ? a.timestamp_epoch_us : Number.NEGATIVE_INFINITY;
+    const tb = Number.isFinite(b.timestamp_epoch_us) ? b.timestamp_epoch_us : Number.NEGATIVE_INFINITY;
     if (ta !== tb) return tb - ta;
     return b.filename.localeCompare(a.filename);
   });
@@ -170,12 +206,17 @@ async function fetchBriefEntry(baseUrl, date, filename) {
   const content = (await resp.text()).trim();
   if (!content) return null;
 
-  const timestamp = toIsoOrNull(resp.headers.get('last-modified')) || inferTimestampFromFilename(filename, date);
+  const headerTimestamp = toIsoOrNull(resp.headers.get('last-modified'));
+  const headerEpochUs = toEpochUsOrNull(resp.headers.get('last-modified'));
+  const filenameTimestamp = inferTimestampFromFilename(filename, date);
+  const timestamp = filenameTimestamp?.iso || headerTimestamp || null;
+  const timestampEpochUs = filenameTimestamp?.epochUs ?? headerEpochUs ?? null;
 
   return {
     id: `${date}/${filename}`,
     filename,
     timestamp,
+    timestamp_epoch_us: timestampEpochUs,
     content,
   };
 }
