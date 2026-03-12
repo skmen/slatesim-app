@@ -6,6 +6,7 @@
  *
  * Env (Pages project settings):
  *   DATA_BASE_URL  // optional R2 base URL (defaults to public CDN)
+ *   BRIEF_INDEX_URL / BRIEFS_INDEX_URL // optional URL (or template with {date}) returning brief file list
  */
 
 const DEFAULT_DATA_BASE_URL = 'https://pub-513149f63c494eefba758cd3927e2285.r2.dev';
@@ -228,6 +229,46 @@ async function listBriefMarkdownFilesFromManifest(baseUrl, date) {
   return [];
 }
 
+function buildIndexUrlCandidates(indexUrlTemplate, date) {
+  if (!indexUrlTemplate || typeof indexUrlTemplate !== 'string') return [];
+  const trimmed = indexUrlTemplate.trim();
+  if (!trimmed) return [];
+  if (trimmed.includes('{date}')) return [trimmed.replace('{date}', date)];
+
+  const sep = trimmed.includes('?') ? '&' : '?';
+  return [`${trimmed}${sep}date=${encodeURIComponent(date)}`];
+}
+
+async function listBriefMarkdownFilesFromIndexUrl(indexUrlTemplate, date) {
+  const urls = buildIndexUrlCandidates(indexUrlTemplate, date);
+  for (const u of urls) {
+    try {
+      const resp = await fetch(u, { cache: 'no-cache' });
+      if (!resp.ok) continue;
+
+      const text = await resp.text();
+      if (!text.trim()) continue;
+
+      try {
+        const json = JSON.parse(text);
+        const files = normalizeManifestFiles(json, date);
+        if (files.length > 0) return files;
+      } catch {
+        const files = uniqueStrings(
+          text
+            .split(/\r?\n|,|\s+/)
+            .map((v) => basename(v.trim()))
+            .filter((name) => isBriefFileForSlate(name, date))
+        );
+        if (files.length > 0) return files;
+      }
+    } catch {
+      // Best effort only; fallback path handled by caller.
+    }
+  }
+  return [];
+}
+
 async function listBriefMarkdownFiles(baseUrl, date) {
   const prefix = `${date}/`;
   const listingUrls = [
@@ -320,8 +361,13 @@ export const onRequest = async ({ request, env }) => {
       }
     }
 
+    const indexFiles = await listBriefMarkdownFilesFromIndexUrl(env.BRIEF_INDEX_URL || env.BRIEFS_INDEX_URL, date);
     const manifestFiles = await listBriefMarkdownFilesFromManifest(baseUrl, date);
-    const discoveredFiles = manifestFiles.length > 0 ? manifestFiles : await listBriefMarkdownFiles(baseUrl, date);
+    const discoveredFiles = indexFiles.length > 0
+      ? indexFiles
+      : manifestFiles.length > 0
+        ? manifestFiles
+        : await listBriefMarkdownFiles(baseUrl, date);
     const filesToFetch = discoveredFiles;
     const fetched = await Promise.all(filesToFetch.map((filename) => fetchBriefEntry(baseUrl, date, filename)));
     let entries = sortNewestFirst(fetched.filter(Boolean));
