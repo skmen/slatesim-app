@@ -23,6 +23,8 @@ import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/star
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
 import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260305-cashfilterfix';
+import { usePlayerEnrichment } from '../src/hooks/usePlayerEnrichment';
+import { useLineupScoring } from '../src/hooks/useLineupScoring';
 
 interface Props {
   players: Player[];
@@ -949,6 +951,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
   const [poolSearch, setPoolSearch] = useState('');
   const [showPoolFilterBuilder, setShowPoolFilterBuilder] = useState(false);
   const [poolFilters, setPoolFilters] = useState<PoolFilterRule[]>([]);
+  const { state: enrichmentState, mergePlayers } = usePlayerEnrichment(slateDate ?? null);
+  const { scoreLineups } = useLineupScoring();
+
   const workerRef = useRef<Worker | null>(null);
 
   // Clean up worker on unmount
@@ -1117,8 +1122,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
               setGeneratedLineups((prev) => [msg.currentBest!, ...prev].slice(0, Math.max(1, config.numLineups)));
             }
             break;
-          case 'result':
-            setGeneratedLineups(msg.lineups);
+          case 'result': {
+            const scored = scoreLineups(msg.lineups ?? []);
+            setGeneratedLineups(scored);
             setIsOptimizing(false);
             setProgress(100);
             if (!msg.lineups || msg.lineups.length === 0) {
@@ -1149,6 +1155,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             }
             worker.terminate();
             break;
+          }
           case 'error':
             setError(msg.message);
             setIsOptimizing(false);
@@ -1163,8 +1170,12 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         worker.terminate();
       };
       
+      const enrichedPool = mergePlayers(pool);
+      const modelCount = enrichedPool.filter((p) => (p as any).modelProjection != null).length;
+      console.log(`[Enrichment] ${modelCount}/${enrichedPool.length} players have modelProjection`);
+
       const request = {
-        players: pool,
+        players: enrichedPool,
         config: { ...config, teamStackWeights: Object.keys(teamStackWeights).length > 0 ? teamStackWeights : undefined },
       };
 
@@ -1635,9 +1646,32 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         />
       )}
       <div className="bg-white/40 backdrop-blur-sm rounded-sm border border-ink/10 p-4 shadow-sm">
-        <div className="flex items-center gap-2 mb-3">
-          <Settings className="w-4 h-4 text-drafting-orange" />
-          <h3 className="text-[11px] font-black uppercase tracking-widest text-ink/60">Optimizer Settings</h3>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Settings className="w-4 h-4 text-drafting-orange" />
+            <h3 className="text-[11px] font-black uppercase tracking-widest text-ink/60">Optimizer Settings</h3>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {enrichmentState.isLoading ? (
+              <span className="flex items-center gap-1 text-[9px] font-bold text-ink/40 uppercase tracking-widest">
+                <span className="w-1.5 h-1.5 rounded-full bg-ink/30 inline-block" />
+                Loading model data...
+              </span>
+            ) : enrichmentState.enrichment && enrichmentState.coveragePct > 0 ? (
+              <span
+                className="flex items-center gap-1 text-[9px] font-bold text-emerald-700 uppercase tracking-widest cursor-default"
+                title={`Trained ${enrichmentState.lspTrainedAt ?? 'N/A'}, model v${enrichmentState.modelVersion ?? 'N/A'}`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+                Model: {enrichmentState.coveragePct.toFixed(0)}% coverage
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-[9px] font-bold text-ink/30 uppercase tracking-widest">
+                <span className="w-1.5 h-1.5 rounded-full bg-ink/20 inline-block" />
+                No model data
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="space-y-3">
@@ -1865,7 +1899,23 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                       >
                         <td className="px-4 py-3 text-ink/40">{i + 1}</td>
                         <td className="px-4 py-3 text-ink/70 max-w-[320px] truncate">{names || '—'}</td>
-                        <td className="px-4 py-3 text-right font-black text-emerald-600">{lineup.totalProjection.toFixed(2)}</td>
+                        <td className="px-4 py-3 text-right font-black text-emerald-600">
+                          {lineup.totalProjection.toFixed(2)}
+                          {lineup.modelScore != null && (
+                            <span className="ml-1.5 text-[10px] font-mono text-ink/40" title="Model score">
+                              M:{lineup.modelScore.toFixed(1)}
+                            </span>
+                          )}
+                          {lineup.spacingBonusApplied && (
+                            <span className="ml-1 px-1 py-0.5 rounded-sm bg-sky-100 text-sky-700 text-[8px] font-bold uppercase leading-none">Spacing</span>
+                          )}
+                          {(lineup.overperformProba ?? 0) > 0.65 && (
+                            <span className="ml-1 px-1 py-0.5 rounded-sm bg-purple-100 text-purple-700 text-[8px] font-bold uppercase leading-none">GPP</span>
+                          )}
+                          {lineup.vlmCoverage != null && lineup.vlmCoverage < 0.5 && (
+                            <span className="ml-1 text-[8px] font-bold text-ink/30 uppercase leading-none">Low Cov</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3 text-right font-bold text-ink/60">
                           {showActuals && actualTotal !== null ? actualTotal.toFixed(2) : '--'}
                         </td>
@@ -2396,7 +2446,25 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                                 <X className="w-3.5 h-3.5" />
                               </button>
                             </td>
-                            <td className="px-2 py-1.5 text-ink/70 truncate max-w-[160px]">{player.name}</td>
+                            <td className="px-2 py-1.5 text-ink/70 truncate max-w-[160px]">
+                              {player.name}
+                              {player.vlmNote && (
+                                <span
+                                  title={player.vlmNote}
+                                  className={`ml-1 inline-block px-1 py-0.5 rounded-sm text-[8px] font-bold uppercase leading-none cursor-default ${
+                                    player.vlmNote.toLowerCase().startsWith('vlm up')
+                                      ? 'bg-emerald-100 text-emerald-700'
+                                      : player.vlmNote.toLowerCase().startsWith('vlm down')
+                                      ? 'bg-amber-100 text-amber-700'
+                                      : player.vlmNote.toLowerCase().startsWith('vlm warn')
+                                      ? 'bg-red-100 text-red-700'
+                                      : 'bg-ink/10 text-ink/60'
+                                  }`}
+                                >
+                                  VLM
+                                </span>
+                              )}
+                            </td>
                             <td className="px-2 py-1.5 text-ink/50">{player.team || '--'}</td>
                             <td className="px-2 py-1.5 text-ink/50">{player.opponent || '--'}</td>
                             <td className="px-2 py-1.5 text-right text-ink/60">

@@ -35,6 +35,15 @@ export interface Player {
   rotations?: RotationStint[];
   last5PlayByPlay?: Last5PlayByPlayGame[];
 
+  // VLM / model enrichment fields (populated by usePlayerEnrichment hook)
+  modelProjection?: number;      // LSP-adjusted DK projection
+  overperformProba?: number;     // P(outperform by >3 DK pts)
+  trueShotQuality?: number;      // rolling VLM mean 0.0-1.0
+  paintGravityScore?: number;    // rolling VLM mean 0.0-1.0
+  xfgPct?: number;
+  vlmCoverage?: boolean;
+  vlmNote?: string | null;
+
   // Index signature for dynamic CSV columns
   [key: string]: any;
 }
@@ -90,6 +99,14 @@ export interface Lineup {
   top10Pct?: number;
   cashPct?: number;
   
+  // VLM lineup scores (populated by useLineupScoring hook)
+  modelScore?: number;           // sum of modelProjection across 8 players
+  overperformProba?: number;     // mean overperformProba across lineup
+  vlmCoverage?: number;          // fraction of 8 players with vlmCoverage=true
+  spacingBonusApplied?: boolean;
+  paintAnchor?: string | null;
+  vlmNotes?: string[];
+
   // Metadata
   setName?: string;
   lineupSource?: 'optimizer_csv' | 'user_upload' | 'reference' | 'optimizer';

@@ -1521,8 +1521,8 @@ const setObjectiveByPriority = (
       return;
     }
 
-    // GPP path — unchanged
-    const projection = Math.max(0, safeNumber(player.projection, 0));
+    // GPP path — use modelProjection when present, fall back to projection
+    const projection = Math.max(0, safeNumber((player as any).modelProjection ?? player.projection, 0));
     let baseScore: number;
     if (ceilingWeight > 0) {
       const rawCeiling = getCeilingTieBreaker(player);
