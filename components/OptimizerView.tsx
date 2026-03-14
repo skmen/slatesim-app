@@ -1872,6 +1872,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
               >
                 Proj{lineupSort.key === 'projection' ? (lineupSort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
               </th>
+              <th className="px-4 py-3 text-right">Model</th>
               <th
                 onClick={() => setLineupSort(nextSort(lineupSort, 'actual', 'desc'))}
                 className="px-4 py-3 text-right cursor-pointer select-none"
@@ -1901,24 +1902,26 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                       >
                         <td className="px-4 py-3 text-ink/40">{i + 1}</td>
                         <td className="px-4 py-3 text-ink/70 max-w-[320px] truncate">{names || '—'}</td>
+                        <td className="px-4 py-3 text-right font-black text-emerald-600">{lineup.totalProjection.toFixed(2)}</td>
                         <td className="px-4 py-3 text-right">
-                          <div className="font-black text-emerald-600">{lineup.totalProjection.toFixed(2)}</div>
-                          <div className="flex items-center justify-end gap-1 mt-0.5 flex-wrap">
-                            {lineup.modelScore != null && (
-                              <span className="text-[9px] font-mono text-ink/40" title="Model score">
-                                M:{lineup.modelScore.toFixed(1)}
-                              </span>
-                            )}
-                            {lineup.spacingBonusApplied && (
-                              <span className="px-1 py-0.5 rounded-sm bg-sky-100 text-sky-700 text-[8px] font-bold uppercase leading-none">Spacing</span>
-                            )}
-                            {(lineup.overperformProba ?? 0) > 0.65 && (
-                              <span className="px-1 py-0.5 rounded-sm bg-purple-100 text-purple-700 text-[8px] font-bold uppercase leading-none">GPP</span>
-                            )}
-                            {lineup.vlmCoverage != null && lineup.vlmCoverage < 0.5 && (
-                              <span className="text-[8px] font-bold text-ink/30 uppercase leading-none">Low Cov</span>
-                            )}
-                          </div>
+                          {lineup.modelScore != null ? (
+                            <div>
+                              <div className="font-black text-ink/70">{lineup.modelScore.toFixed(1)}</div>
+                              <div className="flex items-center justify-end gap-1 mt-0.5 flex-wrap">
+                                {lineup.spacingBonusApplied && (
+                                  <span className="px-1 py-0.5 rounded-sm bg-sky-100 text-sky-700 text-[8px] font-bold uppercase leading-none">Spacing</span>
+                                )}
+                                {(lineup.overperformProba ?? 0) > 0.65 && (
+                                  <span className="px-1 py-0.5 rounded-sm bg-purple-100 text-purple-700 text-[8px] font-bold uppercase leading-none">GPP</span>
+                                )}
+                                {lineup.vlmCoverage != null && lineup.vlmCoverage < 0.5 && (
+                                  <span className="text-[8px] font-bold text-ink/30 uppercase leading-none">Low Cov</span>
+                                )}
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-ink/20">--</span>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-right font-bold text-ink/60">
                           {showActuals && actualTotal !== null ? actualTotal.toFixed(2) : '--'}
@@ -1929,7 +1932,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                       </tr>
                       {isExpanded && (
                         <tr className="border-b border-ink/10 bg-ink/5">
-                          <td colSpan={5} className="px-4 py-3">
+                          <td colSpan={6} className="px-4 py-3">
                             <div className="grid grid-cols-1 gap-2">
                             <div className={`grid ${showActuals ? 'grid-cols-8' : 'grid-cols-7'} text-[11px] font-black uppercase tracking-widest text-ink/40`}>
                               <span className="col-span-2">Player</span>
