@@ -5,11 +5,21 @@
  *   ?date=YYYY-MM-DD  (defaults to today UTC)
  *
  * Env (Pages project settings):
- *   DATA_BASE_URL  // optional R2 base URL (defaults to public CDN)
- *   BRIEF_INDEX_URL / BRIEFS_INDEX_URL // optional URL (or template with {date}) returning brief file list
+ *   DATA_BASE_URL          // optional R2 public base URL (defaults to pub CDN)
+ *   BRIEF_INDEX_URL / BRIEFS_INDEX_URL // optional URL template returning brief file list
+ *
+ *   R2 S3-compatible listing (recommended — avoids needing briefs.json manifest):
+ *   R2_ACCOUNT_ID          // Cloudflare account ID
+ *   R2_BUCKET_NAME         // R2 bucket name (e.g. "slatesim-data")
+ *   R2_ACCESS_KEY_ID       // R2 API token access key
+ *   R2_SECRET_ACCESS_KEY   // R2 API token secret key
  */
 
 const DEFAULT_DATA_BASE_URL = 'https://pub-513149f63c494eefba758cd3927e2285.r2.dev';
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
 
 function compactSlateDate(date) {
   return String(date || '').replace(/-/g, '');
@@ -22,7 +32,6 @@ function basename(path) {
 function isBriefFileForSlate(filename, date) {
   const compactDate = compactSlateDate(date);
   if (!/^\d{8}$/.test(compactDate)) return false;
-  // brief_20260312_104918_744007.md
   const re = new RegExp(`^brief_${compactDate}_\\d{6}_\\d+\\.md$`, 'i');
   return re.test(filename);
 }
@@ -55,8 +64,6 @@ function inferTimestampFromFilename(filename, date) {
 
   const explicit = stem.match(/^brief_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_(\d{1,6})$/i);
   if (explicit) {
-    // Equivalent to Python:
-    // datetime.strptime("YYYYMMDD_HHMMSS_micro", "%Y%m%d_%H%M%S_%f")
     const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr, microStr] = explicit;
     const year = Number(yearStr);
     const month = Number(monthStr);
@@ -79,10 +86,7 @@ function inferTimestampFromFilename(filename, date) {
       dt.getUTCMilliseconds() === millisecond;
 
     if (valid) {
-      return {
-        iso: dt.toISOString(),
-        epochUs: dt.getTime() * 1000 + microRemainder,
-      };
+      return { iso: dt.toISOString(), epochUs: dt.getTime() * 1000 + microRemainder };
     }
   }
 
@@ -116,7 +120,6 @@ function uniqueStrings(values) {
 
 function normalizeManifestFiles(data, date) {
   if (!data) return [];
-
   const raw = Array.isArray(data)
     ? data
     : Array.isArray(data.files)
@@ -148,6 +151,10 @@ function sortNewestFirst(entries) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// R2 bucket binding (Workers binding — if configured in Pages settings)
+// ---------------------------------------------------------------------------
+
 function detectR2BucketBinding(env) {
   if (!env || typeof env !== 'object') return null;
   for (const value of Object.values(env)) {
@@ -174,11 +181,7 @@ async function listBriefObjectsFromBinding(bucket, date) {
     for (const obj of page?.objects || []) {
       const filename = basename(obj.key || '');
       if (!isBriefFileForSlate(filename, date)) continue;
-      out.push({
-        key: obj.key,
-        filename,
-        uploaded: obj.uploaded ? new Date(obj.uploaded).toISOString() : null,
-      });
+      out.push({ key: obj.key, filename, uploaded: obj.uploaded ? new Date(obj.uploaded).toISOString() : null });
     }
     cursor = page?.truncated ? page?.cursor : undefined;
   } while (cursor);
@@ -189,7 +192,6 @@ async function listBriefObjectsFromBinding(bucket, date) {
 async function fetchBriefEntryFromBinding(bucket, date, listedObject) {
   const object = await bucket.get(listedObject.key);
   if (!object) return null;
-
   const content = (await object.text()).trim();
   if (!content) return null;
 
@@ -199,14 +201,119 @@ async function fetchBriefEntryFromBinding(bucket, date, listedObject) {
   const timestamp = filenameTimestamp?.iso || uploadedIso || null;
   const timestampEpochUs = filenameTimestamp?.epochUs ?? uploadedEpochUs ?? null;
 
-  return {
-    id: `${date}/${listedObject.filename}`,
-    filename: listedObject.filename,
-    timestamp,
-    timestamp_epoch_us: timestampEpochUs,
-    content,
-  };
+  return { id: `${date}/${listedObject.filename}`, filename: listedObject.filename, timestamp, timestamp_epoch_us: timestampEpochUs, content };
 }
+
+// ---------------------------------------------------------------------------
+// R2 S3-compatible API listing (signed request — works without bucket binding)
+// ---------------------------------------------------------------------------
+
+async function sha256Hex(data) {
+  const buf = await crypto.subtle.digest(
+    'SHA-256',
+    typeof data === 'string' ? new TextEncoder().encode(data) : data,
+  );
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function hmacSha256Raw(key, data) {
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    typeof key === 'string' ? new TextEncoder().encode(key) : key,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  return new Uint8Array(await crypto.subtle.sign(
+    'HMAC',
+    keyMaterial,
+    typeof data === 'string' ? new TextEncoder().encode(data) : data,
+  ));
+}
+
+async function hmacSha256Hex(key, data) {
+  const buf = await hmacSha256Raw(key, data);
+  return Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function listBriefFilesFromR2S3Api(accountId, bucketName, accessKeyId, secretAccessKey, date) {
+  const compactDate = compactSlateDate(date);
+  const prefix = `${date}/brief_${compactDate}_`;
+  const host = `${accountId}.r2.cloudflarestorage.com`;
+  const region = 'auto';
+  const service = 's3';
+
+  const now = new Date();
+  const dateStamp = now.toISOString().slice(0, 10).replace(/-/g, '');       // YYYYMMDD
+  const amzDate = now.toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z'; // YYYYMMDDTHHMMSSz
+
+  // Sorted canonical query string
+  const queryParams = new URLSearchParams({
+    'list-type': '2',
+    'max-keys': '1000',
+    prefix,
+  });
+  queryParams.sort();
+  const canonicalQueryString = queryParams.toString();
+
+  const payloadHash = await sha256Hex('');
+  const canonicalHeaders =
+    `host:${host}\n` +
+    `x-amz-content-sha256:${payloadHash}\n` +
+    `x-amz-date:${amzDate}\n`;
+  const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
+  const canonicalUri = `/${bucketName}`;
+
+  const canonicalRequest = [
+    'GET', canonicalUri, canonicalQueryString, canonicalHeaders, signedHeaders, payloadHash,
+  ].join('\n');
+
+  const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
+  const stringToSign = [
+    'AWS4-HMAC-SHA256', amzDate, credentialScope, await sha256Hex(canonicalRequest),
+  ].join('\n');
+
+  // Derive signing key
+  const kDate    = await hmacSha256Raw(`AWS4${secretAccessKey}`, dateStamp);
+  const kRegion  = await hmacSha256Raw(kDate, region);
+  const kService = await hmacSha256Raw(kRegion, service);
+  const kSigning = await hmacSha256Raw(kService, 'aws4_request');
+  const signature = await hmacSha256Hex(kSigning, stringToSign);
+
+  const authorization =
+    `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${credentialScope}, ` +
+    `SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  const listUrl = `https://${host}/${bucketName}?${canonicalQueryString}`;
+  try {
+    const resp = await fetch(listUrl, {
+      headers: {
+        Authorization: authorization,
+        'x-amz-date': amzDate,
+        'x-amz-content-sha256': payloadHash,
+      },
+    });
+    if (!resp.ok) {
+      console.warn(`[brief] R2 S3 list returned ${resp.status}`);
+      return [];
+    }
+    const text = await resp.text();
+    const keys = Array.from(text.matchAll(/<Key>([^<]+)<\/Key>/g), (m) => decodeXmlEntities(m[1]));
+    return uniqueStrings(
+      keys
+        .filter((k) => k.startsWith(`${date}/`))
+        .map((k) => basename(k))
+        .filter((name) => isBriefFileForSlate(name, date)),
+    );
+  } catch (err) {
+    console.warn('[brief] R2 S3 list error:', err?.message);
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Manifest / index-URL discovery (public-URL-based, requires briefs.json)
+// ---------------------------------------------------------------------------
 
 async function listBriefMarkdownFilesFromManifest(baseUrl, date) {
   const manifestUrls = [
@@ -214,7 +321,6 @@ async function listBriefMarkdownFilesFromManifest(baseUrl, date) {
     `${baseUrl}/${date}/brief-manifest.json`,
     `${baseUrl}/${date}/index.json`,
   ];
-
   for (const manifestUrl of manifestUrls) {
     try {
       const resp = await fetch(manifestUrl, { cache: 'no-cache' });
@@ -223,7 +329,7 @@ async function listBriefMarkdownFilesFromManifest(baseUrl, date) {
       const files = normalizeManifestFiles(json, date);
       if (files.length > 0) return files;
     } catch {
-      // Best effort only; fallback path handled by caller.
+      // fall through
     }
   }
   return [];
@@ -234,7 +340,6 @@ function buildIndexUrlCandidates(indexUrlTemplate, date) {
   const trimmed = indexUrlTemplate.trim();
   if (!trimmed) return [];
   if (trimmed.includes('{date}')) return [trimmed.replace('{date}', date)];
-
   const sep = trimmed.includes('?') ? '&' : '?';
   return [`${trimmed}${sep}date=${encodeURIComponent(date)}`];
 }
@@ -245,10 +350,8 @@ async function listBriefMarkdownFilesFromIndexUrl(indexUrlTemplate, date) {
     try {
       const resp = await fetch(u, { cache: 'no-cache' });
       if (!resp.ok) continue;
-
       const text = await resp.text();
       if (!text.trim()) continue;
-
       try {
         const json = JSON.parse(text);
         const files = normalizeManifestFiles(json, date);
@@ -258,46 +361,20 @@ async function listBriefMarkdownFilesFromIndexUrl(indexUrlTemplate, date) {
           text
             .split(/\r?\n|,|\s+/)
             .map((v) => basename(v.trim()))
-            .filter((name) => isBriefFileForSlate(name, date))
+            .filter((name) => isBriefFileForSlate(name, date)),
         );
         if (files.length > 0) return files;
       }
     } catch {
-      // Best effort only; fallback path handled by caller.
+      // fall through
     }
   }
   return [];
 }
 
-async function listBriefMarkdownFiles(baseUrl, date) {
-  const prefix = `${date}/`;
-  const listingUrls = [
-    `${baseUrl}/?list-type=2&prefix=${encodeURIComponent(prefix)}`,
-    `${baseUrl}/?prefix=${encodeURIComponent(prefix)}`,
-  ];
-
-  for (const listingUrl of listingUrls) {
-    try {
-      const resp = await fetch(listingUrl, { cache: 'no-cache' });
-      if (!resp.ok) continue;
-
-      const text = await resp.text();
-      const keys = Array.from(text.matchAll(/<Key>([^<]+)<\/Key>/g), (m) => decodeXmlEntities(m[1]));
-      if (keys.length === 0) continue;
-
-      const files = keys
-        .filter((key) => key.startsWith(prefix))
-        .map((key) => basename(key.slice(prefix.length)))
-        .filter((key) => isBriefFileForSlate(key, date));
-
-      if (files.length > 0) return uniqueStrings(files);
-    } catch {
-      // Best effort only; fallback path handled by caller.
-    }
-  }
-
-  return [];
-}
+// ---------------------------------------------------------------------------
+// Public-URL fetch (individual files)
+// ---------------------------------------------------------------------------
 
 async function fetchBriefEntry(baseUrl, date, filename) {
   const fileUrl = `${baseUrl}/${date}/${filename}`;
@@ -313,19 +390,15 @@ async function fetchBriefEntry(baseUrl, date, filename) {
   const timestamp = filenameTimestamp?.iso || headerTimestamp || null;
   const timestampEpochUs = filenameTimestamp?.epochUs ?? headerEpochUs ?? null;
 
-  return {
-    id: `${date}/${filename}`,
-    filename,
-    timestamp,
-    timestamp_epoch_us: timestampEpochUs,
-    content,
-  };
+  return { id: `${date}/${filename}`, filename, timestamp, timestamp_epoch_us: timestampEpochUs, content };
 }
 
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
 export const onRequest = async ({ request, env }) => {
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-  };
+  const corsHeaders = { 'Access-Control-Allow-Origin': '*' };
 
   if (request.method === 'OPTIONS') {
     return new Response(null, {
@@ -339,40 +412,54 @@ export const onRequest = async ({ request, env }) => {
     const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
     const baseUrl = (env.DATA_BASE_URL || DEFAULT_DATA_BASE_URL).replace(/\/$/, '');
 
+    // Strategy 1: R2 Workers binding (fastest, zero-latency listing)
     const bindingBucket = detectR2BucketBinding(env);
     if (bindingBucket) {
       try {
         const boundObjects = await listBriefObjectsFromBinding(bindingBucket, date);
         const boundEntries = sortNewestFirst(
-          (await Promise.all(boundObjects.map((obj) => fetchBriefEntryFromBinding(bindingBucket, date, obj)))).filter(Boolean)
+          (await Promise.all(boundObjects.map((obj) => fetchBriefEntryFromBinding(bindingBucket, date, obj)))).filter(Boolean),
         );
         if (boundEntries.length > 0) {
           return new Response(
-            JSON.stringify({
-              date,
-              count: boundEntries.length,
-              entries: boundEntries,
-            }),
-            { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
+            JSON.stringify({ date, count: boundEntries.length, entries: boundEntries }),
+            { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } },
           );
         }
-      } catch (bindingErr) {
-        console.error('Brief binding list error', bindingErr?.message);
+      } catch (err) {
+        console.error('[brief] R2 binding error:', err?.message);
       }
     }
 
-    const indexFiles = await listBriefMarkdownFilesFromIndexUrl(env.BRIEF_INDEX_URL || env.BRIEFS_INDEX_URL, date);
-    const manifestFiles = await listBriefMarkdownFilesFromManifest(baseUrl, date);
-    const discoveredFiles = indexFiles.length > 0
-      ? indexFiles
-      : manifestFiles.length > 0
-        ? manifestFiles
-        : await listBriefMarkdownFiles(baseUrl, date);
-    const filesToFetch = discoveredFiles;
-    const fetched = await Promise.all(filesToFetch.map((filename) => fetchBriefEntry(baseUrl, date, filename)));
+    // Strategy 2: R2 S3-compatible signed listing
+    const { R2_ACCOUNT_ID, R2_BUCKET_NAME, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY } = env;
+    let discoveredFiles = [];
+
+    if (R2_ACCOUNT_ID && R2_BUCKET_NAME && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY) {
+      discoveredFiles = await listBriefFilesFromR2S3Api(
+        R2_ACCOUNT_ID, R2_BUCKET_NAME, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, date,
+      );
+    }
+
+    // Strategy 3: Custom index URL env var
+    if (discoveredFiles.length === 0) {
+      discoveredFiles = await listBriefMarkdownFilesFromIndexUrl(
+        env.BRIEF_INDEX_URL || env.BRIEFS_INDEX_URL, date,
+      );
+    }
+
+    // Strategy 4: briefs.json / brief-manifest.json / index.json in R2
+    if (discoveredFiles.length === 0) {
+      discoveredFiles = await listBriefMarkdownFilesFromManifest(baseUrl, date);
+    }
+
+    // Fetch content for all discovered files
+    const fetched = await Promise.all(
+      discoveredFiles.map((filename) => fetchBriefEntry(baseUrl, date, filename)),
+    );
     let entries = sortNewestFirst(fetched.filter(Boolean));
 
-    // Public R2 URLs often disallow object listing; keep legacy fallback available.
+    // Strategy 5: legacy single brief.md fallback
     if (entries.length === 0) {
       const fallback = await fetchBriefEntry(baseUrl, date, 'brief.md');
       if (fallback) entries = [fallback];
@@ -381,23 +468,19 @@ export const onRequest = async ({ request, env }) => {
     if (entries.length === 0) {
       return new Response(
         JSON.stringify({ error: 'No discoverable brief files for this date', date }),
-        { status: 404, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
+        { status: 404, headers: { 'Content-Type': 'application/json', ...corsHeaders } },
       );
     }
 
     return new Response(
-      JSON.stringify({
-        date,
-        count: entries.length,
-        entries,
-      }),
-      { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
+      JSON.stringify({ date, count: entries.length, entries }),
+      { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } },
     );
   } catch (err) {
-    console.error('Brief API error', err?.message);
+    console.error('[brief] API error:', err?.message);
     return new Response(
       JSON.stringify({ error: 'Internal error' }),
-      { status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
+      { status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders } },
     );
   }
 };
