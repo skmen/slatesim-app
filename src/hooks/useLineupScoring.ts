@@ -8,11 +8,20 @@ const SPACING_BONUS_POINTS = 1.25;
 const SPACING_MIN_SHOOTERS_PER_TEAM = 2;
 
 export function useLineupScoring(): {
-  scoreLineups: (lineups: Lineup[]) => Lineup[];
+  scoreLineups: (lineups: Lineup[], playerPool?: Player[]) => Lineup[];
 } {
-  const scoreLineups = useCallback((lineups: Lineup[]): Lineup[] => {
+  const scoreLineups = useCallback((lineups: Lineup[], playerPool?: Player[]): Lineup[] => {
+    const poolById = playerPool
+      ? new Map(playerPool.map((p) => [p.id, p]))
+      : null;
+
     const scored = lineups.map((lineup): Lineup => {
-      const players: Player[] = lineup.players ?? [];
+      const players: Player[] =
+        lineup.players && lineup.players.length > 0
+          ? lineup.players
+          : poolById
+          ? lineup.playerIds.map((id) => poolById.get(id)).filter((p): p is Player => Boolean(p))
+          : [];
 
       // model_score: sum of modelProjection, falling back to projection
       let modelScore = 0;

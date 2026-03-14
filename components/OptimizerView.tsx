@@ -953,6 +953,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
   const [poolFilters, setPoolFilters] = useState<PoolFilterRule[]>([]);
   const { state: enrichmentState, mergePlayers } = usePlayerEnrichment(slateDate ?? null);
   const { scoreLineups } = useLineupScoring();
+  const enrichedPoolRef = useRef<Player[]>([]);
 
   const workerRef = useRef<Worker | null>(null);
 
@@ -1123,7 +1124,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             }
             break;
           case 'result': {
-            const scored = scoreLineups(msg.lineups ?? []);
+            const scored = scoreLineups(msg.lineups ?? [], enrichedPoolRef.current);
             setGeneratedLineups(scored);
             setIsOptimizing(false);
             setProgress(100);
@@ -1171,6 +1172,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       };
       
       const enrichedPool = mergePlayers(pool);
+      enrichedPoolRef.current = enrichedPool;
       const modelCount = enrichedPool.filter((p) => (p as any).modelProjection != null).length;
       console.log(`[Enrichment] ${modelCount}/${enrichedPool.length} players have modelProjection`);
 
@@ -1899,22 +1901,24 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                       >
                         <td className="px-4 py-3 text-ink/40">{i + 1}</td>
                         <td className="px-4 py-3 text-ink/70 max-w-[320px] truncate">{names || '—'}</td>
-                        <td className="px-4 py-3 text-right font-black text-emerald-600">
-                          {lineup.totalProjection.toFixed(2)}
-                          {lineup.modelScore != null && (
-                            <span className="ml-1.5 text-[10px] font-mono text-ink/40" title="Model score">
-                              M:{lineup.modelScore.toFixed(1)}
-                            </span>
-                          )}
-                          {lineup.spacingBonusApplied && (
-                            <span className="ml-1 px-1 py-0.5 rounded-sm bg-sky-100 text-sky-700 text-[8px] font-bold uppercase leading-none">Spacing</span>
-                          )}
-                          {(lineup.overperformProba ?? 0) > 0.65 && (
-                            <span className="ml-1 px-1 py-0.5 rounded-sm bg-purple-100 text-purple-700 text-[8px] font-bold uppercase leading-none">GPP</span>
-                          )}
-                          {lineup.vlmCoverage != null && lineup.vlmCoverage < 0.5 && (
-                            <span className="ml-1 text-[8px] font-bold text-ink/30 uppercase leading-none">Low Cov</span>
-                          )}
+                        <td className="px-4 py-3 text-right">
+                          <div className="font-black text-emerald-600">{lineup.totalProjection.toFixed(2)}</div>
+                          <div className="flex items-center justify-end gap-1 mt-0.5 flex-wrap">
+                            {lineup.modelScore != null && (
+                              <span className="text-[9px] font-mono text-ink/40" title="Model score">
+                                M:{lineup.modelScore.toFixed(1)}
+                              </span>
+                            )}
+                            {lineup.spacingBonusApplied && (
+                              <span className="px-1 py-0.5 rounded-sm bg-sky-100 text-sky-700 text-[8px] font-bold uppercase leading-none">Spacing</span>
+                            )}
+                            {(lineup.overperformProba ?? 0) > 0.65 && (
+                              <span className="px-1 py-0.5 rounded-sm bg-purple-100 text-purple-700 text-[8px] font-bold uppercase leading-none">GPP</span>
+                            )}
+                            {lineup.vlmCoverage != null && lineup.vlmCoverage < 0.5 && (
+                              <span className="text-[8px] font-bold text-ink/30 uppercase leading-none">Low Cov</span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-4 py-3 text-right font-bold text-ink/60">
                           {showActuals && actualTotal !== null ? actualTotal.toFixed(2) : '--'}
