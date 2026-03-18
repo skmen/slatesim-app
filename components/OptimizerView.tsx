@@ -978,6 +978,20 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     setExpandedLineupId(null);
   }, [slateDate, players]);
 
+  // Clear stale matchup selections and team stack weights when the game slate changes
+  useEffect(() => {
+    if (games.length === 0) return;
+    const validMatchupKeys = new Set(games.map((g) => g.matchupKey));
+    const validTeamIds = new Set(games.flatMap((g) => [g.teamA.teamId, g.teamB.teamId]));
+    setSelectedMatchups((prev) => prev.filter((key) => validMatchupKeys.has(key)));
+    setTeamStackWeights((prev) => {
+      const pruned = Object.fromEntries(
+        Object.entries(prev).filter(([teamId]) => validTeamIds.has(teamId))
+      );
+      return Object.keys(pruned).length !== Object.keys(prev).length ? pruned : prev;
+    });
+  }, [games]);
+
   useEffect(() => {
     const raw = localStorage.getItem(getAdvancedSettingsStorageKey(slateDate));
     if (!raw) return;
@@ -1071,9 +1085,14 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         return val !== undefined && val < 100;
       }).length;
 
+      // Scope pool to teams in the current slate's games (if games are known)
+      const slateTeamIds = games.length > 0
+        ? new Set(games.flatMap((g) => [g.teamA.teamId, g.teamB.teamId]))
+        : null;
+
       // Prepare player pool (only active players with salary and projection)
       const pool = players
-        .filter((p) => p.salary > 0 && p.projection > 0)
+        .filter((p) => p.salary > 0 && p.projection > 0 && (!slateTeamIds || slateTeamIds.has(p.team)))
         .map((player) => {
           const overrides = playerOverrides[player.id] || {};
           const minExposureVal = parseExposurePercentMaybe(overrides.minExposure);

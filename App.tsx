@@ -136,12 +136,16 @@ const fetchAvailableSlates = async (date: string): Promise<string[]> => {
 };
 
 const formatSlateLabel = (folder: string): string => {
-  const match = folder.match(/^(.+?)_(\d+)G$/i);
-  if (match) {
-    const count = Number(match[2]);
-    return `${match[1]} (${count} game${count === 1 ? '' : 's'})`;
+  const parts = folder.split('_');
+  // First segment is the base name (e.g. "Main", "Turbo", "Night")
+  const base = parts[0];
+  // Look for a "#G" segment anywhere (e.g. "2G", "3G")
+  const gameCountPart = parts.find((p) => /^\d+G$/i.test(p));
+  if (gameCountPart) {
+    const count = parseInt(gameCountPart, 10);
+    return `${base} (${count} game${count === 1 ? '' : 's'})`;
   }
-  return folder;
+  return base;
 };
 
 const isDateBeforeToday = (dateStr: string): boolean => {
