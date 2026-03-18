@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { BarChart2, ChevronLeft, ChevronRight, List, LogOut, Cpu, Lock, Zap, GitCompare, Newspaper } from 'lucide-react';
+import { BarChart2, ChevronLeft, ChevronRight, List, LogOut, Lock, Zap, GitCompare } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import { useUser, ClerkProvider, useAuth as useClerkAuth } from "@clerk/clerk-react"; 
 import { AppState, ViewState, ContestInput, ContestDerived, Entitlement, GameInfo } from './types';
@@ -19,7 +19,6 @@ import { LineupDrawer } from './components/LineupDrawer';
 import DKEntryManager from './components/DKEntryManager';
 import ReportView from './components/ReportView';
 import { CompareView } from './components/CompareView';
-import SlateNewsView from './components/SlateNewsView';
 
 // Simple error boundary to prevent report page from blanking the UI
 class ErrorBoundary extends React.Component<{ fallback: React.ReactNode }, { hasError: boolean }> {
@@ -632,6 +631,12 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
   }, [previewMode, clampPreviewDate]);
 
   useEffect(() => {
+    if (view === ViewState.SLATE_NEWS) {
+      setView(ViewState.RESEARCH);
+    }
+  }, [view]);
+
+  useEffect(() => {
     if (!loading) {
       setLoadingProgress(0);
       return;
@@ -882,8 +887,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
           <div className="h-12 sm:h-16 flex items-center justify-between gap-2 sm:gap-4">
             <div className="flex items-center gap-2 sm:gap-4">
               <div className="flex items-center gap-2 cursor-pointer p-2 rounded-sm" onClick={() => setView(ViewState.RESEARCH)}>
-                <div className="bg-drafting-orange p-1 sm:p-1.5 rounded-sm"><Cpu className="w-4 h-4 sm:w-5 sm:h-5 text-white" /></div>
-                <h1 className="font-black text-lg sm:text-xl tracking-tighter leading-none italic uppercase text-ink">SLATE<span className="text-drafting-orange">SIM</span></h1>
+                <img src="/slatesim-logo.svg" alt="Slate Sim" className="h-8 sm:h-10 w-auto object-contain" />
               </div>
               {/* Date controls — desktop only */}
               <div className="hidden sm:flex items-center gap-2">
@@ -1082,9 +1086,6 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
             slateDate={state.slate.date}
           />
         )}
-        {!previewMode && view === ViewState.SLATE_NEWS && (
-          <SlateNewsView slateDate={state.slate.date} />
-        )}
         {!previewMode && view === ViewState.REPORT && (
           <ErrorBoundary fallback={<div className="p-4 text-ink">Report unavailable: component error.</div>}>
             <ReportView players={state.slate.players || []} games={state.slate.games || []} slateDate={state.slate.date} />
@@ -1104,7 +1105,6 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
             {selectedDate === getLocalDateStr(new Date()) && (
               <NavItem label="Entries" icon={List} targetView={ViewState.ENTRY_MANAGER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
             )}
-            <NavItem label="News" icon={Newspaper} targetView={ViewState.SLATE_NEWS} setView={setView} view={view} hasEntitlement={hasEntitlement} />
             <NavItem label="Report" icon={BarChart2} targetView={ViewState.REPORT} setView={setView} view={view} hasEntitlement={hasEntitlement} />
           </div>
         </nav>

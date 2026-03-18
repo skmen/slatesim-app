@@ -65,8 +65,7 @@ export const SplashLogin: React.FC = () => {
       <header className="fixed top-0 left-0 right-0 z-50 bg-vellum/80 backdrop-blur-md border-b border-ink/10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="bg-accent p-1.5 rounded-lg"><Cpu className="w-5 h-5 text-black" /></div>
-            <h1 className="font-black text-xl tracking-tighter leading-none italic uppercase">SLATE<span className="text-accent"> SIM</span></h1>
+            <img src="/slatesim-logo.svg" alt="Slate Sim" className="h-9 sm:h-10 w-auto object-contain" />
           </div>
           <div className="flex items-center gap-2">
             <a
