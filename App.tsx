@@ -184,24 +184,75 @@ const getGamePairKey = (game: GameInfo): string => {
   return [teamA, teamB].sort((a, b) => a.localeCompare(b)).join('_vs_');
 };
 
-const resolveSlateGames = (providedGames: GameInfo[], players: any[], teams: any[]): GameInfo[] => {
+const parseExpectedGameCount = (slateFolder?: string | null): number | null => {
+  const text = String(slateFolder || '');
+  const match = text.match(/(\d+)G/i);
+  if (!match) return null;
+  const count = Number(match[1]);
+  return Number.isFinite(count) && count > 0 ? count : null;
+};
+
+const pickGamesByPlayerTeamWeight = (games: GameInfo[], players: any[], targetCount: number): GameInfo[] => {
+  if (targetCount <= 0 || games.length <= targetCount) return games;
+
+  const teamWeights = new Map<string, number>();
+  players.forEach((player) => {
+    const rawTeam = (player as any)?.team ?? (player as any)?.teamId;
+    const team = normalizeTeamKey(rawTeam);
+    if (!team) return;
+    teamWeights.set(team, (teamWeights.get(team) || 0) + 1);
+  });
+
+  const ranked = games
+    .map((game) => {
+      const teamA = normalizeTeamKey(game?.teamA?.teamId ?? game?.teamA?.abbreviation);
+      const teamB = normalizeTeamKey(game?.teamB?.teamId ?? game?.teamB?.abbreviation);
+      const weight = (teamWeights.get(teamA) || 0) + (teamWeights.get(teamB) || 0);
+      return { game, weight, overUnder: Number(game?.overUnder) || 0 };
+    })
+    .sort((a, b) => {
+      if (b.weight !== a.weight) return b.weight - a.weight;
+      return b.overUnder - a.overUnder;
+    });
+
+  const selected = ranked.slice(0, targetCount).map((entry) => entry.game);
+  if (selected.length < targetCount) return games;
+  return selected;
+};
+
+const resolveSlateGames = (providedGames: GameInfo[], players: any[], teams: any[], slateFolder?: string | null): GameInfo[] => {
   const fallbackGames = deriveGamesFromPlayers(players, teams || []);
-  if (providedGames.length === 0) return fallbackGames;
-  if (fallbackGames.length === 0) return providedGames;
+  const expectedCount = parseExpectedGameCount(slateFolder);
+
+  if (providedGames.length === 0) {
+    if (!expectedCount) return fallbackGames;
+    return pickGamesByPlayerTeamWeight(fallbackGames, players, expectedCount);
+  }
+  if (fallbackGames.length === 0) {
+    if (!expectedCount) return providedGames;
+    return pickGamesByPlayerTeamWeight(providedGames, players, expectedCount);
+  }
 
   const allowedKeys = new Set(
     fallbackGames
       .map(getGamePairKey)
       .filter(Boolean)
   );
-  if (allowedKeys.size === 0) return providedGames;
+  if (allowedKeys.size === 0) {
+    if (!expectedCount) return providedGames;
+    return pickGamesByPlayerTeamWeight(providedGames, players, expectedCount);
+  }
 
   const scopedGames = providedGames.filter((game) => allowedKeys.has(getGamePairKey(game)));
+  let resolved = providedGames;
   if (scopedGames.length === 0) {
-    return providedGames.length === fallbackGames.length ? providedGames : fallbackGames;
+    resolved = providedGames.length === fallbackGames.length ? providedGames : fallbackGames;
+  } else if (scopedGames.length < providedGames.length) {
+    resolved = scopedGames;
   }
-  if (scopedGames.length < providedGames.length) return scopedGames;
-  return providedGames;
+
+  if (!expectedCount) return resolved;
+  return pickGamesByPlayerTeamWeight(resolved, players, expectedCount);
 };
 
 const extractRecords = (payload: any): any[] => {
@@ -659,7 +710,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
         loadResult.data.history?.stats
       );
       
-      const games = resolveSlateGames(refData.games || [], refPlayers, refData.teams || []);
+      const games = resolveSlateGames(refData.games || [], refPlayers, refData.teams || [], selectedSlate);
 
       // Hydrate opponent data
       const gameMap = new Map<string, GameInfo>();
@@ -741,7 +792,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
         const refData = parsePipelineJson(content);
         let refPlayers = refData.referencePlayers || [];
         
-        const games = resolveSlateGames(refData.games || [], refPlayers, refData.teams || []);
+        const games = resolveSlateGames(refData.games || [], refPlayers, refData.teams || [], selectedSlate);
 
         const gameMap = new Map<string, GameInfo>();
         games.forEach(g => {
@@ -778,7 +829,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
       setLoading(false);
     };
     reader.readAsText(file);
-  }, [hasEntitlement]);
+  }, [hasEntitlement, selectedSlate]);
 
   const onBeliefUpload = useCallback(async (acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
