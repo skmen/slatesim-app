@@ -44,6 +44,7 @@ export interface SlateEcosystemResult {
 
 interface LoadSlateEcosystemOptions {
   targetDate: string;
+  slateFolder?: string;
   includeHistory?: boolean;
 }
 
@@ -152,9 +153,12 @@ export const loadSlateEcosystem = async (
   options: LoadSlateEcosystemOptions
 ): Promise<SlateEcosystemResult> => {
   const targetDate = options.targetDate;
+  const slateFolder = options.slateFolder;
   const includeHistory = options.includeHistory !== false;
 
-  const slateUrl = `${INTERNAL_PROJECTIONS_URL}?date=${targetDate}`;
+  const slateUrl = slateFolder
+    ? `${INTERNAL_PROJECTIONS_URL}?date=${targetDate}&slate=${encodeURIComponent(slateFolder)}`
+    : `${INTERNAL_PROJECTIONS_URL}?date=${targetDate}`;
   const defaultInjuriesUrl = `${INTERNAL_DECRYPT_URL}?file=injuries&date=${targetDate}`;
   const defaultDepthChartsUrl = `${INTERNAL_DECRYPT_URL}?file=nba_depth_charts&date=${targetDate}`;
   const defaultStartingLineupsUrl = `${INTERNAL_DECRYPT_URL}?file=nba_starting_lineups&date=${targetDate}`;

@@ -124,6 +124,26 @@ const parseLocalDate = (dateStr: string): Date | null => {
   return parsed;
 };
 
+const fetchAvailableSlates = async (date: string): Promise<string[]> => {
+  try {
+    const resp = await fetch(`/api/slates?date=${date}`, { cache: 'no-cache' });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return Array.isArray(data.slates) ? data.slates : [];
+  } catch {
+    return [];
+  }
+};
+
+const formatSlateLabel = (folder: string): string => {
+  const match = folder.match(/^(.+?)_(\d+)G$/i);
+  if (match) {
+    const count = Number(match[2]);
+    return `${match[1]} (${count} game${count === 1 ? '' : 's'})`;
+  }
+  return folder;
+};
+
 const isDateBeforeToday = (dateStr: string): boolean => {
   const input = parseLocalDate(dateStr);
   if (!input) return false;
@@ -464,6 +484,9 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
   const [dataLastModified, setDataLastModified] = useState<string | null>(null);
   const [depthCharts, setDepthCharts] = useState<any | null>(null);
   const [startingLineupLookup, setStartingLineupLookup] = useState<StartingLineupLookup>(new Map());
+  const [availableSlates, setAvailableSlates] = useState<string[]>([]);
+  const [selectedSlate, setSelectedSlate] = useState<string | null>(null);
+  const slateDateRef = useRef<string | null>(null);
   const todayStr = useMemo(() => getLocalDateStr(new Date()), []);
   const previewMaxDate = useMemo(() => getPreviewMaxDateStr(), []);
   const previewMinDate = useMemo(() => getPreviewMinDateStr(), []);
@@ -545,10 +568,30 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
     const initApp = async () => {
       const requestId = ++latestInitRequestRef.current;
       setLoading(true);
+
+      // When the date changes, re-discover available slates and reset selection
+      let slateToUse = selectedSlate;
+      if (slateDateRef.current !== selectedDate) {
+        const slates = await fetchAvailableSlates(selectedDate);
+        if (requestId !== latestInitRequestRef.current) return;
+        slateDateRef.current = selectedDate;
+        setAvailableSlates(slates);
+        const defaultSlate = slates.find((s) => /^main/i.test(s)) ?? slates[0] ?? null;
+        slateToUse = defaultSlate;
+        if (defaultSlate !== selectedSlate) {
+          setSelectedSlate(defaultSlate);
+          // The state update will re-trigger this effect with the correct slate;
+          // bail out of this run to avoid a double-load.
+          setLoading(false);
+          return;
+        }
+      }
+
       const savedContest = loadContestInput();
-      
+
       const loadResult = await loadSlateEcosystem({
         targetDate: selectedDate,
+        slateFolder: slateToUse ?? undefined,
         includeHistory: true,
       });
       if (requestId !== latestInitRequestRef.current) return;
@@ -644,7 +687,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
     };
 
     initApp();
-  }, [selectedDate]);
+  }, [selectedDate, selectedSlate]);
 
   useEffect(() => {
     setIsHistorical(isDateBeforeToday(state.slate.date));
@@ -798,6 +841,20 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                 >
                   <ChevronRight className="w-4 h-4" />
                 </button>
+                {availableSlates.length > 1 && (
+                  <>
+                    <span className="text-[10px] font-black text-ink/60 uppercase tracking-widest">Slate</span>
+                    <select
+                      value={selectedSlate ?? ''}
+                      onChange={(e) => setSelectedSlate(e.target.value || null)}
+                      className="bg-vellum border border-ink/20 rounded-sm px-2 py-1 text-xs font-bold text-ink outline-none focus:border-drafting-orange cursor-pointer"
+                    >
+                      {availableSlates.map((s) => (
+                        <option key={s} value={s}>{formatSlateLabel(s)}</option>
+                      ))}
+                    </select>
+                  </>
+                )}
                 <button
                   onClick={() => setShowActuals((prev) => !prev)}
                   disabled={!allowHistoricalActuals}
@@ -868,6 +925,17 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
               </button>
             </div>
             <div className="flex items-center gap-2">
+              {availableSlates.length > 1 && (
+                <select
+                  value={selectedSlate ?? ''}
+                  onChange={(e) => setSelectedSlate(e.target.value || null)}
+                  className="bg-vellum border border-ink/20 rounded-sm px-2 py-1 text-xs font-bold text-ink outline-none focus:border-drafting-orange cursor-pointer"
+                >
+                  {availableSlates.map((s) => (
+                    <option key={s} value={s}>{formatSlateLabel(s)}</option>
+                  ))}
+                </select>
+              )}
               {allowHistoricalActuals && (
                 <button
                   onClick={() => setShowActuals((prev) => !prev)}

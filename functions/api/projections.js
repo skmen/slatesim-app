@@ -30,11 +30,12 @@ const base64ToUint8 = (b64) => {
 
 const DEFAULT_DATA_BASE_URL = 'https://pub-513149f63c494eefba758cd3927e2285.r2.dev';
 
-const buildUrl = (template, date) => {
+const buildUrl = (template, date, slate) => {
   if (!template) throw new Error('Missing PROJECTIONS_URL');
-  if (template.includes('{date}')) return template.replace('{date}', date);
+  const folder = slate ? `${date}/${slate}` : date;
+  if (template.includes('{date}')) return template.replace('{date}', folder);
   const normalized = template.endsWith('/') ? template.slice(0, -1) : template;
-  return `${normalized}/${date}/slate.enc.json`;
+  return `${normalized}/${folder}/slate.json`;
 };
 
 const importAesKey = async (keyStr) => {
@@ -60,8 +61,9 @@ export const onRequest = async ({ request, env }) => {
   try {
     const url = new URL(request.url);
     const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
+    const slate = (url.searchParams.get('slate') || '').replace(/[^a-zA-Z0-9_-]/g, '') || null;
 
-    const targetUrl = buildUrl(env.PROJECTIONS_URL || `${DEFAULT_DATA_BASE_URL}/{date}/slate.json`, date);
+    const targetUrl = buildUrl(env.PROJECTIONS_URL || `${DEFAULT_DATA_BASE_URL}/{date}/slate.json`, date, slate);
     let key = null;
     try {
       key = await importAesKey(env.ENCRYPTION_KEY || '');
