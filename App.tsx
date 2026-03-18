@@ -174,6 +174,36 @@ const toNum = (v: any, fallback = 0): number => {
   return Number.isFinite(n) ? n : fallback;
 };
 
+const normalizeTeamKey = (value: any): string =>
+  String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+const getGamePairKey = (game: GameInfo): string => {
+  const teamA = normalizeTeamKey(game?.teamA?.teamId ?? game?.teamA?.abbreviation);
+  const teamB = normalizeTeamKey(game?.teamB?.teamId ?? game?.teamB?.abbreviation);
+  if (!teamA || !teamB) return '';
+  return [teamA, teamB].sort((a, b) => a.localeCompare(b)).join('_vs_');
+};
+
+const resolveSlateGames = (providedGames: GameInfo[], players: any[], teams: any[]): GameInfo[] => {
+  const fallbackGames = deriveGamesFromPlayers(players, teams || []);
+  if (providedGames.length === 0) return fallbackGames;
+  if (fallbackGames.length === 0) return providedGames;
+
+  const allowedKeys = new Set(
+    fallbackGames
+      .map(getGamePairKey)
+      .filter(Boolean)
+  );
+  if (allowedKeys.size === 0) return providedGames;
+
+  const scopedGames = providedGames.filter((game) => allowedKeys.has(getGamePairKey(game)));
+  if (scopedGames.length === 0) {
+    return providedGames.length === fallbackGames.length ? providedGames : fallbackGames;
+  }
+  if (scopedGames.length < providedGames.length) return scopedGames;
+  return providedGames;
+};
+
 const extractRecords = (payload: any): any[] => {
   if (!payload) return [];
   if (Array.isArray(payload)) return payload;
@@ -629,12 +659,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
         loadResult.data.history?.stats
       );
       
-      let games: GameInfo[] = [];
-      if (refData.games && refData.games.length > 0) {
-        games = refData.games;
-      } else {
-        games = deriveGamesFromPlayers(refPlayers, refData.teams || []);
-      }
+      const games = resolveSlateGames(refData.games || [], refPlayers, refData.teams || []);
 
       // Hydrate opponent data
       const gameMap = new Map<string, GameInfo>();
@@ -716,12 +741,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
         const refData = parsePipelineJson(content);
         let refPlayers = refData.referencePlayers || [];
         
-        let games: GameInfo[] = [];
-        if (refData.games && refData.games.length > 0) {
-          games = refData.games;
-        } else {
-          games = deriveGamesFromPlayers(refPlayers, refData.teams || []);
-        }
+        const games = resolveSlateGames(refData.games || [], refPlayers, refData.teams || []);
 
         const gameMap = new Map<string, GameInfo>();
         games.forEach(g => {

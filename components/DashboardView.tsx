@@ -568,8 +568,12 @@ export const DashboardView: React.FC<Props> = ({
   };
 
   const effectiveGames = useMemo<GameInfo[]>(() => {
-    if (games.length > 0) return games;
-
+    const matchupKeyFromTeams = (teamA: string, teamB: string) => {
+      const a = String(teamA || '').toUpperCase();
+      const b = String(teamB || '').toUpperCase();
+      if (!a || !b) return '';
+      return [a, b].sort((x, y) => x.localeCompare(y)).join('_vs_');
+    };
     const inferred = new Map<string, GameInfo>();
     const toTeam = (teamId: string) => ({
       teamId,
@@ -606,7 +610,26 @@ export const DashboardView: React.FC<Props> = ({
       }
     });
 
-    return Array.from(inferred.values());
+    const inferredGames = Array.from(inferred.values());
+    if (games.length === 0) return inferredGames;
+    if (inferredGames.length === 0) return games;
+
+    const inferredKeys = new Set(
+      inferredGames
+        .map((game) => matchupKeyFromTeams(game.teamA?.teamId, game.teamB?.teamId))
+        .filter(Boolean)
+    );
+    if (inferredKeys.size === 0) return games;
+
+    const scopedGames = games.filter((game) => {
+      const key = matchupKeyFromTeams(game.teamA?.teamId, game.teamB?.teamId);
+      return inferredKeys.has(key);
+    });
+    if (scopedGames.length === 0) {
+      return games.length === inferredGames.length ? games : inferredGames;
+    }
+    if (scopedGames.length < games.length) return scopedGames;
+    return games;
   }, [games, players]);
 
   const matchupMap = useMemo(
