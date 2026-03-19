@@ -49,6 +49,7 @@ export const onRequest = async ({ request, env }) => {
     const url = new URL(request.url);
     const file = (url.searchParams.get('file') || '').replace(/[^a-zA-Z0-9_-]/g, '');
     const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
+    const slate = (url.searchParams.get('slate') || '').replace(/[^a-zA-Z0-9_-]/g, '');
     if (!file) {
       return new Response(JSON.stringify({ error: 'file required' }), { status: 400, headers });
     }
@@ -58,8 +59,9 @@ export const onRequest = async ({ request, env }) => {
       env.PROJECTIONS_URL?.replace(/\/\{date\}.+$/, '') ||
       DEFAULT_DATA_BASE_URL;
     const normalizedBase = base.replace(/\/$/, '');
-    const targetJson = `${normalizedBase}/${date}/${file}.json`;
-    const targetEnc = `${normalizedBase}/${date}/${file}.enc.json`;
+    const datedPath = slate ? `${date}/${slate}` : date;
+    const targetJson = `${normalizedBase}/${datedPath}/${file}.json`;
+    const targetEnc = `${normalizedBase}/${datedPath}/${file}.enc.json`;
 
     let resp = await fetch(targetJson, { cache: 'no-cache' });
     let target = targetJson;

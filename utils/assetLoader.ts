@@ -100,38 +100,51 @@ const fetchRequiredJson = async (url: string): Promise<{ ok: boolean; data: any 
 const fetchOptionalWithFallback = async (
   targetDate: string,
   filename: string,
-  maxLookbackDays = 30
+  maxLookbackDays = 30,
+  options?: { slateFolder?: string }
 ): Promise<OptionalFallbackResult> => {
   // Strip any .json suffix; decrypt endpoint appends internally
   const fileBase = filename.replace(/\.json$/i, '');
+  const slateFolder = String(options?.slateFolder || '').trim();
   const firstCheckDate = targetDate;
   let currentDate = firstCheckDate;
   let lastError: string | undefined;
 
   for (let dayOffset = 0; dayOffset < maxLookbackDays; dayOffset += 1) {
-    const url = `${INTERNAL_DECRYPT_URL}?file=${fileBase}&date=${currentDate}`;
-    const result = await fetchOptionalJson(url);
+    const candidateUrls = slateFolder
+      ? [
+          `${INTERNAL_DECRYPT_URL}?file=${fileBase}&date=${currentDate}&slate=${encodeURIComponent(slateFolder)}`,
+          `${INTERNAL_DECRYPT_URL}?file=${fileBase}&date=${currentDate}`,
+        ]
+      : [`${INTERNAL_DECRYPT_URL}?file=${fileBase}&date=${currentDate}`];
 
-    if (result.data) {
-      return {
-        data: result.data,
-        asOf: currentDate,
-        url,
-        lastModified: result.lastModified,
-      };
-    }
+    for (const url of candidateUrls) {
+      const result = await fetchOptionalJson(url);
 
-    if (result.error) {
-      lastError = result.error;
+      if (result.data) {
+        return {
+          data: result.data,
+          asOf: currentDate,
+          url,
+          lastModified: result.lastModified,
+        };
+      }
+
+      if (result.error) {
+        lastError = result.error;
+      }
     }
 
     currentDate = getPreviousDateStr(currentDate, 1);
   }
 
+  const defaultUrl = slateFolder
+    ? `${INTERNAL_DECRYPT_URL}?file=${fileBase}&date=${firstCheckDate}&slate=${encodeURIComponent(slateFolder)}`
+    : `${INTERNAL_DECRYPT_URL}?file=${fileBase}&date=${firstCheckDate}`;
   return {
     data: null,
     asOf: firstCheckDate,
-    url: `${INTERNAL_DECRYPT_URL}?file=${fileBase}&date=${firstCheckDate}`,
+    url: defaultUrl,
     error: lastError || `No ${filename} found in last ${maxLookbackDays} days`,
   };
 };
@@ -171,9 +184,9 @@ export const loadSlateEcosystem = async (
     fetchOptionalWithFallback(targetDate, 'injuries.json'),
     fetchOptionalWithFallback(targetDate, 'nba_depth_charts.json'),
     fetchOptionalWithFallback(targetDate, 'nba_starting_lineups.json'),
-    includeHistory ? fetchOptionalWithFallback(targetDate, 'rotations.json') : Promise.resolve({ data: null, asOf: targetDate, url: defaultRotationsUrl }),
-    includeHistory ? fetchOptionalWithFallback(targetDate, 'boxscores.json') : Promise.resolve({ data: null, asOf: targetDate, url: defaultBoxscoresUrl }),
-    fetchOptionalWithFallback(targetDate, 'stats.json'),
+    includeHistory ? fetchOptionalWithFallback(targetDate, 'rotations.json', 30, { slateFolder }) : Promise.resolve({ data: null, asOf: targetDate, url: defaultRotationsUrl }),
+    includeHistory ? fetchOptionalWithFallback(targetDate, 'boxscores.json', 30, { slateFolder }) : Promise.resolve({ data: null, asOf: targetDate, url: defaultBoxscoresUrl }),
+    fetchOptionalWithFallback(targetDate, 'stats.json', 30, { slateFolder }),
   ]);
   const [slateResult, injuriesResult, depthChartsResult, startingLineupsResult, rotationsResult, boxscoresResult, statsResult] = settled;
 
