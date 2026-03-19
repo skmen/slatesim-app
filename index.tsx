@@ -49,11 +49,15 @@ const ENV_KEY =
   (globalThis as any)?.VITE_CLERK_PUBLISHABLE_KEY ||
   "";
 
-const PUBLISHABLE_KEY = ENV_KEY || "pk_test_bG92ZWQtY291Z2FyLTYuY2xlcmsuYWNjb3VudHMuZGV2JA";
-
-if (!PUBLISHABLE_KEY || PUBLISHABLE_KEY.includes('REPLACE_ME')) {
-  throw new Error("Missing Clerk Publishable Key. Set VITE_CLERK_PUBLISHABLE_KEY in your environment or provide a valid fallback.");
-}
+const IS_PROD = Boolean((import.meta as any)?.env?.PROD);
+const DEV_FALLBACK_KEY = "pk_test_bG92ZWQtY291Z2FyLTYuY2xlcmsuYWNjb3VudHMuZGV2JA";
+const PUBLISHABLE_KEY = ENV_KEY || (!IS_PROD ? DEV_FALLBACK_KEY : "");
+const CONFIG_ERROR =
+  !PUBLISHABLE_KEY || PUBLISHABLE_KEY.includes('REPLACE_ME')
+    ? "Missing Clerk key. Set VITE_CLERK_PUBLISHABLE_KEY."
+    : (IS_PROD && PUBLISHABLE_KEY.startsWith('pk_test_')
+      ? "Production auth requires a Clerk live key (pk_live_...)."
+      : "");
 
 /**
  * 2. REDIRECT & NAVIGATION HELPERS
@@ -177,20 +181,54 @@ if (!rootElement) {
 }
 
 const root = ReactDOM.createRoot(rootElement);
-root.render(
-  <React.StrictMode>
-    <ClerkProvider 
-      publishableKey={PUBLISHABLE_KEY}
-      // Use breakout handler for all Clerk navigations
-      routerPush={(to) => handleNavigation(to)}
-      routerReplace={(to) => handleNavigation(to)}
-      // CRITICAL: Point redirects to the full app URL including the pathname
-      afterSignInUrl={SAFE_DEFAULT_URL}
-      afterSignUpUrl={SAFE_DEFAULT_URL}
-      signInFallbackRedirectUrl={SAFE_DEFAULT_URL}
-      signUpFallbackRedirectUrl={SAFE_DEFAULT_URL}
-    >
-      <App />
-    </ClerkProvider>
-  </React.StrictMode>
-);
+
+if (CONFIG_ERROR) {
+  root.render(
+    <React.StrictMode>
+      <div style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "#f4f1ea",
+        color: "#1a1c1e",
+        fontFamily: "Inter, sans-serif",
+        padding: "24px",
+      }}>
+        <div style={{
+          maxWidth: "680px",
+          width: "100%",
+          background: "white",
+          border: "1px solid rgba(26,28,30,0.15)",
+          borderRadius: "6px",
+          padding: "20px",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.08)",
+        }}>
+          <h1 style={{ margin: "0 0 10px", fontSize: "18px", fontWeight: 800 }}>Authentication Configuration Required</h1>
+          <p style={{ margin: "0 0 10px", fontSize: "14px", lineHeight: 1.5 }}>{CONFIG_ERROR}</p>
+          <p style={{ margin: 0, fontSize: "13px", lineHeight: 1.5 }}>
+            For production deploys, set <code>VITE_CLERK_PUBLISHABLE_KEY</code> to your <code>pk_live_...</code> key in your environment variables.
+          </p>
+        </div>
+      </div>
+    </React.StrictMode>
+  );
+} else {
+  root.render(
+    <React.StrictMode>
+      <ClerkProvider
+        publishableKey={PUBLISHABLE_KEY}
+        // Use breakout handler for all Clerk navigations
+        routerPush={(to) => handleNavigation(to)}
+        routerReplace={(to) => handleNavigation(to)}
+        // CRITICAL: Point redirects to the full app URL including the pathname
+        afterSignInUrl={SAFE_DEFAULT_URL}
+        afterSignUpUrl={SAFE_DEFAULT_URL}
+        signInFallbackRedirectUrl={SAFE_DEFAULT_URL}
+        signUpFallbackRedirectUrl={SAFE_DEFAULT_URL}
+      >
+        <App />
+      </ClerkProvider>
+    </React.StrictMode>
+  );
+}

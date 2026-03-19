@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { BarChart2, ChevronLeft, ChevronRight, List, LogOut, Lock, Zap, GitCompare } from 'lucide-react';
+import { BarChart2, ChevronLeft, ChevronRight, Database, List, LogOut, Lock, Zap, GitCompare } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
-import { useUser, ClerkProvider, useAuth as useClerkAuth } from "@clerk/clerk-react"; 
+import { useUser } from "@clerk/clerk-react"; 
 import { AppState, ViewState, ContestInput, ContestDerived, Entitlement, GameInfo } from './types';
 import { parseProjections, parsePipelineJson, parseOptimizerLineups, parseUserLineupsRows, canonicalizeId, normalizeName } from './utils/csvParser';
 import { buildInjuryLookup, getPlayerInjuryInfo, InjuryLookup, shouldExcludePlayerForInjury } from './utils/injuries';
@@ -539,6 +539,22 @@ const NavItem = ({ label, icon: Icon, targetView, entitlement, setView, view, ha
   );
 };
 
+const MembershipGateCard: React.FC<{ title: string; body: string }> = ({ title, body }) => (
+  <div className="max-w-2xl mx-auto mt-12 rounded-sm border border-ink/10 bg-white/55 p-6 shadow-sm">
+    <div className="inline-flex items-center gap-2 rounded-sm border border-drafting-orange/30 bg-drafting-orange/10 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-drafting-orange">
+      Soft Launch
+    </div>
+    <h3 className="mt-3 text-lg font-black uppercase tracking-tight text-ink">{title}</h3>
+    <p className="mt-2 text-sm text-ink/70">{body}</p>
+    <a
+      href="/pricing"
+      className="mt-4 inline-flex rounded-sm border border-drafting-orange bg-drafting-orange px-4 py-2 text-xs font-black uppercase tracking-widest text-white hover:brightness-110 transition-all"
+    >
+      Upgrade to Soft Launch - $10/week
+    </a>
+  </div>
+);
+
 const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }) => {
   const { user, logout, hasEntitlement } = useAuth();
   const [state, setState] = useState<AppState>(INITIAL_STATE);
@@ -604,6 +620,11 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
     if (formattedLastModified) return formattedLastModified;
     return '—';
   }, [formattedLastModified]);
+  const canUseResearchTools = hasEntitlement('full_research_tools');
+  const canAccessCompare = hasEntitlement('access_compare');
+  const canAccessOptimizer = hasEntitlement('access_optimizer');
+  const canAccessEntries = hasEntitlement('access_entries');
+  const canAccessReport = hasEntitlement('access_report');
 
   useEffect(() => {
     const previousDate = previousSelectedDateRef.current;
@@ -1086,38 +1107,73 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
             selectedSlate={selectedSlate}
             slateGameCounts={slateGameCounts}
             onSelectSlate={setSelectedSlate}
+            canUseResearchTools={canUseResearchTools}
           />
         )}
         {!previewMode && view === ViewState.COMPARE && (
-          <CompareView
-            players={state.slate.players}
-            games={state.slate.games}
-            showActuals={effectiveShowActuals}
-          />
+          canAccessCompare ? (
+            <CompareView
+              players={state.slate.players}
+              games={state.slate.games}
+              showActuals={effectiveShowActuals}
+            />
+          ) : (
+            <MembershipGateCard
+              title="Compare Page Is In Soft Launch"
+              body="Upgrade to Soft Launch to unlock cross-player and matchup comparison workflows."
+            />
+          )
         )}
         {!previewMode && view === ViewState.OPTIMIZER && (
-          <OptimizerView
-            players={state.slate.players}
-            games={state.slate.games}
-            slateDate={state.slate.date}
-            showActuals={effectiveShowActuals}
-            injuryLookup={injuryLookup}
-            depthCharts={depthCharts}
-            startingLineupLookup={startingLineupLookup}
-          />
+          canAccessOptimizer ? (
+            <OptimizerView
+              players={state.slate.players}
+              games={state.slate.games}
+              slateDate={state.slate.date}
+              showActuals={effectiveShowActuals}
+              injuryLookup={injuryLookup}
+              depthCharts={depthCharts}
+              startingLineupLookup={startingLineupLookup}
+            />
+          ) : (
+            <MembershipGateCard
+              title="Optimizer Is In Soft Launch"
+              body="Upgrade to Soft Launch to run optimizer builds and advanced lineup generation."
+            />
+          )
         )}
-        {!previewMode && view === ViewState.ENTRY_MANAGER && selectedDate === getLocalDateStr(new Date()) && (
-          <DKEntryManager
-            players={state.slate.players}
-            games={state.slate.games}
-            showActuals={effectiveShowActuals}
-            slateDate={state.slate.date}
-          />
+        {!previewMode && view === ViewState.ENTRY_MANAGER && (
+          canAccessEntries ? (
+            selectedDate === getLocalDateStr(new Date()) ? (
+              <DKEntryManager
+                players={state.slate.players}
+                games={state.slate.games}
+                showActuals={effectiveShowActuals}
+                slateDate={state.slate.date}
+              />
+            ) : (
+              <div className="max-w-2xl mx-auto mt-12 rounded-sm border border-ink/10 bg-white/55 p-6 text-sm text-ink/70">
+                Entries are available only for today&apos;s slate.
+              </div>
+            )
+          ) : (
+            <MembershipGateCard
+              title="Entries Is In Soft Launch"
+              body="Upgrade to Soft Launch to use DK entry management and import/export workflows."
+            />
+          )
         )}
         {!previewMode && view === ViewState.REPORT && (
-          <ErrorBoundary fallback={<div className="p-4 text-ink">Report unavailable: component error.</div>}>
-            <ReportView players={state.slate.players || []} games={state.slate.games || []} slateDate={state.slate.date} />
-          </ErrorBoundary>
+          canAccessReport ? (
+            <ErrorBoundary fallback={<div className="p-4 text-ink">Report unavailable: component error.</div>}>
+              <ReportView players={state.slate.players || []} games={state.slate.games || []} slateDate={state.slate.date} />
+            </ErrorBoundary>
+          ) : (
+            <MembershipGateCard
+              title="Report Page Is In Soft Launch"
+              body="Upgrade to Soft Launch to unlock post-slate reporting and accuracy breakdowns."
+            />
+          )
         )}
       </main>
 
@@ -1128,12 +1184,12 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
         <nav className="fixed bottom-0 left-0 right-0 bg-white/80 border-t border-ink/10 px-2 sm:px-6 py-2 pb-safe z-40 shadow-2xl backdrop-blur-md">
           <div className="flex justify-around items-center max-w-2xl mx-auto">
             <NavItem label="Research" icon={BarChart2} targetView={ViewState.RESEARCH} setView={setView} view={view} hasEntitlement={hasEntitlement} />
-            <NavItem label="Compare" icon={GitCompare} targetView={ViewState.COMPARE} setView={setView} view={view} hasEntitlement={hasEntitlement} />
-            <NavItem label="Optimizer" icon={Zap} targetView={ViewState.OPTIMIZER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
+            <NavItem label="Compare" icon={GitCompare} targetView={ViewState.COMPARE} entitlement="access_compare" setView={setView} view={view} hasEntitlement={hasEntitlement} />
+            <NavItem label="Optimizer" icon={Zap} targetView={ViewState.OPTIMIZER} entitlement="access_optimizer" setView={setView} view={view} hasEntitlement={hasEntitlement} />
             {selectedDate === getLocalDateStr(new Date()) && (
-              <NavItem label="Entries" icon={List} targetView={ViewState.ENTRY_MANAGER} setView={setView} view={view} hasEntitlement={hasEntitlement} />
+              <NavItem label="Entries" icon={List} targetView={ViewState.ENTRY_MANAGER} entitlement="access_entries" setView={setView} view={view} hasEntitlement={hasEntitlement} />
             )}
-            <NavItem label="Report" icon={BarChart2} targetView={ViewState.REPORT} setView={setView} view={view} hasEntitlement={hasEntitlement} />
+            <NavItem label="Report" icon={BarChart2} targetView={ViewState.REPORT} entitlement="access_report" setView={setView} view={view} hasEntitlement={hasEntitlement} />
           </div>
         </nav>
       )}

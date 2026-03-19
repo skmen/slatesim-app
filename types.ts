@@ -154,14 +154,19 @@ export interface ContestState {
 
 // --- AUTH & USER ---
 
-export type Role = 'admin' | 'beta-user' | 'user';
+export type Role = 'admin' | 'beta-user' | 'soft-launch' | 'user';
 
 export type Entitlement = 
   | 'run_sim'
   | 'view_diagnostics'
   | 'export_data'
   | 'admin_panel'
-  | 'view_projections';
+  | 'view_projections'
+  | 'full_research_tools'
+  | 'access_compare'
+  | 'access_optimizer'
+  | 'access_entries'
+  | 'access_report';
 
 export interface User {
   username: string;

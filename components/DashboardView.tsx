@@ -22,6 +22,8 @@ interface Props {
   selectedSlate?: string | null;
   slateGameCounts?: Record<string, number>;
   onSelectSlate?: (slate: string | null) => void;
+  canUseResearchTools?: boolean;
+  deepDiveAllowedTabs?: Array<'dfs' | 'stats' | 'matchup' | 'synergy' | 'depth'>;
 }
 
 interface FilterRule {
@@ -560,6 +562,8 @@ export const DashboardView: React.FC<Props> = ({
   selectedSlate = null,
   slateGameCounts = {},
   onSelectSlate,
+  canUseResearchTools = false,
+  deepDiveAllowedTabs,
 }) => {
   const [search, setSearch] = useState('');
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
@@ -612,6 +616,12 @@ export const DashboardView: React.FC<Props> = ({
   useEffect(() => {
     setIsSlateListOpen(false);
   }, [selectedSlate, availableSlates.length]);
+
+  useEffect(() => {
+    if (!canUseResearchTools && showFilterBuilder) {
+      setShowFilterBuilder(false);
+    }
+  }, [canUseResearchTools, showFilterBuilder]);
 
   const effectiveGames = useMemo<GameInfo[]>(() => {
     const matchupKeyFromTeams = (teamA: string, teamB: string) => {
@@ -1097,24 +1107,35 @@ export const DashboardView: React.FC<Props> = ({
               <h3 className="text-xs font-black uppercase tracking-widest text-ink/60">Player Projections</h3>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={exportToCsv}
-                className="flex items-center gap-2 px-3 py-2 rounded-sm text-[10px] font-bold uppercase transition-all border bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700"
-              >
-                <Download className="w-3.5 h-3.5" /> Export
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowFilterBuilder(true)}
-                className={`flex items-center gap-2 px-3 py-2 rounded-sm text-[10px] font-bold uppercase transition-all border ${
-                  filters.length > 0
-                    ? 'bg-drafting-orange text-white border-drafting-orange shadow-lg'
-                    : 'bg-white border-ink/20 text-ink/60 hover:bg-ink/5'
-                }`}
-              >
-                <Filter className="w-3.5 h-3.5" /> Filter {filters.length > 0 && `(${filters.length})`}
-              </button>
+              {canUseResearchTools ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={exportToCsv}
+                    className="flex items-center gap-2 px-3 py-2 rounded-sm text-[10px] font-bold uppercase transition-all border bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700"
+                  >
+                    <Download className="w-3.5 h-3.5" /> Export
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowFilterBuilder(true)}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-sm text-[10px] font-bold uppercase transition-all border ${
+                      filters.length > 0
+                        ? 'bg-drafting-orange text-white border-drafting-orange shadow-lg'
+                        : 'bg-white border-ink/20 text-ink/60 hover:bg-ink/5'
+                    }`}
+                  >
+                    <Filter className="w-3.5 h-3.5" /> Filter {filters.length > 0 && `(${filters.length})`}
+                  </button>
+                </>
+              ) : (
+                <a
+                  href="/pricing"
+                  className="px-3 py-2 rounded-sm text-[10px] font-bold uppercase transition-all border border-drafting-orange/35 text-drafting-orange hover:bg-drafting-orange/10"
+                >
+                  Unlock Export + Filters
+                </a>
+              )}
             </div>
           </div>
 
@@ -1334,6 +1355,7 @@ export const DashboardView: React.FC<Props> = ({
           startingLineupLookup={startingLineupLookup}
           previewMode={previewMode}
           optimizerSettingsKey={`optimizerAdvancedSettings:${slateDate || 'unspecified'}`}
+          allowedTabs={deepDiveAllowedTabs}
         />
       )}
     </div>

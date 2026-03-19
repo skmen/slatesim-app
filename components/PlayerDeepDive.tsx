@@ -24,6 +24,7 @@ interface Props {
   onOptimizerExposureChange?: (playerId: string, minExposure?: number, maxExposure?: number) => void;
   onOptimizerLockChange?: (playerId: string, locked: boolean) => void;
   onOptimizerExcludeChange?: (playerId: string, excluded: boolean) => void;
+  allowedTabs?: TabKey[];
 }
 
 type TabKey = 'dfs' | 'stats' | 'matchup' | 'synergy' | 'depth';
@@ -466,6 +467,7 @@ export const PlayerDeepDive: React.FC<Props> = ({
   onOptimizerExposureChange,
   onOptimizerLockChange,
   onOptimizerExcludeChange,
+  allowedTabs,
 }) => {
   const [activeTab, setActiveTab] = useState<TabKey>('dfs');
   const [traditionalHover, setTraditionalHover] = useState<{ row: number; col: number } | null>(null);
@@ -1195,19 +1197,22 @@ export const PlayerDeepDive: React.FC<Props> = ({
     return rows;
   }, [synergyRows, synergySort]);
 
-  const tabs: Array<{ key: TabKey; label: string }> = [
+  const defaultTabs: Array<{ key: TabKey; label: string }> = [
     { key: 'dfs', label: 'DFS' },
     { key: 'stats', label: 'Stats' },
     ...(!previewMode ? [{ key: 'matchup' as TabKey, label: 'Matchup' }] : []),
     ...(!previewMode ? [{ key: 'synergy' as TabKey, label: 'Synergy' }] : []),
     { key: 'depth', label: 'Depth Chart' },
   ];
+  const tabs = Array.isArray(allowedTabs) && allowedTabs.length > 0
+    ? defaultTabs.filter((tab) => allowedTabs.includes(tab.key))
+    : defaultTabs;
 
   useEffect(() => {
-    if (previewMode && (activeTab === 'matchup' || activeTab === 'synergy')) {
-      setActiveTab('dfs');
+    if (!tabs.some((tab) => tab.key === activeTab)) {
+      setActiveTab(tabs[0]?.key ?? 'dfs');
     }
-  }, [activeTab, previewMode]);
+  }, [activeTab, tabs]);
 
   useEffect(() => {
     const settings = readOptimizerAdvancedSettings(optimizerSettingsKey);

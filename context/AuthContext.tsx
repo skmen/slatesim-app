@@ -10,8 +10,40 @@ interface AuthContextType {
 }
 
 const ROLE_PERMISSIONS: Record<Role, Entitlement[]> = {
-  admin: ['run_sim', 'view_diagnostics', 'export_data', 'admin_panel', 'view_projections'],
-  'beta-user': ['run_sim', 'view_diagnostics', 'export_data', 'view_projections'],
+  admin: [
+    'run_sim',
+    'view_diagnostics',
+    'export_data',
+    'admin_panel',
+    'view_projections',
+    'full_research_tools',
+    'access_compare',
+    'access_optimizer',
+    'access_entries',
+    'access_report',
+  ],
+  'beta-user': [
+    'run_sim',
+    'view_diagnostics',
+    'export_data',
+    'view_projections',
+    'full_research_tools',
+    'access_compare',
+    'access_optimizer',
+    'access_entries',
+    'access_report',
+  ],
+  'soft-launch': [
+    'run_sim',
+    'view_diagnostics',
+    'export_data',
+    'view_projections',
+    'full_research_tools',
+    'access_compare',
+    'access_optimizer',
+    'access_entries',
+    'access_report',
+  ],
   user: ['view_projections', 'view_diagnostics']
 };
 
@@ -25,9 +57,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const internalUser = useMemo((): User | null => {
     if (!isLoaded || !isSignedIn || !clerkUser) return null;
 
-    // We assume the role is stored in Clerk's publicMetadata via the Dashboard or API
-    // Default to 'user' if no role is defined
-    const role = (clerkUser.publicMetadata.role as Role) || 'user';
+    const metadata = (clerkUser.publicMetadata || {}) as Record<string, any>;
+    const metadataRole = metadata.role as Role | undefined;
+    const subscriptionStatus = String(
+      metadata.subscriptionStatus ??
+      metadata.lemonSubscriptionStatus ??
+      metadata.billingStatus ??
+      ''
+    ).toLowerCase();
+    const softLaunchActive = Boolean(
+      metadata.softLaunchActive === true
+      || metadata.isPaidSubscriber === true
+      || ['active', 'on_trial', 'trialing', 'past_due'].includes(subscriptionStatus)
+    );
+
+    // Admin always wins. Otherwise, infer role from billing status if present.
+    let role: Role = metadataRole || 'user';
+    if (role !== 'admin') {
+      if (softLaunchActive) {
+        role = 'soft-launch';
+      } else if (role === 'soft-launch') {
+        role = 'user';
+      }
+    }
     
     return {
       username: clerkUser.username || clerkUser.primaryEmailAddress?.emailAddress || 'Sim_User',

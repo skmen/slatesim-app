@@ -1,22 +1,9 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
+import { SignInButton, useUser } from "@clerk/clerk-react";
 
-// Lightweight placeholder icons (swap with Lucide/Heroicons if desired)
 const CheckIcon = ({ className = '' }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="20 6 9 17 4 12" />
-  </svg>
-);
-
-const LockIcon = ({ className = '' }) => (
-  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-  </svg>
-);
-
-const LightningIcon = ({ className = '' }) => (
-  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
   </svg>
 );
 
@@ -27,82 +14,55 @@ const ArrowLeftIcon = ({ className = '' }) => (
   </svg>
 );
 
-type Feature = { label: string; locked?: boolean };
-
-const TierCard: React.FC<{
-  name: string;
-  price: string;
-  billingText: string;
-  description: string;
-  ctaText: string;
-  ctaVariant: 'solid' | 'outline';
-  badge?: string;
-  features: Feature[];
-  emphasized?: boolean;
-}> = ({ name, price, billingText, description, ctaText, ctaVariant, badge, features, emphasized }) => {
-  return (
-    <div
-      className={`relative flex flex-col gap-4 rounded-xl border border-ink/10 bg-white/80 p-6 shadow-sm transition duration-300 ${
-        emphasized ? 'scale-[1.01] border-drafting-orange/50 shadow-[0_10px_50px_-24px_rgba(0,0,0,0.5)] bg-white' : ''
-      }`}
-    >
-      {badge && (
-        <span className="absolute -top-3 right-4 rounded-full bg-drafting-orange px-3 py-1 text-[11px] font-black uppercase tracking-widest text-white shadow-lg">
-          {badge}
-        </span>
-      )}
-
-      <div className="flex items-center gap-2">
-        <LightningIcon className="h-5 w-5 text-drafting-orange" />
-        <p className="text-[11px] uppercase tracking-[0.22em] text-ink/60 font-black">{name}</p>
-      </div>
-
-      <div className="flex items-baseline gap-2">
-        <span className="text-4xl font-black text-ink">{price}</span>
-        <span className="text-xs uppercase tracking-widest text-ink/50">{billingText}</span>
-      </div>
-
-      <p className="text-sm text-ink/70 leading-relaxed">{description}</p>
-
-      <button
-        className={`w-full rounded-lg border px-4 py-3 text-sm font-black uppercase tracking-widest transition-all ${
-          ctaVariant === 'solid'
-            ? 'bg-drafting-orange text-white border-drafting-orange shadow-[0_6px_20px_-10px_rgba(255,95,31,0.8)] hover:brightness-110'
-            : 'border-ink/20 text-ink hover:border-drafting-orange hover:text-drafting-orange'
-        }`}
-      >
-        {ctaText}
-      </button>
-
-      <div className="space-y-2 pt-2">
-        {features.map((f) => (
-          <div
-            key={f.label}
-            className={`flex items-center gap-3 rounded-lg px-2 py-1.5 ${
-              f.locked ? 'text-ink/40' : 'text-ink'
-            }`}
-          >
-            {f.locked ? (
-              <LockIcon className="h-4 w-4 text-ink/30" />
-            ) : (
-              <CheckIcon className="h-4 w-4 text-emerald-600" />
-            )}
-            <span className="text-sm">{f.label}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
+const FEATURES = [
+  'Research Page: full projections with export and filter',
+  'Research Page: limited Player Deep Dive (DFS, STATS, DEPTH CHART)',
+  'Compare Page',
+  'Optimizer',
+  'Entries',
+  'Report Page',
+];
 
 export const PricingPage: React.FC = () => {
-  const [billing, setBilling] = useState<'monthly' | 'annual'>('monthly');
+  const { isLoaded, isSignedIn, user } = useUser();
+  const [startingCheckout, setStartingCheckout] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const toggle = () => setBilling((b) => (b === 'monthly' ? 'annual' : 'monthly'));
+  const alreadyActive = useMemo(() => {
+    const metadata = (user?.publicMetadata || {}) as Record<string, any>;
+    const role = String(metadata.role || '').toLowerCase();
+    const status = String(metadata.subscriptionStatus || '').toLowerCase();
+    return role === 'soft-launch' || metadata.softLaunchActive === true || ['active', 'on_trial', 'trialing', 'past_due'].includes(status);
+  }, [user]);
+
+  const beginCheckout = async () => {
+    if (!isSignedIn || !user) return;
+    setStartingCheckout(true);
+    setError(null);
+    try {
+      const resp = await fetch('/api/lemon-checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clerkUserId: user.id,
+          email: user.primaryEmailAddress?.emailAddress || '',
+          name: user.fullName || user.username || user.primaryEmailAddress?.emailAddress || 'SlateSim Member',
+        }),
+      });
+      const payload = await resp.json().catch(() => ({}));
+      if (!resp.ok || !payload?.url) {
+        throw new Error(payload?.error || 'Failed to start checkout.');
+      }
+      window.location.assign(payload.url);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to start checkout.');
+      setStartingCheckout(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-vellum text-ink font-sans">
-      <div className="mx-auto max-w-5xl px-4 py-16">
+      <div className="mx-auto max-w-4xl px-4 py-16">
         <div className="mb-6">
           <a
             href="/"
@@ -112,67 +72,71 @@ export const PricingPage: React.FC = () => {
             Back
           </a>
         </div>
+
         <header className="text-center space-y-4 mb-10">
           <p className="text-xs font-black uppercase tracking-[0.28em] text-drafting-orange">Pricing</p>
-          <h1 className="text-4xl md:text-5xl font-black leading-tight">Start Crushing the Field</h1>
-          <p className="text-ink/70 max-w-3xl mx-auto text-lg">
-            A basic optimizer is only as good as the numbers you feed it. Unlock 50,000 play-by-play simulations and find the ceiling outcomes linear models miss.
+          <h1 className="text-4xl md:text-5xl font-black leading-tight">Soft Launch Membership</h1>
+          <p className="text-ink/70 max-w-2xl mx-auto text-base">
+            Introductory pricing at <span className="font-black text-ink">$10/week</span>. Cancel any time.
           </p>
         </header>
 
-        <div className="flex items-center justify-center gap-3 mb-10">
-          <span className={`text-sm font-bold ${billing === 'monthly' ? 'text-ink' : 'text-ink/40'}`}>Monthly</span>
-          <button
-            onClick={toggle}
-            className="relative inline-flex h-8 w-16 items-center rounded-full bg-white border border-ink/10 shadow-inner transition-all"
-          >
-            <span
-              className={`absolute h-6 w-6 rounded-full bg-drafting-orange shadow-[0_0_12px_rgba(255,95,31,0.6)] transition-all ${
-                billing === 'annual' ? 'translate-x-8' : 'translate-x-1'
-              }`}
-            />
-          </button>
-          <span className={`text-sm font-bold ${billing === 'annual' ? 'text-ink' : 'text-ink/40'}`}>Annual</span>
-          <span className="text-[11px] uppercase tracking-widest text-emerald-600 font-black bg-emerald-500/10 border border-emerald-500/40 px-2 py-1 rounded-lg">
-            Save vs monthly
-          </span>
-        </div>
+        <div className="mx-auto max-w-xl rounded-xl border border-drafting-orange/40 bg-white p-6 shadow-lg">
+          <div className="inline-flex rounded-full bg-drafting-orange px-3 py-1 text-[11px] font-black uppercase tracking-widest text-white">
+            Introductory
+          </div>
 
-        <div className="grid gap-6 md:grid-cols-2">
-          <TierCard
-            name="Scout"
-            price="$0"
-            billingText="Free forever, account required"
-            description="Perfect for exploring the platform and checking historical data & projections."
-            ctaText="Create Free Account"
-            ctaVariant="outline"
-            features={[
-              { label: 'Game Matchup Info & Vegas Lines' },
-              { label: 'Historical Slate Data, Projections & Backtesting' },
-              { label: 'Basic Player Deep Dives' },
-              { label: "Today's Live Projections", locked: true },
-              { label: 'Rotational Visualizer & Synergies', locked: true },
-              { label: 'DFS Lineup Optimizer', locked: true },
-              { label: 'DraftKings CSV Export', locked: true },
-            ]}
-          />
+          <div className="mt-4 flex items-baseline gap-2">
+            <span className="text-5xl font-black text-ink">$10</span>
+            <span className="text-sm uppercase tracking-widest text-ink/50">per week</span>
+          </div>
+          <p className="mt-2 text-sm text-ink/70">
+            One simple tier for the Soft Launch. Weekly billing through Lemon Squeezy.
+          </p>
 
-          <TierCard
-            name="Pro Data"
-            price={billing === 'annual' ? '$399.99' : '$39.99'}
-            billingText={billing === 'annual' ? 'per year, cancel anytime' : 'per month, cancel anytime'}
-            description="Full access to our ML-driven projections and more."
-            ctaText="Unlock Pro Data"
-            ctaVariant="solid"
-            badge="Most Popular"
-            emphasized
-            features={[
-              { label: 'Everything from Scout' },
-              { label: "Today's Live Projections updated frequently until lock" },
-              { label: 'Player Signals and Rotational Visualizer' },
-              { label: 'Optimizer (Up to 150 lineups)' },
-            ]}
-          />
+          <div className="mt-6 space-y-2">
+            {FEATURES.map((feature) => (
+              <div key={feature} className="flex items-start gap-3 rounded-lg px-2 py-1.5 text-ink">
+                <CheckIcon className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
+                <span className="text-sm">{feature}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-6 space-y-3">
+            {!isLoaded ? (
+              <button
+                disabled
+                className="w-full rounded-lg border border-ink/20 bg-white px-4 py-3 text-sm font-black uppercase tracking-widest text-ink/50"
+              >
+                Loading account...
+              </button>
+            ) : !isSignedIn ? (
+              <SignInButton mode="modal">
+                <button className="w-full rounded-lg border border-drafting-orange bg-drafting-orange px-4 py-3 text-sm font-black uppercase tracking-widest text-white hover:brightness-110 transition-all">
+                  Sign In to Subscribe
+                </button>
+              </SignInButton>
+            ) : alreadyActive ? (
+              <div className="w-full rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-center text-sm font-black uppercase tracking-widest text-emerald-700">
+                Soft Launch Active
+              </div>
+            ) : (
+              <button
+                onClick={beginCheckout}
+                disabled={startingCheckout}
+                className="w-full rounded-lg border border-drafting-orange bg-drafting-orange px-4 py-3 text-sm font-black uppercase tracking-widest text-white hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {startingCheckout ? 'Starting Checkout...' : 'Subscribe with Lemon Squeezy'}
+              </button>
+            )}
+            <p className="text-[11px] uppercase tracking-widest text-ink/50 text-center">
+              Cancel any time from your billing portal or subscription emails.
+            </p>
+            {error && (
+              <p className="text-xs text-red-600 text-center font-bold">{error}</p>
+            )}
+          </div>
         </div>
       </div>
     </div>
