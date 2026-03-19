@@ -30,6 +30,11 @@ interface BetaRequestBody {
 
 // Basic email validation regex
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const sanitizeFromEmail = (value: string | undefined): string | null => {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
 
 export const onRequest: PagesFunction<Env> = async (context) => {
   const { request, env } = context;
@@ -80,35 +85,57 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     }
 
     const notifyEmail = 'info@slatesim.com';
-    // Allow a safe default from address for Resend sandbox sending if not provided
-    const fromEmail = env.BETA_FROM_EMAIL || 'onboarding@resend.dev';
+    const senderCandidates = [
+      sanitizeFromEmail(env.BETA_FROM_EMAIL),
+      'info@slatesim.com',
+      'onboarding@resend.dev',
+    ].filter((v, i, a): v is string => Boolean(v) && a.indexOf(v) === i);
 
-    // 4. Send email using Resend API
-    const resendResponse = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${env.RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: fromEmail,
-        to: notifyEmail,
-        subject: '🚀 New Slate Sim Beta Request!',
-        html: `
-          <p>You have a new beta access request for Slate Sim.</p>
-          <ul>
-            <li><strong>Email:</strong> ${email}</li>
-            <li><strong>Timestamp:</strong> ${new Date(body.ts || Date.now()).toUTCString()}</li>
-            <li><strong>Source:</strong> ${body.source || 'Unknown'}</li>
-          </ul>
-        `,
-      }),
-    });
+    let delivered = false;
+    let lastResendError = '';
 
-    if (!resendResponse.ok) {
+    // 4. Send email using Resend API, trying safe sender fallbacks
+    for (const fromEmail of senderCandidates) {
+      const resendResponse = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${env.RESEND_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: fromEmail,
+          to: notifyEmail,
+          reply_to: email,
+          subject: '🚀 New Slate Sim Beta Request!',
+          html: `
+            <p>You have a new beta access request for Slate Sim.</p>
+            <ul>
+              <li><strong>Email:</strong> ${email}</li>
+              <li><strong>Timestamp:</strong> ${new Date(body.ts || Date.now()).toUTCString()}</li>
+              <li><strong>Source:</strong> ${body.source || 'Unknown'}</li>
+            </ul>
+          `,
+        }),
+      });
+
+      if (resendResponse.ok) {
+        delivered = true;
+        break;
+      }
+
       const errorBody = await resendResponse.text();
-      console.error('Resend API error:', errorBody);
-      throw new Error(`Resend API failed with status ${resendResponse.status}`);
+      lastResendError = `from=${fromEmail} status=${resendResponse.status} body=${errorBody}`;
+      console.error('Resend API error:', lastResendError);
+    }
+
+    if (!delivered) {
+      return new Response(JSON.stringify({
+        error: 'Beta request email failed. Check RESEND_API_KEY and BETA_FROM_EMAIL in Cloudflare Pages env vars.',
+        detail: lastResendError || 'Unknown resend failure',
+      }), {
+        status: 502,
+        headers,
+      });
     }
 
     // 5. Return success response

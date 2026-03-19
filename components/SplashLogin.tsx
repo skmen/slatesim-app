@@ -49,15 +49,16 @@ export const SplashLogin: React.FC = () => {
       });
 
       if (!response.ok) {
-        throw new Error('Network response was not ok.');
+        const payload = await response.json().catch(() => ({} as any));
+        throw new Error(payload?.error || 'Network response was not ok.');
       }
       
       setStatus('success');
       setTimeout(() => setStatus('idle'), 30000); // Cooldown period
 
-    } catch (err) {
+    } catch (err: any) {
       setStatus('error');
-      setError('Could not submit. Please try again later.');
+      setError(err?.message || 'Could not submit. Please try again later.');
     }
   };
 
