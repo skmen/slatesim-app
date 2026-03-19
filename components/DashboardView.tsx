@@ -1,10 +1,10 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { Player, GameInfo } from '../types';
 import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { MatchupEngine } from './MatchupEngine';
 import { PlayerDeepDive } from './PlayerDeepDive';
-import { Search, Activity, BarChart3, Database, Filter, X, Trash2, PlusCircle, Download } from 'lucide-react';
+import { Search, Activity, BarChart3, Database, Filter, X, Trash2, PlusCircle, Download, ChevronDown } from 'lucide-react';
 import { calculateValueScores } from '../utils/valueScore';
 
 interface Props {
@@ -18,6 +18,10 @@ interface Props {
   previewMode?: boolean;
   hideSignalColumn?: boolean;
   slateDate?: string;
+  availableSlates?: string[];
+  selectedSlate?: string | null;
+  slateGameCounts?: Record<string, number>;
+  onSelectSlate?: (slate: string | null) => void;
 }
 
 interface FilterRule {
@@ -31,6 +35,18 @@ interface FilterRule {
 type Operator = 'equals' | 'contains' | 'gt' | 'lt' | 'in';
 
 const ALL_MATCHUPS_KEY = 'ALL_MATCHUPS';
+
+const getSlateBaseLabel = (folder: string): string => {
+  const parts = String(folder || '').split('_');
+  const base = parts[0] || folder;
+  return base.replace(/-/g, ' ').trim().toUpperCase();
+};
+
+const formatSlatePickerLabel = (folder: string, gameCount?: number | null): string => {
+  const base = getSlateBaseLabel(folder);
+  if (!gameCount || gameCount < 1) return `${base} - ? GAMES`;
+  return `${base} - ${gameCount} GAME${gameCount === 1 ? '' : 'S'}`;
+};
 
 const formatSalaryK = (salary: number): string => {
   if (!Number.isFinite(salary)) return '--';
@@ -540,6 +556,10 @@ export const DashboardView: React.FC<Props> = ({
   startingLineupLookup,
   previewMode = false,
   slateDate,
+  availableSlates = [],
+  selectedSlate = null,
+  slateGameCounts = {},
+  onSelectSlate,
 }) => {
   const [search, setSearch] = useState('');
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
@@ -550,6 +570,8 @@ export const DashboardView: React.FC<Props> = ({
   const [showFilterBuilder, setShowFilterBuilder] = useState(false);
   const [filters, setFilters] = useState<FilterRule[]>([]);
   const [salaryTab, setSalaryTab] = useState<'ALL' | 'ELITE' | 'MID' | 'VALUE' | 'PUNT'>('ALL');
+  const [isSlateListOpen, setIsSlateListOpen] = useState(false);
+  const slateCardRef = useRef<HTMLDivElement | null>(null);
 
   const addFilter = () => {
     const newFilter: FilterRule = {
@@ -566,6 +588,30 @@ export const DashboardView: React.FC<Props> = ({
   const updateFilter = (id: string, updates: Partial<FilterRule>) => {
     setFilters((prev) => prev.map((f) => (f.id === id ? { ...f, ...updates } : f)));
   };
+
+  useEffect(() => {
+    const handleOutsideClick = (event: MouseEvent | TouchEvent) => {
+      if (!slateCardRef.current) return;
+      if (!slateCardRef.current.contains(event.target as Node)) {
+        setIsSlateListOpen(false);
+      }
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsSlateListOpen(false);
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    document.addEventListener('touchstart', handleOutsideClick, { passive: true });
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      document.removeEventListener('touchstart', handleOutsideClick);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, []);
+
+  useEffect(() => {
+    setIsSlateListOpen(false);
+  }, [selectedSlate, availableSlates.length]);
 
   const effectiveGames = useMemo<GameInfo[]>(() => {
     const matchupKeyFromTeams = (teamA: string, teamB: string) => {
@@ -884,6 +930,14 @@ export const DashboardView: React.FC<Props> = ({
     URL.revokeObjectURL(url);
   };
 
+  const selectedSlateGameCount = selectedSlate
+    ? (slateGameCounts[selectedSlate] ?? (effectiveGames.length > 0 ? effectiveGames.length : null))
+    : null;
+  const selectedSlateLabel = selectedSlate
+    ? formatSlatePickerLabel(selectedSlate, selectedSlateGameCount)
+    : `${effectiveGames.length} GAMES`;
+  const canOpenSlateList = typeof onSelectSlate === 'function' && availableSlates.length > 1;
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       {showFilterBuilder && (
@@ -963,14 +1017,52 @@ export const DashboardView: React.FC<Props> = ({
         </div>
       )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-white/40 border border-ink/10 rounded-sm p-4 flex items-center gap-4 shadow-sm">
-          <div className="bg-emerald-600/10 p-3 rounded-sm">
-            <Activity className="w-6 h-6 text-emerald-600" />
-          </div>
-          <div>
-            <div className="text-[10px] font-black text-ink/60 uppercase tracking-widest">SLATE</div>
-            <div className="text-xl font-black italic uppercase tracking-tighter text-emerald-600">
-              {effectiveGames.length} GAMES
+        <div ref={slateCardRef} className="relative">
+          <button
+            type="button"
+            className={`w-full bg-white/40 border border-ink/10 rounded-sm p-4 flex items-center gap-4 shadow-sm text-left transition-colors ${canOpenSlateList ? 'hover:border-drafting-orange/60 cursor-pointer' : 'cursor-default'}`}
+            onClick={() => {
+              if (canOpenSlateList) setIsSlateListOpen((prev) => !prev);
+            }}
+            aria-haspopup="listbox"
+            aria-expanded={isSlateListOpen}
+          >
+            <div className="bg-emerald-600/10 p-3 rounded-sm">
+              <Activity className="w-6 h-6 text-emerald-600" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-[10px] font-black text-ink/60 uppercase tracking-widest">SELECTED SLATE</div>
+              <div className="text-xl font-black italic uppercase tracking-tighter text-emerald-600 truncate">
+                {selectedSlateLabel}
+              </div>
+            </div>
+            {canOpenSlateList && (
+              <ChevronDown className={`w-4 h-4 text-ink/55 transition-transform ${isSlateListOpen ? 'rotate-180' : ''}`} />
+            )}
+          </button>
+
+          <div
+            role="listbox"
+            className={`absolute left-0 right-0 mt-1 z-40 rounded-sm border border-ink/20 bg-vellum shadow-xl overflow-hidden transition-all duration-200 ${isSlateListOpen ? 'opacity-100 translate-y-0 pointer-events-auto' : 'opacity-0 -translate-y-1 pointer-events-none'}`}
+          >
+            <div className="max-h-56 overflow-y-auto">
+              {availableSlates.map((slate) => {
+                const isActive = slate === selectedSlate;
+                const count = slateGameCounts[slate] ?? (isActive ? effectiveGames.length : null);
+                return (
+                  <button
+                    key={slate}
+                    type="button"
+                    className={`w-full text-left font-black uppercase tracking-widest border-b border-ink/10 last:border-b-0 px-3 py-2 text-xs transition-colors ${isActive ? 'bg-drafting-orange/10 text-ink' : 'text-ink/75 hover:bg-white/70 hover:text-ink'}`}
+                    onClick={() => {
+                      onSelectSlate?.(slate || null);
+                      setIsSlateListOpen(false);
+                    }}
+                  >
+                    {formatSlatePickerLabel(slate, count)}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
