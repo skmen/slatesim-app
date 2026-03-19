@@ -10,6 +10,35 @@ export interface StartingLineupInfo {
 export type StartingLineupLookup = Map<string, StartingLineupInfo>;
 
 const normalizeKey = (key: string): string => key.toLowerCase().replace(/[^a-z0-9]/g, '');
+const STARTERS_KEYS = [
+  'starters',
+  'startinglineup',
+  'starting_lineup',
+  'lineup',
+  'players',
+  'startingfive',
+  'starting_five',
+  'starter',
+  'starting',
+  's',
+];
+const CONFIRMED_KEYS = [
+  'confirmedStarters',
+  'confirmedLineup',
+  'confirmedStartingLineup',
+  'confirmedPlayers',
+  'confirmed',
+];
+const EXPECTED_KEYS = [
+  'expectedStarters',
+  'expectedLineup',
+  'expectedStartingLineup',
+  'projectedStarters',
+  'projectedLineup',
+  'expected',
+  'projected',
+  'probable',
+];
 
 const readByNormalizedKey = (obj: any, keys: string[]): any => {
   if (!obj || typeof obj !== 'object') return undefined;
@@ -86,7 +115,7 @@ const normalizeStatus = (raw: any): 'confirmed' | 'expected' | '' => {
     return 'expected';
   }
   if (status === 'c') return 'confirmed';
-  if (status === 'e') return 'expected';
+  if (status === 'e' || status === 's' || status === 'starter' || status === 'starting') return 'expected';
   return '';
 };
 
@@ -104,6 +133,9 @@ const readStatusFromEntry = (entry: any): 'confirmed' | 'expected' | '' => {
     'startingStatus',
     'confirmation',
     'state',
+    'tag',
+    'lineupTag',
+    'statusTag',
   ]));
   if (explicit) return explicit;
 
@@ -161,7 +193,7 @@ const extractPlayersFromValue = (value: any): string[] => {
       .filter((name) => name.length > 0);
   }
   if (typeof value === 'object') {
-    const nested = readByNormalizedKey(value, ['players', 'starters', 'lineup', 'startingLineup', 'starting_lineup']);
+    const nested = readByNormalizedKey(value, STARTERS_KEYS);
     if (nested) return extractPlayersFromValue(nested);
     const values = Object.values(value)
       .map((item) => extractName(item) || cleanPlayerName(toStringValue(item)))
@@ -181,48 +213,54 @@ const addPlayersWithEmbeddedStatus = (
 ) => {
   if (!value) return;
 
-  const visit = (node: any) => {
+  const visit = (node: any, inheritedStatus: 'confirmed' | 'expected' | '') => {
     if (!node) return;
 
     if (Array.isArray(node)) {
-      node.forEach(visit);
+      node.forEach((entry) => visit(entry, inheritedStatus));
       return;
     }
 
     if (typeof node === 'object') {
-      const nested = readByNormalizedKey(node, ['players', 'starters', 'lineup', 'startingLineup', 'starting_lineup']);
+      const status = readStatusFromEntry(node) || inheritedStatus;
+      const nested = readByNormalizedKey(node, STARTERS_KEYS);
       if (nested) {
-        visit(nested);
-        return;
+        visit(nested, status || 'expected');
       }
 
       const name = extractName(node);
       const id = extractPlayerId(node);
-      const status = readStatusFromEntry(node) || fallbackStatus;
       if (name && status) {
         addPlayerToLookup(lookup, name, id, status);
-        return;
       }
 
-      Object.values(node).forEach(visit);
+      Object.values(node).forEach((entry) => visit(entry, status));
       return;
     }
 
-    if (!fallbackStatus) return;
+    if (!inheritedStatus) return;
     const cleaned = cleanPlayerName(toStringValue(node));
-    if (cleaned) addPlayerToLookup(lookup, cleaned, '', fallbackStatus);
+    if (!cleaned || /^[A-Z]{2,4}$/.test(cleaned)) return;
+    addPlayerToLookup(lookup, cleaned, '', inheritedStatus);
   };
 
-  visit(value);
+  visit(value, fallbackStatus);
 };
 
 const addPlayerToLookup = (lookup: StartingLineupLookup, name: string, id: string, status: 'confirmed' | 'expected') => {
-  const info: StartingLineupInfo = {
-    status,
-    isConfirmed: status === 'confirmed',
-    isExpected: status === 'expected',
-  };
+  const existingById = id ? lookup.get(id) : undefined;
   const normalizedName = normalizeName(name);
+  const existingByName = normalizedName ? lookup.get(normalizedName) : undefined;
+  const existing = existingById || existingByName;
+  const resolvedStatus: 'confirmed' | 'expected' =
+    existing?.isConfirmed ? 'confirmed' : status;
+
+  const info: StartingLineupInfo = {
+    status: resolvedStatus,
+    isConfirmed: resolvedStatus === 'confirmed',
+    isExpected: resolvedStatus === 'expected',
+  };
+
   if (normalizedName) lookup.set(normalizedName, info);
   if (id) lookup.set(id, info);
 };
@@ -237,15 +275,7 @@ export const buildStartingLineupLookup = (payload: any): StartingLineupLookup =>
     const entryName = extractName(entry);
     const entryId = extractPlayerId(entry);
     const entryStatus = readStatusFromEntry(entry);
-    const startersValue = readByNormalizedKey(entry, [
-      'starters',
-      'startinglineup',
-      'starting_lineup',
-      'lineup',
-      'players',
-      'startingfive',
-      'starting_five',
-    ]);
+    const startersValue = readByNormalizedKey(entry, STARTERS_KEYS);
 
     // Only treat entry-level name/status as player data when it's not a team-level lineup container.
     if (entryName && entryStatus && !startersValue) {
@@ -253,27 +283,12 @@ export const buildStartingLineupLookup = (payload: any): StartingLineupLookup =>
     }
 
     const confirmedList = extractPlayersFromValue(
-      readByNormalizedKey(entry, [
-        'confirmedStarters',
-        'confirmedLineup',
-        'confirmedStartingLineup',
-        'confirmedPlayers',
-        'confirmed',
-      ])
+      readByNormalizedKey(entry, CONFIRMED_KEYS)
     );
     confirmedList.forEach((name) => addPlayerToLookup(lookup, name, '', 'confirmed'));
 
     const expectedList = extractPlayersFromValue(
-      readByNormalizedKey(entry, [
-        'expectedStarters',
-        'expectedLineup',
-        'expectedStartingLineup',
-        'projectedStarters',
-        'projectedLineup',
-        'expected',
-        'projected',
-        'probable',
-      ])
+      readByNormalizedKey(entry, EXPECTED_KEYS)
     );
     expectedList.forEach((name) => addPlayerToLookup(lookup, name, '', 'expected'));
 
@@ -284,6 +299,10 @@ export const buildStartingLineupLookup = (payload: any): StartingLineupLookup =>
       starters.forEach((name) => addPlayerToLookup(lookup, name, '', starterFallbackStatus));
     } else if (startersValue) {
       addPlayersWithEmbeddedStatus(lookup, startersValue, starterFallbackStatus);
+    }
+
+    if (!entryName && !startersValue) {
+      addPlayersWithEmbeddedStatus(lookup, entry, entryStatus);
     }
   });
 
