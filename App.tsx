@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { BarChart2, ChevronLeft, ChevronRight, List, LogOut, Lock, Zap, GitCompare } from 'lucide-react';
+import { BarChart2, ChevronLeft, ChevronRight, List, LogOut, Zap, GitCompare } from 'lucide-react';
 import { useUser } from "@clerk/clerk-react"; 
 import { AppState, ViewState, ContestInput, ContestDerived, Entitlement, GameInfo } from './types';
 import { parseProjections, parsePipelineJson, parseOptimizerLineups, parseUserLineupsRows, canonicalizeId, normalizeName } from './utils/csvParser';
@@ -72,20 +72,9 @@ const INITIAL_STATE: AppState = {
 const ENTRY_MANAGER_SESSION_KEY = 'slatesim.entryManager.session.v1';
 
 const IntegrityFooter: React.FC<{ withBottomNav?: boolean }> = ({ withBottomNav = false }) => {
-  const [time, setTime] = useState(new Date().toLocaleTimeString());
-  useEffect(() => {
-    const i = setInterval(() => setTime(new Date().toLocaleTimeString()), 1000);
-    return () => clearInterval(i);
-  }, []);
   return (
     <footer className={`w-full bg-black/40 border-t border-ink-border py-4 px-6 mt-12 backdrop-blur-md ${withBottomNav ? 'mb-24 sm:mb-20' : ''}`}>
-      <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4 text-[10px] font-black uppercase tracking-widest text-slate-400 font-mono">
-        <div className="flex items-center gap-2">
-          <Lock className="w-3 h-3 text-highlight" />
-          <span>Slate Integrity Protocol</span>
-          <span className="text-muted-slate">|</span>
-          <span className="text-slate-400">Locked: {time}</span>
-        </div>
+      <div className="max-w-7xl mx-auto flex items-center justify-center text-[10px] font-black uppercase tracking-widest text-slate-400 font-mono">
         <div className="flex items-center gap-2 text-[11px]">
           <a
             href="/terms"

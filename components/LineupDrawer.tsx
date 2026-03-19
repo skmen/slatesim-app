@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useEffect, useRef, useState } from 'react';
+import { motion, AnimatePresence, useDragControls } from 'framer-motion';
 import { ChevronUp, ChevronDown, X, Trash2, UserPlus } from 'lucide-react';
 import { useLineup } from '../context/LineupContext';
 import { Player, Slot } from '../types';
@@ -16,6 +16,10 @@ export const LineupDrawer: React.FC<LineupDrawerProps> = ({ players, showActuals
   const [isExpanded, setIsExpanded] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState<Slot | null>(null);
+  const [dragBounds, setDragBounds] = useState({ top: -400, bottom: 120 });
+  const dragControls = useDragControls();
+  const dragContainerRef = useRef<HTMLDivElement | null>(null);
+  const suppressNextToggleRef = useRef(false);
 
   const handleSlotClick = (slot: Slot) => {
     if (!slots[slot]) {
@@ -37,9 +41,46 @@ export const LineupDrawer: React.FC<LineupDrawerProps> = ({ players, showActuals
 
   const isSalaryOver = remainingSalary < 0;
 
+  useEffect(() => {
+    const computeBounds = () => {
+      const el = dragContainerRef.current;
+      if (!el || typeof window === 'undefined') return;
+      const rect = el.getBoundingClientRect();
+      const safeTop = 8;
+      const safeBottom = window.innerHeight - 8;
+      const roomUp = Math.max(0, rect.top - safeTop);
+      const roomDown = Math.max(0, safeBottom - rect.bottom);
+      setDragBounds({ top: -roomUp, bottom: roomDown });
+    };
+    computeBounds();
+    window.addEventListener('resize', computeBounds);
+    return () => window.removeEventListener('resize', computeBounds);
+  }, [isExpanded]);
+
+  const beginDrag = (event: React.PointerEvent) => {
+    dragControls.start(event);
+  };
+
   return (
     <div className="fixed bottom-16 left-0 right-0 z-40 px-4 pb-2 pointer-events-none">
-      <div className="max-w-lg ml-auto pointer-events-auto">
+      <motion.div
+        ref={dragContainerRef}
+        className="max-w-lg ml-auto pointer-events-auto"
+        drag="y"
+        dragListener={false}
+        dragControls={dragControls}
+        dragConstraints={dragBounds}
+        dragElastic={0}
+        dragMomentum={false}
+        onDragEnd={(_, info) => {
+          if (Math.abs(info.offset.y) > 4) {
+            suppressNextToggleRef.current = true;
+            window.setTimeout(() => {
+              suppressNextToggleRef.current = false;
+            }, 0);
+          }
+        }}
+      >
         <AnimatePresence>
           {isExpanded && (
             <motion.div
@@ -50,7 +91,11 @@ export const LineupDrawer: React.FC<LineupDrawerProps> = ({ players, showActuals
               className="bg-white/90 backdrop-blur-md border border-ink/10 rounded-t-lg shadow-2xl overflow-hidden mb-[-1px]"
             >
               {/* Expanded Header */}
-              <div className="p-3 border-b border-ink/10 bg-vellum/40 flex justify-between items-center">
+              <div
+                className="p-3 border-b border-ink/10 bg-vellum/40 flex justify-between items-center cursor-grab active:cursor-grabbing"
+                onPointerDown={beginDrag}
+                title="Drag to move"
+              >
                 <h3 className="text-[10px] font-black uppercase tracking-widest text-drafting-orange">DraftKings Lineup</h3>
                 <div className="flex items-center gap-2">
                   <button 
@@ -130,8 +175,13 @@ export const LineupDrawer: React.FC<LineupDrawerProps> = ({ players, showActuals
 
         {/* Collapsed Bar */}
         <motion.div 
-          onClick={() => setIsExpanded(!isExpanded)}
-          className={`bg-drafting-orange border border-drafting-orange ${isExpanded ? 'rounded-b-lg' : 'rounded-lg'} shadow-xl p-3 flex items-center justify-between cursor-pointer hover:border-drafting-orange/80 transition-all`}
+          onClick={() => {
+            if (suppressNextToggleRef.current) return;
+            setIsExpanded(!isExpanded);
+          }}
+          onPointerDown={beginDrag}
+          className={`bg-drafting-orange border border-drafting-orange ${isExpanded ? 'rounded-b-lg' : 'rounded-lg'} shadow-xl p-3 flex items-center justify-between cursor-grab active:cursor-grabbing hover:border-drafting-orange/80 transition-all`}
+          title="Click to toggle. Drag to move."
         >
           <div className="flex items-center gap-3">
             <span className="text-xs font-black uppercase tracking-widest text-white">Lineup</span>
@@ -165,7 +215,7 @@ export const LineupDrawer: React.FC<LineupDrawerProps> = ({ players, showActuals
             {!isExpanded && <ChevronUp className="w-4 h-4 text-white/60" />}
           </div>
         </motion.div>
-      </div>
+      </motion.div>
     </div>
   );
 };
