@@ -14,6 +14,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { LineupProvider } from './context/LineupContext';
 import { SplashLogin } from './components/SplashLogin';
 import { PricingPage } from './components/PricingPage';
+import { TermsPage } from './components/TermsPage';
 import { LineupDrawer } from './components/LineupDrawer';
 import DKEntryManager from './components/DKEntryManager';
 import ReportView from './components/ReportView';
@@ -84,6 +85,12 @@ const IntegrityFooter: React.FC = () => {
           <span className="text-muted-slate">|</span>
           <span className="text-slate-400">Locked: {time}</span>
         </div>
+        <a
+          href="/terms"
+          className="text-slate-400/80 hover:text-drafting-orange transition-colors"
+        >
+          Terms of Service
+        </a>
       </div>
     </footer>
   );
@@ -1191,6 +1198,7 @@ const AuthShell: React.FC = () => {
   const { isLoaded, isSignedIn } = useUser();
   const isPricingRoute = typeof window !== 'undefined' && window.location.pathname === '/pricing';
   const isPreviewRoute = typeof window !== 'undefined' && window.location.pathname === '/preview';
+  const isTermsRoute = typeof window !== 'undefined' && window.location.pathname === '/terms';
 
   // Public pricing page (no auth required)
   if (isPricingRoute) {
@@ -1200,6 +1208,11 @@ const AuthShell: React.FC = () => {
   // Public preview route (research only, last 7 days)
   if (isPreviewRoute) {
     return <AppContent previewMode />;
+  }
+
+  // Public terms page (no auth required)
+  if (isTermsRoute) {
+    return <TermsPage />;
   }
 
   if (!isLoaded) {

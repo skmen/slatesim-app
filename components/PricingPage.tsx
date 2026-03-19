@@ -62,8 +62,8 @@ export const PricingPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-vellum text-ink font-sans">
-      <div className="mx-auto max-w-4xl px-4 py-16">
+    <div className="min-h-screen bg-vellum text-ink font-sans flex flex-col">
+      <div className="mx-auto w-full max-w-4xl px-4 py-16 flex-1">
         <div className="mb-6">
           <a
             href="/"
@@ -140,6 +140,11 @@ export const PricingPage: React.FC = () => {
           </div>
         </div>
       </div>
+      <footer className="pb-8 text-center">
+        <a href="/terms" className="text-[11px] font-black uppercase tracking-widest text-ink/60 hover:text-drafting-orange transition-colors">
+          Terms of Service
+        </a>
+      </footer>
     </div>
   );
 };

@@ -62,7 +62,7 @@ export const SplashLogin: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-vellum text-ink font-sans selection:bg-drafting-orange selection:text-white">
+    <div className="min-h-screen bg-vellum text-ink font-sans selection:bg-drafting-orange selection:text-white flex flex-col">
       <header className="fixed top-0 left-0 right-0 z-50 bg-vellum/80 backdrop-blur-md border-b border-ink/10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -84,7 +84,7 @@ export const SplashLogin: React.FC = () => {
         </div>
       </header>
 
-      <main className="pt-24 pb-12">
+      <main className="flex-1 pt-24 pb-12">
         <section className="text-center px-4">
           <div className="inline-flex items-center gap-2 px-3 py-1 bg-accent/10 border border-accent/20 rounded-full mb-8">
             <span className="relative flex h-2 w-2">
@@ -149,6 +149,11 @@ export const SplashLogin: React.FC = () => {
           </div>
         </section>
       </main>
+      <footer className="pb-8 text-center">
+        <a href="/terms" className="text-[11px] font-black uppercase tracking-widest text-ink/60 hover:text-drafting-orange transition-colors">
+          Terms of Service
+        </a>
+      </footer>
     </div>
   );
 };
