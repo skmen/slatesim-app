@@ -4,6 +4,8 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import { ClerkProvider } from "@clerk/clerk-react";
 
+declare const __CLERK_PUBLISHABLE_KEY__: string;
+
 /**
  * 1. DEFINE URL CONTEXT
  * Resolves the correct application entry URL, which is crucial in sandboxed
@@ -43,21 +45,33 @@ const SAFE_DEFAULT_URL = (() => {
   return CANONICAL_APP_URL;
 })();
 
-// PUBLISHABLE KEY - Sourced from env, with a fallback for AI Studio
-const ENV_KEY =
+// PUBLISHABLE KEY
+// First preference: Vite-injected public env.
+// Fallback: build-time define from either VITE_CLERK_PUBLISHABLE_KEY or CLERK_PUBLISHABLE_KEY.
+const HARDCODED_LIVE_KEY_FALLBACK = "pk_live_Y2xlcmsuc2xhdGVzaW0uY29tJA";
+const ENV_KEY = (
   (import.meta as any)?.env?.VITE_CLERK_PUBLISHABLE_KEY ||
-  (globalThis as any)?.VITE_CLERK_PUBLISHABLE_KEY ||
-  "";
+  (typeof __CLERK_PUBLISHABLE_KEY__ !== 'undefined' ? __CLERK_PUBLISHABLE_KEY__ : "") ||
+  HARDCODED_LIVE_KEY_FALLBACK
+).trim();
 
 const IS_PROD = Boolean((import.meta as any)?.env?.PROD);
-const DEV_FALLBACK_KEY = "pk_test_bG92ZWQtY291Z2FyLTYuY2xlcmsuYWNjb3VudHMuZGV2JA";
-const PUBLISHABLE_KEY = ENV_KEY || (!IS_PROD ? DEV_FALLBACK_KEY : "");
+const ALLOW_TEST_KEY = String((import.meta as any)?.env?.VITE_ALLOW_TEST_CLERK_KEY || '').toLowerCase() === 'true';
+const PUBLISHABLE_KEY = ENV_KEY;
 const CONFIG_ERROR =
   !PUBLISHABLE_KEY || PUBLISHABLE_KEY.includes('REPLACE_ME')
-    ? "Missing Clerk key. Set VITE_CLERK_PUBLISHABLE_KEY."
-    : (IS_PROD && PUBLISHABLE_KEY.startsWith('pk_test_')
-      ? "Production auth requires a Clerk live key (pk_live_...)."
+    ? "Missing Clerk key. Set VITE_CLERK_PUBLISHABLE_KEY (or CLERK_PUBLISHABLE_KEY in your build env)."
+    : (PUBLISHABLE_KEY.startsWith('pk_test_') && (IS_PROD || !ALLOW_TEST_KEY)
+      ? "This deployment is using a Clerk test key. Set VITE_CLERK_PUBLISHABLE_KEY (or CLERK_PUBLISHABLE_KEY) to your pk_live_ key."
       : "");
+
+if (typeof window !== 'undefined') {
+  (window as any).__SLATESIM_AUTH_KEY_MODE__ =
+    !PUBLISHABLE_KEY ? 'missing'
+    : PUBLISHABLE_KEY.startsWith('pk_live_') ? 'live'
+    : PUBLISHABLE_KEY.startsWith('pk_test_') ? 'test'
+    : 'unknown';
+}
 
 /**
  * 2. REDIRECT & NAVIGATION HELPERS
@@ -207,7 +221,7 @@ if (CONFIG_ERROR) {
           <h1 style={{ margin: "0 0 10px", fontSize: "18px", fontWeight: 800 }}>Authentication Configuration Required</h1>
           <p style={{ margin: "0 0 10px", fontSize: "14px", lineHeight: 1.5 }}>{CONFIG_ERROR}</p>
           <p style={{ margin: 0, fontSize: "13px", lineHeight: 1.5 }}>
-            For production deploys, set <code>VITE_CLERK_PUBLISHABLE_KEY</code> to your <code>pk_live_...</code> key in your environment variables.
+            For production deploys, set <code>VITE_CLERK_PUBLISHABLE_KEY</code> (or <code>CLERK_PUBLISHABLE_KEY</code>) to your <code>pk_live_...</code> key in your environment variables.
           </p>
         </div>
       </div>
