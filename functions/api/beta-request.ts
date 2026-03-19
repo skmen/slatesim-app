@@ -3,7 +3,6 @@
 
 // Environment variables that need to be set in your Cloudflare Pages project settings:
 // - RESEND_API_KEY: Your API key from Resend (resend.com)
-// - BETA_NOTIFY_EMAIL (optional): Notification target; falls back to slatesiminfo@gmail.com if unset
 // - BETA_FROM_EMAIL: A verified "from" email address on your Resend account (e.g., beta@yourdomain.com)
 
 // Fix: Add type definition for Cloudflare PagesFunction to resolve "Cannot find name 'PagesFunction'" error.
@@ -19,7 +18,6 @@ type PagesFunction<Env = any> = (context: {
 
 interface Env {
   RESEND_API_KEY: string;
-  BETA_NOTIFY_EMAIL?: string;
   BETA_FROM_EMAIL?: string;
 }
 
@@ -81,8 +79,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         return new Response(JSON.stringify({ error: 'Server configuration error.' }), { status: 500, headers });
     }
 
-    // Use explicit notify target when provided; fall back to the team inbox
-    const notifyEmail = env.BETA_NOTIFY_EMAIL || 'slatesiminfo@gmail.com';
+    const notifyEmail = 'info@slatesim.com';
     // Allow a safe default from address for Resend sandbox sending if not provided
     const fromEmail = env.BETA_FROM_EMAIL || 'onboarding@resend.dev';
 

@@ -106,7 +106,7 @@ export const PrivacyPage: React.FC = () => {
             <p>
               You can request account deletion or ask privacy-related questions by emailing
               {' '}
-              <a href="mailto:slatesiminfo@gmail.com" className="text-drafting-orange hover:underline">slatesiminfo@gmail.com</a>.
+              <a href="mailto:info@slatesim.com" className="text-drafting-orange hover:underline">info@slatesim.com</a>.
               Some records may be retained where required by law or for legitimate business purposes.
             </p>
           </Section>
@@ -132,7 +132,7 @@ export const PrivacyPage: React.FC = () => {
             <p>
               If you have questions about this Privacy Policy, contact us at
               {' '}
-              <a href="mailto:slatesiminfo@gmail.com" className="text-drafting-orange hover:underline">slatesiminfo@gmail.com</a>.
+              <a href="mailto:info@slatesim.com" className="text-drafting-orange hover:underline">info@slatesim.com</a>.
             </p>
           </Section>
         </div>

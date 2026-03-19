@@ -152,7 +152,7 @@ export const TermsPage: React.FC = () => {
 
           <Section title="Contact">
             <p>
-              For legal questions about these Terms, contact us at <a href="mailto:slatesiminfo@gmail.com" className="text-drafting-orange hover:underline">slatesiminfo@gmail.com</a>.
+              For legal questions about these Terms, contact us at <a href="mailto:info@slatesim.com" className="text-drafting-orange hover:underline">info@slatesim.com</a>.
             </p>
           </Section>
         </div>
