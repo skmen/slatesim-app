@@ -1273,6 +1273,18 @@ const AuthShell: React.FC = () => {
   const isPreviewRoute = typeof window !== 'undefined' && window.location.pathname === '/preview';
   const isTermsRoute = typeof window !== 'undefined' && window.location.pathname === '/terms';
   const isPrivacyRoute = typeof window !== 'undefined' && window.location.pathname === '/privacy';
+  const [authLoadTimedOut, setAuthLoadTimedOut] = useState(false);
+
+  useEffect(() => {
+    if (isLoaded) {
+      setAuthLoadTimedOut(false);
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setAuthLoadTimedOut(true);
+    }, 2500);
+    return () => window.clearTimeout(timeoutId);
+  }, [isLoaded]);
 
   // Public pricing page (no auth required)
   if (isPricingRoute) {
@@ -1294,7 +1306,7 @@ const AuthShell: React.FC = () => {
     return <PrivacyPage />;
   }
 
-  if (!isLoaded) {
+  if (!isLoaded && !authLoadTimedOut) {
     return (
       <div className="fixed inset-0 bg-main flex flex-col items-center justify-center">
         <div className="w-8 h-8 border-4 border-highlight border-t-transparent animate-spin mb-4" />
@@ -1303,6 +1315,10 @@ const AuthShell: React.FC = () => {
         </p>
       </div>
     );
+  }
+
+  if (!isLoaded && authLoadTimedOut) {
+    return <SplashLogin />;
   }
 
   if (isSignedIn) {
