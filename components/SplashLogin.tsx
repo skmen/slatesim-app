@@ -1,10 +1,8 @@
 
-import React, { useState, FormEvent } from 'react';
+import React from 'react';
 import { SignInButton } from "@clerk/clerk-react";
-import { LogIn, Cpu, BarChart2, Layers, Send, AlertTriangle, CheckCircle } from 'lucide-react';
+import { LogIn, Cpu, BarChart2, Layers } from 'lucide-react';
 import { SlateSimLogo } from './SlateSimLogo';
-
-type Status = 'idle' | 'submitting' | 'success' | 'error';
 
 const Feature: React.FC<{ icon: React.ElementType, title: string, children: React.ReactNode }> = ({ icon: Icon, title, children }) => (
   <div className="flex flex-col items-center text-center p-6 bg-white border border-gray-200 rounded-2xl shadow-sm">
@@ -19,49 +17,6 @@ const Feature: React.FC<{ icon: React.ElementType, title: string, children: Reac
 );
 
 export const SplashLogin: React.FC = () => {
-  const [email, setEmail] = useState('');
-  const [honeypot, setHoneypot] = useState('');
-  const [status, setStatus] = useState<Status>('idle');
-  const [error, setError] = useState('');
-
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (status === 'submitting' || status === 'success') return;
-
-    // Honeypot check for bots
-    if (honeypot) return;
-
-    // Basic email validation
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setStatus('error');
-      setError('Please enter a valid email address.');
-      return;
-    }
-
-    setStatus('submitting');
-    setError('');
-
-    try {
-      const response = await fetch('/api/beta-request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, source: 'splash', ts: Date.now() }),
-      });
-
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({} as any));
-        throw new Error(payload?.error || 'Network response was not ok.');
-      }
-      
-      setStatus('success');
-      setTimeout(() => setStatus('idle'), 30000); // Cooldown period
-
-    } catch (err: any) {
-      setStatus('error');
-      setError(err?.message || 'Could not submit. Please try again later.');
-    }
-  };
-
   return (
     <div className="min-h-screen bg-vellum text-ink font-sans selection:bg-drafting-orange selection:text-white flex flex-col">
       <header className="fixed top-0 left-0 right-0 z-50 bg-vellum/80 backdrop-blur-md border-b border-ink/10">
@@ -96,43 +51,19 @@ export const SplashLogin: React.FC = () => {
           </div>
           
           <h2 className="text-3xl md:text-5xl font-black uppercase tracking-tighter italic">
-            Research. Backtest. Deploy your DFS edge.
+            <span className="block">RESEARCH.</span>
+            <span className="block">BACKTEST.</span>
+            <span className="block">DEPLOY YOUR DFS EDGE.</span>
           </h2>
           <p className="max-w-2xl mx-auto mt-4 text-sm text-gray-700 font-mono leading-relaxed">
             Slate Sim is your workspace for DFS strategy design: run slate-level backtests, stress-test rules, and pull the data you need for your own entries and optimizers. NBA is live; MLB DFS is in the works.
           </p>
 
           <div className="mt-10 max-w-lg mx-auto bg-white p-6 border border-gray-200 rounded-2xl shadow-2xl">
-            <h3 className="text-sm font-bold uppercase tracking-widest text-accent mb-4">Join the Private Beta</h3>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <input 
-                type="hidden" 
-                name="honeypot" 
-                value={honeypot} 
-                onChange={(e) => setHoneypot(e.target.value)} 
-                style={{ display: 'none' }}
-              />
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="Enter your email address..."
-                className="w-full bg-white border border-gray-300 rounded-lg px-4 py-3 text-xs font-bold text-black focus:border-accent outline-none transition-all placeholder:text-gray-500"
-                disabled={status === 'submitting' || status === 'success'}
-              />
-              <button
-                type="submit"
-                className="w-full bg-accent hover:opacity-90 text-black font-black py-3 rounded-lg shadow-lg shadow-accent/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                disabled={status === 'submitting' || status === 'success'}
-              >
-                {status === 'submitting' ? 'Submitting...' : 'Request Beta Access'}
-                {status !== 'submitting' && <Send className="w-4 h-4" />}
-              </button>
-              <div className="h-5 text-xs font-bold font-mono uppercase tracking-widest">
-                {status === 'success' && <p className="text-boom flex items-center justify-center gap-2 animate-in fade-in"><CheckCircle className="w-4 h-4"/>Thanks! We'll reach out soon.</p>}
-                {status === 'error' && <p className="text-bust flex items-center justify-center gap-2 animate-in fade-in"><AlertTriangle className="w-4 h-4"/>{error}</p>}
-              </div>
-            </form>
+            <h3 className="text-sm font-bold uppercase tracking-widest text-accent mb-4">Private Beta Closed</h3>
+            <div className="w-full bg-accent/10 border border-accent/30 text-accent font-black py-3 rounded-lg text-center uppercase tracking-widest text-sm">
+              SOFT LAUNCH COMING SOON
+            </div>
           </div>
         </section>
 
