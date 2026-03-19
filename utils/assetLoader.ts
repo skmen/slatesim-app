@@ -46,6 +46,7 @@ interface LoadSlateEcosystemOptions {
   targetDate: string;
   slateFolder?: string;
   includeHistory?: boolean;
+  fetcher?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 }
 
 interface OptionalFallbackResult {
@@ -66,11 +67,14 @@ const safeJsonParse = (text: string): any => {
 const INTERNAL_PROJECTIONS_URL = (import.meta as any)?.env?.VITE_PROJECTIONS_ENDPOINT || '/api/projections';
 const INTERNAL_DECRYPT_URL = '/api/decrypt';
 
-const fetchOptionalJson = async (url: string): Promise<{ data: any | null; lastModified?: string; error?: string }> => {
+const fetchOptionalJson = async (
+  url: string,
+  fetcher: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+): Promise<{ data: any | null; lastModified?: string; error?: string; status?: number }> => {
   try {
-    const res = await fetch(url, { cache: 'no-cache' });
+    const res = await fetcher(url, { cache: 'no-cache' });
     if (res.status === 404) return { data: null };
-    if (!res.ok) return { data: null, error: `HTTP ${res.status}` };
+    if (!res.ok) return { data: null, error: `HTTP ${res.status}`, status: res.status };
     const text = await res.text();
     try {
       return { data: safeJsonParse(text), lastModified: res.headers.get('last-modified') || undefined };
@@ -82,9 +86,12 @@ const fetchOptionalJson = async (url: string): Promise<{ data: any | null; lastM
   }
 };
 
-const fetchRequiredJson = async (url: string): Promise<{ ok: boolean; data: any | null; lastModified?: string; error?: string }> => {
+const fetchRequiredJson = async (
+  url: string,
+  fetcher: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+): Promise<{ ok: boolean; data: any | null; lastModified?: string; error?: string }> => {
   try {
-    const res = await fetch(url, { cache: 'no-cache' });
+    const res = await fetcher(url, { cache: 'no-cache' });
     if (!res.ok) return { ok: false, data: null, error: `HTTP ${res.status}` };
     const text = await res.text();
     try {
@@ -101,7 +108,10 @@ const fetchOptionalWithFallback = async (
   targetDate: string,
   filename: string,
   maxLookbackDays = 30,
-  options?: { slateFolder?: string }
+  options?: {
+    slateFolder?: string;
+    fetcher?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  }
 ): Promise<OptionalFallbackResult> => {
   // Strip any .json suffix; decrypt endpoint appends internally
   const fileBase = filename.replace(/\.json$/i, '');
@@ -109,6 +119,7 @@ const fetchOptionalWithFallback = async (
   const firstCheckDate = targetDate;
   let currentDate = firstCheckDate;
   let lastError: string | undefined;
+  const fetcher = options?.fetcher || fetch;
 
   for (let dayOffset = 0; dayOffset < maxLookbackDays; dayOffset += 1) {
     const candidateUrls = slateFolder
@@ -119,7 +130,7 @@ const fetchOptionalWithFallback = async (
       : [`${INTERNAL_DECRYPT_URL}?file=${fileBase}&date=${currentDate}`];
 
     for (const url of candidateUrls) {
-      const result = await fetchOptionalJson(url);
+      const result = await fetchOptionalJson(url, fetcher);
 
       if (result.data) {
         return {
@@ -132,6 +143,14 @@ const fetchOptionalWithFallback = async (
 
       if (result.error) {
         lastError = result.error;
+        if (result.status === 403) {
+          return {
+            data: null,
+            asOf: currentDate,
+            url,
+            error: result.error,
+          };
+        }
       }
     }
 
@@ -168,6 +187,7 @@ export const loadSlateEcosystem = async (
   const targetDate = options.targetDate;
   const slateFolder = options.slateFolder;
   const includeHistory = options.includeHistory !== false;
+  const fetcher = options.fetcher || fetch;
 
   const slateUrl = slateFolder
     ? `${INTERNAL_PROJECTIONS_URL}?date=${targetDate}&slate=${encodeURIComponent(slateFolder)}`
@@ -180,13 +200,13 @@ export const loadSlateEcosystem = async (
   const defaultStatsUrl = `${INTERNAL_DECRYPT_URL}?file=stats&date=${targetDate}`;
 
   const settled = await Promise.allSettled([
-    fetchRequiredJson(slateUrl),
-    fetchOptionalWithFallback(targetDate, 'injuries.json'),
-    fetchOptionalWithFallback(targetDate, 'nba_depth_charts.json'),
-    fetchOptionalWithFallback(targetDate, 'nba_starting_lineups.json'),
-    includeHistory ? fetchOptionalWithFallback(targetDate, 'rotations.json', 30, { slateFolder }) : Promise.resolve({ data: null, asOf: targetDate, url: defaultRotationsUrl }),
-    includeHistory ? fetchOptionalWithFallback(targetDate, 'boxscores.json', 30, { slateFolder }) : Promise.resolve({ data: null, asOf: targetDate, url: defaultBoxscoresUrl }),
-    fetchOptionalWithFallback(targetDate, 'stats.json', 30, { slateFolder }),
+    fetchRequiredJson(slateUrl, fetcher),
+    fetchOptionalWithFallback(targetDate, 'injuries.json', 30, { fetcher }),
+    fetchOptionalWithFallback(targetDate, 'nba_depth_charts.json', 30, { fetcher }),
+    fetchOptionalWithFallback(targetDate, 'nba_starting_lineups.json', 30, { fetcher }),
+    includeHistory ? fetchOptionalWithFallback(targetDate, 'rotations.json', 30, { slateFolder, fetcher }) : Promise.resolve({ data: null, asOf: targetDate, url: defaultRotationsUrl }),
+    includeHistory ? fetchOptionalWithFallback(targetDate, 'boxscores.json', 30, { slateFolder, fetcher }) : Promise.resolve({ data: null, asOf: targetDate, url: defaultBoxscoresUrl }),
+    fetchOptionalWithFallback(targetDate, 'stats.json', 30, { slateFolder, fetcher }),
   ]);
   const [slateResult, injuriesResult, depthChartsResult, startingLineupsResult, rotationsResult, boxscoresResult, statsResult] = settled;
 

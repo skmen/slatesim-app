@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { BarChart2, ChevronLeft, ChevronRight, List, LogOut, Zap, GitCompare } from 'lucide-react';
-import { useUser } from "@clerk/clerk-react"; 
+import { useUser, useAuth as useClerkAuth } from "@clerk/clerk-react"; 
 import { AppState, ViewState, ContestInput, ContestDerived, Entitlement, GameInfo } from './types';
 import { parseProjections, parsePipelineJson, parseOptimizerLineups, parseUserLineupsRows, canonicalizeId, normalizeName } from './utils/csvParser';
 import { buildInjuryLookup, getPlayerInjuryInfo, InjuryLookup, shouldExcludePlayerForInjury } from './utils/injuries';
@@ -129,9 +129,12 @@ const parseLocalDate = (dateStr: string): Date | null => {
   return parsed;
 };
 
-const fetchAvailableSlates = async (date: string): Promise<string[]> => {
+const fetchAvailableSlates = async (
+  date: string,
+  fetcher: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> = fetch
+): Promise<string[]> => {
   try {
-    const resp = await fetch(`/api/slates?date=${date}`, { cache: 'no-cache' });
+    const resp = await fetcher(`/api/slates?date=${date}`, { cache: 'no-cache' });
     if (!resp.ok) return [];
     const data = await resp.json();
     return Array.isArray(data.slates) ? data.slates : [];
@@ -676,6 +679,7 @@ const MembershipGateCard: React.FC<{ title: string; body: string }> = ({ title, 
 
 const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }) => {
   const { user, logout, hasEntitlement } = useAuth();
+  const { getToken } = useClerkAuth();
   const [state, setState] = useState<AppState>(INITIAL_STATE);
   const [view, setView] = useState<ViewState>(ViewState.RESEARCH);
   const [adminViewMode, setAdminViewMode] = useState<AdminViewMode>('admin');
@@ -708,6 +712,16 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
     const simulated = adminViewMode === 'paid' ? PAID_VIEW_ENTITLEMENTS : FREE_VIEW_ENTITLEMENTS;
     return simulated.includes(entitlement);
   }, [adminViewMode, hasEntitlement, isAdmin]);
+  const authedFetch = useCallback(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = new Headers(init?.headers || {});
+    try {
+      const token = await getToken();
+      if (token) headers.set('Authorization', `Bearer ${token}`);
+    } catch {
+      // Continue unauthenticated when token retrieval fails.
+    }
+    return fetch(input, { ...init, headers });
+  }, [getToken]);
   const todayStr = useMemo(() => getLocalDateStr(new Date()), []);
   const previewMaxDate = useMemo(() => getPreviewMaxDateStr(), []);
   const previewMinDate = useMemo(() => getPreviewMinDateStr(), []);
@@ -821,7 +835,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
       const resolved = await Promise.all(
         missingCounts.map(async (slate) => {
           try {
-            const resp = await fetch(`/api/projections?date=${selectedDate}&slate=${encodeURIComponent(slate)}`, { cache: 'no-cache' });
+            const resp = await authedFetch(`/api/projections?date=${selectedDate}&slate=${encodeURIComponent(slate)}`, { cache: 'no-cache' });
             if (!resp.ok) return [slate, null] as const;
             const payload = await resp.json();
             const parsed = parsePipelineJson(payload);
@@ -847,7 +861,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
     return () => {
       cancelled = true;
     };
-  }, [availableSlates, selectedDate]);
+  }, [availableSlates, selectedDate, authedFetch]);
 
   useEffect(() => {
     if (!selectedSlate) return;
@@ -891,7 +905,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
       // When the date changes, re-discover available slates and reset selection
       let slateToUse = selectedSlate;
       if (slateDateRef.current !== selectedDate) {
-        const slates = await fetchAvailableSlates(selectedDate);
+        const slates = await fetchAvailableSlates(selectedDate, authedFetch);
         if (requestId !== latestInitRequestRef.current) return;
         slateDateRef.current = selectedDate;
         setAvailableSlates(slates);
@@ -912,6 +926,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
         targetDate: selectedDate,
         slateFolder: slateToUse ?? undefined,
         includeHistory: true,
+        fetcher: authedFetch,
       });
       if (requestId !== latestInitRequestRef.current) return;
       if (loadResult.errors) {
@@ -1001,7 +1016,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
     };
 
     initApp();
-  }, [selectedDate, selectedSlate]);
+  }, [selectedDate, selectedSlate, authedFetch]);
 
   useEffect(() => {
     setIsHistorical(isDateBeforeToday(state.slate.date));

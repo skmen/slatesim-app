@@ -11,6 +11,13 @@
  *   PROJECTIONS_URL        // template or base, e.g. "https://your-bucket.r2.dev/{date}/slate.enc.json"
  */
 
+import {
+  buildDateForbiddenResponse,
+  getDefaultCorsHeaders,
+  isDateAllowedForAccess,
+  resolveAccessContext,
+} from './_access.js';
+
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -53,15 +60,34 @@ const decryptPayload = async (cryptoKey, encrypted) => {
 };
 
 export const onRequest = async ({ request, env }) => {
+  const corsHeaders = getDefaultCorsHeaders();
   const headers = {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
+    ...corsHeaders,
   };
 
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        ...corsHeaders,
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      },
+    });
+  }
+
   try {
+    if (request.method !== 'GET') {
+      return new Response(JSON.stringify({ error: 'Method Not Allowed' }), { status: 405, headers });
+    }
+
     const url = new URL(request.url);
     const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
     const slate = (url.searchParams.get('slate') || '').replace(/[^a-zA-Z0-9_-]/g, '') || null;
+    const access = await resolveAccessContext(request, env);
+    if (!isDateAllowedForAccess(date, access)) {
+      return buildDateForbiddenResponse(date, headers);
+    }
 
     const targetUrl = buildUrl(env.PROJECTIONS_URL || `${DEFAULT_DATA_BASE_URL}/{date}/slate.json`, date, slate);
     let key = null;

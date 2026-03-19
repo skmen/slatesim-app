@@ -18,6 +18,13 @@
  *   { date, slates: ["Main", "Turbo_2G", "Night"] }
  */
 
+import {
+  buildDateForbiddenResponse,
+  getDefaultCorsHeaders,
+  isDateAllowedForAccess,
+  resolveAccessContext,
+} from './_access.js';
+
 const DEFAULT_DATA_BASE_URL = 'https://pub-513149f63c494eefba758cd3927e2285.r2.dev';
 
 const SLATE_PATTERNS = [/^main/i, /^turbo/i, /^night/i];
@@ -190,18 +197,31 @@ async function listSlateFoldersFromManifest(baseUrl, date) {
 // ---------------------------------------------------------------------------
 
 export const onRequest = async ({ request, env }) => {
-  const corsHeaders = { 'Access-Control-Allow-Origin': '*' };
+  const corsHeaders = getDefaultCorsHeaders();
 
   if (request.method === 'OPTIONS') {
     return new Response(null, {
       status: 204,
-      headers: { ...corsHeaders, 'Access-Control-Allow-Methods': 'GET, OPTIONS' },
+      headers: {
+        ...corsHeaders,
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      },
     });
   }
 
   try {
+    if (request.method !== 'GET') {
+      return new Response(
+        JSON.stringify({ error: 'Method Not Allowed' }),
+        { status: 405, headers: { 'Content-Type': 'application/json', ...corsHeaders } },
+      );
+    }
     const url = new URL(request.url);
     const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
+    const access = await resolveAccessContext(request, env);
+    if (!isDateAllowedForAccess(date, access)) {
+      return buildDateForbiddenResponse(date, { 'Content-Type': 'application/json', ...corsHeaders });
+    }
     const baseUrl = (env.DATA_BASE_URL || DEFAULT_DATA_BASE_URL).replace(/\/$/, '');
 
     // Strategy 1: R2 Workers bucket binding

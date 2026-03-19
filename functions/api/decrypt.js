@@ -12,7 +12,15 @@
  *   DATA_BASE_URL    // base URL to the R2 bucket/domain hosting encrypted files (public)
  */
 
+import {
+  buildDateForbiddenResponse,
+  getDefaultCorsHeaders,
+  isDateAllowedForAccess,
+  resolveAccessContext,
+} from './_access.js';
+
 const DEFAULT_DATA_BASE_URL = 'https://pub-513149f63c494eefba758cd3927e2285.r2.dev';
+const PREMIUM_FILES = new Set(['rotations', 'boxscores', 'stats']);
 
 const te = new TextEncoder();
 const td = new TextDecoder();
@@ -44,14 +52,42 @@ const decrypt = async (cryptoKey, encrypted) => {
 };
 
 export const onRequest = async ({ request, env }) => {
-  const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
+  const corsHeaders = getDefaultCorsHeaders();
+  const headers = { 'Content-Type': 'application/json', ...corsHeaders };
+
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        ...corsHeaders,
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      },
+    });
+  }
   try {
+    if (request.method !== 'GET') {
+      return new Response(JSON.stringify({ error: 'Method Not Allowed' }), { status: 405, headers });
+    }
+
     const url = new URL(request.url);
     const file = (url.searchParams.get('file') || '').replace(/[^a-zA-Z0-9_-]/g, '');
     const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
     const slate = (url.searchParams.get('slate') || '').replace(/[^a-zA-Z0-9_-]/g, '');
     if (!file) {
       return new Response(JSON.stringify({ error: 'file required' }), { status: 400, headers });
+    }
+    const access = await resolveAccessContext(request, env);
+    if (!isDateAllowedForAccess(date, access)) {
+      return buildDateForbiddenResponse(date, headers);
+    }
+    if (!access.paid && PREMIUM_FILES.has(file)) {
+      return new Response(
+        JSON.stringify({
+          error: `${file}.json is a premium data file and requires an active paid membership.`,
+          code: 'PREMIUM_REQUIRED',
+        }),
+        { status: 403, headers },
+      );
     }
 
     const base =

@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { AlertCircle, RefreshCw, ChevronDown, ChevronUp, Newspaper } from 'lucide-react';
+import { useAuth as useClerkAuth } from "@clerk/clerk-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -577,6 +578,7 @@ interface Props {
 }
 
 const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
+  const { getToken } = useClerkAuth();
   const [entries, setEntries] = useState<BlogBriefEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -586,7 +588,14 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
     setError(null);
     setEntries([]);
     try {
-      const resp = await fetch(`/api/brief?date=${slateDate}`);
+      const headers = new Headers();
+      try {
+        const token = await getToken();
+        if (token) headers.set('Authorization', `Bearer ${token}`);
+      } catch {
+        // Continue unauthenticated if token retrieval fails.
+      }
+      const resp = await fetch(`/api/brief?date=${slateDate}`, { headers });
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({}));
         setError((body as any)?.error ?? `HTTP ${resp.status}`);
@@ -651,7 +660,7 @@ const SlateNewsView: React.FC<Props> = ({ slateDate }) => {
     } finally {
       setLoading(false);
     }
-  }, [slateDate]);
+  }, [getToken, slateDate]);
 
   useEffect(() => { fetchBriefs(); }, [fetchBriefs]);
 
