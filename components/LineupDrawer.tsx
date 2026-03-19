@@ -16,7 +16,7 @@ export const LineupDrawer: React.FC<LineupDrawerProps> = ({ players, showActuals
   const [isExpanded, setIsExpanded] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState<Slot | null>(null);
-  const [dragBounds, setDragBounds] = useState({ top: -400, bottom: 120 });
+  const [dragBounds, setDragBounds] = useState({ left: -320, right: 40 });
   const dragControls = useDragControls();
   const dragContainerRef = useRef<HTMLDivElement | null>(null);
   const suppressNextToggleRef = useRef(false);
@@ -46,11 +46,11 @@ export const LineupDrawer: React.FC<LineupDrawerProps> = ({ players, showActuals
       const el = dragContainerRef.current;
       if (!el || typeof window === 'undefined') return;
       const rect = el.getBoundingClientRect();
-      const safeTop = 8;
-      const safeBottom = window.innerHeight - 8;
-      const roomUp = Math.max(0, rect.top - safeTop);
-      const roomDown = Math.max(0, safeBottom - rect.bottom);
-      setDragBounds({ top: -roomUp, bottom: roomDown });
+      const safeLeft = 8;
+      const safeRight = window.innerWidth - 8;
+      const roomLeft = Math.max(0, rect.left - safeLeft);
+      const roomRight = Math.max(0, safeRight - rect.right);
+      setDragBounds({ left: -roomLeft, right: roomRight });
     };
     computeBounds();
     window.addEventListener('resize', computeBounds);
@@ -66,14 +66,14 @@ export const LineupDrawer: React.FC<LineupDrawerProps> = ({ players, showActuals
       <motion.div
         ref={dragContainerRef}
         className="max-w-lg ml-auto pointer-events-auto"
-        drag="y"
+        drag="x"
         dragListener={false}
         dragControls={dragControls}
         dragConstraints={dragBounds}
         dragElastic={0}
         dragMomentum={false}
         onDragEnd={(_, info) => {
-          if (Math.abs(info.offset.y) > 4) {
+          if (Math.abs(info.offset.x) > 4) {
             suppressNextToggleRef.current = true;
             window.setTimeout(() => {
               suppressNextToggleRef.current = false;
