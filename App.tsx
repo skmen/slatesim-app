@@ -544,6 +544,68 @@ const NavItem = ({ label, icon: Icon, targetView, entitlement, setView, view, ha
   );
 };
 
+const AdminPagePanel: React.FC<{
+  view: ViewState;
+  setView: (view: ViewState) => void;
+  selectedDate: string;
+}> = ({ view, setView, selectedDate }) => {
+  const appLinks: Array<{ label: string; target: ViewState }> = [
+    { label: 'Research', target: ViewState.RESEARCH },
+    { label: 'Compare', target: ViewState.COMPARE },
+    { label: 'Optimizer', target: ViewState.OPTIMIZER },
+    { label: 'Entries', target: ViewState.ENTRY_MANAGER },
+    { label: 'Report', target: ViewState.REPORT },
+  ];
+  const routeLinks = [
+    { label: 'Landing', href: '/' },
+    { label: 'Preview', href: '/preview' },
+    { label: 'Pricing', href: '/pricing' },
+    { label: 'Terms', href: '/terms' },
+    { label: 'Privacy', href: '/privacy' },
+  ];
+
+  return (
+    <aside className="hidden lg:block">
+      <div className="sticky top-24 rounded-sm border border-ink/15 bg-white/70 backdrop-blur-sm p-3 space-y-4">
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-widest text-drafting-orange">Admin Panel</p>
+          <p className="text-[10px] text-ink/60">Quick page access</p>
+        </div>
+        <div className="space-y-1">
+          <p className="text-[9px] font-black uppercase tracking-widest text-ink/50">App Views</p>
+          {appLinks.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              onClick={() => setView(item.target)}
+              className={`w-full text-left rounded-sm border px-2 py-1.5 text-[10px] font-black uppercase tracking-widest transition-colors ${
+                view === item.target
+                  ? 'border-drafting-orange bg-drafting-orange text-white'
+                  : 'border-ink/15 bg-white text-ink/70 hover:border-drafting-orange/40 hover:text-drafting-orange'
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <div className="space-y-1">
+          <p className="text-[9px] font-black uppercase tracking-widest text-ink/50">Public Routes</p>
+          {routeLinks.map((item) => (
+            <a
+              key={item.href}
+              href={item.href}
+              className="block rounded-sm border border-ink/15 bg-white px-2 py-1.5 text-[10px] font-black uppercase tracking-widest text-ink/70 hover:border-drafting-orange/40 hover:text-drafting-orange transition-colors"
+            >
+              {item.label}
+            </a>
+          ))}
+        </div>
+        <p className="text-[9px] text-ink/50">Slate date: {selectedDate}</p>
+      </div>
+    </aside>
+  );
+};
+
 const MembershipGateCard: React.FC<{ title: string; body: string }> = ({ title, body }) => (
   <div className="max-w-2xl mx-auto mt-12 rounded-sm border border-ink/10 bg-white/55 p-6 shadow-sm">
     <div className="inline-flex items-center gap-2 rounded-sm border border-drafting-orange/30 bg-drafting-orange/10 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-drafting-orange">
@@ -640,6 +702,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
   const canAccessOptimizer = hasEntitlement('access_optimizer');
   const canAccessEntries = hasEntitlement('access_entries');
   const canAccessReport = hasEntitlement('access_report');
+  const isAdmin = user?.role === 'admin';
   const roleLabel = useMemo(() => {
     if (!user?.role) return '';
     if (user.role === 'soft-launch') return 'member';
@@ -1062,99 +1125,110 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
       </header>
 
       <main className="flex-1 max-w-7xl mx-auto px-4 pt-6 pb-24 sm:pb-8 w-full">
-        {view === ViewState.RESEARCH && (
-          <DashboardView
-            players={state.slate.players}
-            games={state.slate.games || []}
-            isHistorical={isHistorical}
-            showActuals={effectiveShowActuals}
-            injuryLookup={injuryLookup}
-            depthCharts={depthCharts}
-            startingLineupLookup={startingLineupLookup}
-            previewMode={previewMode}
-            hideSignalColumn={previewMode}
-            slateDate={state.slate.date}
-            availableSlates={availableSlates}
-            selectedSlate={selectedSlate}
-            slateGameCounts={slateGameCounts}
-            onSelectSlate={setSelectedSlate}
-            canUseResearchTools={canUseResearchTools}
-            deepDiveAllowedTabs={deepDiveAllowedTabs}
-          />
-        )}
-        {!previewMode && view === ViewState.COMPARE && (
-          canAccessCompare ? (
-            <CompareView
-              players={state.slate.players}
-              games={state.slate.games}
-              showActuals={effectiveShowActuals}
+        <div className={isAdmin && !previewMode ? 'lg:grid lg:grid-cols-[220px_minmax(0,1fr)] lg:gap-6' : ''}>
+          {isAdmin && !previewMode && (
+            <AdminPagePanel
+              view={view}
+              setView={setView}
+              selectedDate={selectedDate}
             />
-          ) : (
-            <MembershipGateCard
-              title="Compare Page Is In Soft Launch"
-              body="Upgrade to Soft Launch to unlock cross-player and matchup comparison workflows."
-            />
-          )
-        )}
-        {!previewMode && view === ViewState.OPTIMIZER && (
-          canAccessOptimizer ? (
-            <OptimizerView
-              players={state.slate.players}
-              games={state.slate.games}
-              slateDate={state.slate.date}
-              showActuals={effectiveShowActuals}
-              injuryLookup={injuryLookup}
-              depthCharts={depthCharts}
-              startingLineupLookup={startingLineupLookup}
-              deepDiveAllowedTabs={deepDiveAllowedTabs}
-            />
-          ) : (
-            <MembershipGateCard
-              title="Optimizer Is In Soft Launch"
-              body="Upgrade to Soft Launch to run optimizer builds and advanced lineup generation."
-            />
-          )
-        )}
-        {!previewMode && view === ViewState.ENTRY_MANAGER && (
-          canAccessEntries ? (
-            selectedDate === getLocalDateStr(new Date()) ? (
-              <DKEntryManager
+          )}
+          <div className="min-w-0">
+            {view === ViewState.RESEARCH && (
+              <DashboardView
                 players={state.slate.players}
-                games={state.slate.games}
-                showActuals={effectiveShowActuals}
-                slateDate={state.slate.date}
-                deepDiveAllowedTabs={deepDiveAllowedTabs}
-              />
-            ) : (
-              <div className="max-w-2xl mx-auto mt-12 rounded-sm border border-ink/10 bg-white/55 p-6 text-sm text-ink/70">
-                Entries are available only for today&apos;s slate.
-              </div>
-            )
-          ) : (
-            <MembershipGateCard
-              title="Entries Is In Soft Launch"
-              body="Upgrade to Soft Launch to use DK entry management and import/export workflows."
-            />
-          )
-        )}
-        {!previewMode && view === ViewState.REPORT && (
-          canAccessReport ? (
-            <ErrorBoundary fallback={<div className="p-4 text-ink">Report unavailable: component error.</div>}>
-              <ReportView
-                players={state.slate.players || []}
                 games={state.slate.games || []}
+                isHistorical={isHistorical}
+                showActuals={effectiveShowActuals}
+                injuryLookup={injuryLookup}
+                depthCharts={depthCharts}
+                startingLineupLookup={startingLineupLookup}
+                previewMode={previewMode}
+                hideSignalColumn={previewMode}
                 slateDate={state.slate.date}
-                hideBestPossibleLineup={user?.role === 'soft-launch'}
+                availableSlates={availableSlates}
+                selectedSlate={selectedSlate}
+                slateGameCounts={slateGameCounts}
+                onSelectSlate={setSelectedSlate}
+                canUseResearchTools={canUseResearchTools}
                 deepDiveAllowedTabs={deepDiveAllowedTabs}
               />
-            </ErrorBoundary>
-          ) : (
-            <MembershipGateCard
-              title="Report Page Is In Soft Launch"
-              body="Upgrade to Soft Launch to unlock post-slate reporting and accuracy breakdowns."
-            />
-          )
-        )}
+            )}
+            {!previewMode && view === ViewState.COMPARE && (
+              canAccessCompare ? (
+                <CompareView
+                  players={state.slate.players}
+                  games={state.slate.games}
+                  showActuals={effectiveShowActuals}
+                />
+              ) : (
+                <MembershipGateCard
+                  title="Compare Page Is In Soft Launch"
+                  body="Upgrade to Soft Launch to unlock cross-player and matchup comparison workflows."
+                />
+              )
+            )}
+            {!previewMode && view === ViewState.OPTIMIZER && (
+              canAccessOptimizer ? (
+                <OptimizerView
+                  players={state.slate.players}
+                  games={state.slate.games}
+                  slateDate={state.slate.date}
+                  showActuals={effectiveShowActuals}
+                  injuryLookup={injuryLookup}
+                  depthCharts={depthCharts}
+                  startingLineupLookup={startingLineupLookup}
+                  deepDiveAllowedTabs={deepDiveAllowedTabs}
+                />
+              ) : (
+                <MembershipGateCard
+                  title="Optimizer Is In Soft Launch"
+                  body="Upgrade to Soft Launch to run optimizer builds and advanced lineup generation."
+                />
+              )
+            )}
+            {!previewMode && view === ViewState.ENTRY_MANAGER && (
+              canAccessEntries ? (
+                selectedDate === getLocalDateStr(new Date()) ? (
+                  <DKEntryManager
+                    players={state.slate.players}
+                    games={state.slate.games}
+                    showActuals={effectiveShowActuals}
+                    slateDate={state.slate.date}
+                    deepDiveAllowedTabs={deepDiveAllowedTabs}
+                  />
+                ) : (
+                  <div className="max-w-2xl mx-auto mt-12 rounded-sm border border-ink/10 bg-white/55 p-6 text-sm text-ink/70">
+                    Entries are available only for today&apos;s slate.
+                  </div>
+                )
+              ) : (
+                <MembershipGateCard
+                  title="Entries Is In Soft Launch"
+                  body="Upgrade to Soft Launch to use DK entry management and import/export workflows."
+                />
+              )
+            )}
+            {!previewMode && view === ViewState.REPORT && (
+              canAccessReport ? (
+                <ErrorBoundary fallback={<div className="p-4 text-ink">Report unavailable: component error.</div>}>
+                  <ReportView
+                    players={state.slate.players || []}
+                    games={state.slate.games || []}
+                    slateDate={state.slate.date}
+                    hideBestPossibleLineup={user?.role === 'soft-launch'}
+                    deepDiveAllowedTabs={deepDiveAllowedTabs}
+                  />
+                </ErrorBoundary>
+              ) : (
+                <MembershipGateCard
+                  title="Report Page Is In Soft Launch"
+                  body="Upgrade to Soft Launch to unlock post-slate reporting and accuracy breakdowns."
+                />
+              )
+            )}
+          </div>
+        </div>
       </main>
 
       <IntegrityFooter withBottomNav={!previewMode} />
