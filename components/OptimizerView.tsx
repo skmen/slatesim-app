@@ -34,6 +34,7 @@ interface Props {
   injuryLookup?: InjuryLookup | null;
   depthCharts?: any | null;
   startingLineupLookup?: StartingLineupLookup | null;
+  deepDiveAllowedTabs?: Array<'dfs' | 'stats' | 'matchup' | 'synergy' | 'depth'>;
 }
 
 type SortDir = 'asc' | 'desc';
@@ -878,7 +879,7 @@ const computeOptimizerPriority = (player: Player, games: GameInfo[]): number => 
   return 0;
 };
 
-export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, showActuals: showActualsProp, injuryLookup, depthCharts, startingLineupLookup }) => {
+export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, showActuals: showActualsProp, injuryLookup, depthCharts, startingLineupLookup, deepDiveAllowedTabs }) => {
   const isDateBeforeToday = (dateStr: string): boolean => {
     if (!dateStr) return false;
     const input = new Date(dateStr);
@@ -1664,6 +1665,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           onOptimizerExposureChange={handleDeepDiveExposureChange}
           onOptimizerLockChange={handleDeepDiveLockChange}
           onOptimizerExcludeChange={handleDeepDiveExcludeChange}
+          allowedTabs={deepDiveAllowedTabs}
         />
       )}
       <div className="bg-white/40 backdrop-blur-sm rounded-sm border border-ink/10 p-4 shadow-sm">

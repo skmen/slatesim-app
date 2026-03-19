@@ -57,10 +57,23 @@ export const onRequest = async ({ request, env }) => {
       env.DATA_BASE_URL ||
       env.PROJECTIONS_URL?.replace(/\/\{date\}.+$/, '') ||
       DEFAULT_DATA_BASE_URL;
-    const target = `${base.replace(/\/$/, '')}/${date}/${file}.json`;
+    const normalizedBase = base.replace(/\/$/, '');
+    const targetJson = `${normalizedBase}/${date}/${file}.json`;
+    const targetEnc = `${normalizedBase}/${date}/${file}.enc.json`;
 
-    const key = await importKey(env.ENCRYPTION_KEY);
-    const resp = await fetch(target, { cache: 'no-cache' });
+    let resp = await fetch(targetJson, { cache: 'no-cache' });
+    let target = targetJson;
+    if (resp.status === 404) {
+      // Backward compatibility: some artifacts may still be stored as *.enc.json.
+      const encResp = await fetch(targetEnc, { cache: 'no-cache' });
+      if (encResp.ok) {
+        resp = encResp;
+        target = targetEnc;
+      }
+    }
+    if (resp.status === 404) {
+      return new Response(JSON.stringify({ error: 'Not found' }), { status: 404, headers });
+    }
     if (!resp.ok) {
       console.error('Fetch failed', resp.status, target);
       return new Response(JSON.stringify({ error: 'Unavailable' }), { status: 502, headers });
@@ -69,13 +82,23 @@ export const onRequest = async ({ request, env }) => {
     const lastModified = resp.headers.get('last-modified');
     if (lastModified) headers['last-modified'] = lastModified;
 
-    const encrypted = await resp.json();
-    if (!encrypted?.iv || !encrypted?.payload) {
-      return new Response(JSON.stringify({ error: 'Malformed payload' }), { status: 500, headers });
+    const rawText = await resp.text();
+    let parsed;
+    try {
+      parsed = safeJsonParse(rawText);
+    } catch (parseErr) {
+      console.error('Parse error', target, parseErr?.message || parseErr);
+      return new Response(JSON.stringify({ error: 'Invalid payload' }), { status: 500, headers });
     }
 
-    const decrypted = await decrypt(key, encrypted);
-    return new Response(JSON.stringify(decrypted), { status: 200, headers });
+    // Support both encrypted and plain JSON blobs.
+    if (parsed?.iv && parsed?.payload) {
+      const key = await importKey(env.ENCRYPTION_KEY);
+      const decrypted = await decrypt(key, parsed);
+      return new Response(JSON.stringify(decrypted), { status: 200, headers });
+    }
+
+    return new Response(JSON.stringify(parsed), { status: 200, headers });
   } catch (err) {
     console.error('Decrypt API error', err?.message);
     return new Response(JSON.stringify({ error: 'Unable to load data' }), { status: 500, headers });

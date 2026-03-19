@@ -18,6 +18,7 @@ interface Props {
   games: GameInfo[];
   showActuals?: boolean;
   slateDate?: string;
+  deepDiveAllowedTabs?: Array<'dfs' | 'stats' | 'matchup' | 'synergy' | 'depth'>;
 }
 
 export type Entry = {
@@ -168,7 +169,7 @@ const clearEntryManagerSession = () => {
   localStorage.removeItem(ENTRY_MANAGER_SESSION_KEY);
 };
 
-export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = false, slateDate = '' }) => {
+export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = false, slateDate = '', deepDiveAllowedTabs }) => {
   const [entries, setEntries] = useState<Entry[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<{ entryIdx: number; slot: Slot } | null>(null);
@@ -955,7 +956,18 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
       )}
 
       {deepDivePlayer && (
-        <PlayerDeepDive player={deepDivePlayer} players={players} games={games} onClose={() => setDeepDivePlayer(null)} isHistorical={false} showActuals={showActuals} depthCharts={undefined} injuryLookup={undefined} startingLineupLookup={undefined}/>
+        <PlayerDeepDive
+          player={deepDivePlayer}
+          players={players}
+          games={games}
+          onClose={() => setDeepDivePlayer(null)}
+          isHistorical={false}
+          showActuals={showActuals}
+          depthCharts={undefined}
+          injuryLookup={undefined}
+          startingLineupLookup={undefined}
+          allowedTabs={deepDiveAllowedTabs}
+        />
       )}
     </div>
   );

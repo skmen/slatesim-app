@@ -15,12 +15,13 @@ const ArrowLeftIcon = ({ className = '' }) => (
 );
 
 const FEATURES = [
-  'Research Page: full projections with export and filter',
-  'Research Page: limited Player Deep Dive (DFS, STATS, DEPTH CHART)',
-  'Compare Page',
+  'Player and game research',
+  'Player deep dives: Historical DFS stats, play by play data, depth charts',
+  'Compare player stats',
   'Optimizer',
-  'Entries',
-  'Report Page',
+  'Manage DraftKings entries',
+  "Projections performance report (How'd the projections do vs actual game)",
+  'Enjoy this introductory offer for a limited time',
 ];
 
 export const PricingPage: React.FC = () => {
@@ -77,7 +78,7 @@ export const PricingPage: React.FC = () => {
           <p className="text-xs font-black uppercase tracking-[0.28em] text-drafting-orange">Pricing</p>
           <h1 className="text-4xl md:text-5xl font-black leading-tight">Soft Launch Membership</h1>
           <p className="text-ink/70 max-w-2xl mx-auto text-base">
-            Introductory pricing at <span className="font-black text-ink">$10/week</span>. Cancel any time.
+            Introductory offer for our soft launch. Weekly billing. DraftKings support only.
           </p>
         </header>
 
@@ -91,7 +92,7 @@ export const PricingPage: React.FC = () => {
             <span className="text-sm uppercase tracking-widest text-ink/50">per week</span>
           </div>
           <p className="mt-2 text-sm text-ink/70">
-            One simple tier for the Soft Launch. Weekly billing through Lemon Squeezy.
+            Introductory offer for our soft launch. Weekly billing. DraftKings support only.
           </p>
 
           <div className="mt-6 space-y-2">

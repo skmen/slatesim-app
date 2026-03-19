@@ -623,6 +623,12 @@ export const DashboardView: React.FC<Props> = ({
     }
   }, [canUseResearchTools, showFilterBuilder]);
 
+  useEffect(() => {
+    if (!canUseResearchTools && selectedPlayer) {
+      setSelectedPlayer(null);
+    }
+  }, [canUseResearchTools, selectedPlayer]);
+
   const effectiveGames = useMemo<GameInfo[]>(() => {
     const matchupKeyFromTeams = (teamA: string, teamB: string) => {
       const a = String(teamA || '').toUpperCase();
@@ -1107,7 +1113,7 @@ export const DashboardView: React.FC<Props> = ({
               <h3 className="text-xs font-black uppercase tracking-widest text-ink/60">Player Projections</h3>
             </div>
             <div className="flex items-center gap-2">
-              {canUseResearchTools ? (
+              {canUseResearchTools && (
                 <>
                   <button
                     type="button"
@@ -1128,13 +1134,6 @@ export const DashboardView: React.FC<Props> = ({
                     <Filter className="w-3.5 h-3.5" /> Filter {filters.length > 0 && `(${filters.length})`}
                   </button>
                 </>
-              ) : (
-                <a
-                  href="/pricing"
-                  className="px-3 py-2 rounded-sm text-[10px] font-bold uppercase transition-all border border-drafting-orange/35 text-drafting-orange hover:bg-drafting-orange/10"
-                >
-                  Unlock Export + Filters
-                </a>
               )}
             </div>
           </div>
@@ -1247,8 +1246,12 @@ export const DashboardView: React.FC<Props> = ({
                     return (
                     <tr
                       key={player.id}
-                      onClick={() => setSelectedPlayer(player)}
-                      className={`border-b border-ink/5 cursor-pointer transition-colors ${
+                      onClick={() => {
+                        if (canUseResearchTools) setSelectedPlayer(player);
+                      }}
+                      className={`border-b border-ink/5 transition-colors ${
+                        canUseResearchTools ? 'cursor-pointer' : 'cursor-default'
+                      } ${
                         exceededProjection
                           ? 'bg-emerald-200/80 hover:bg-emerald-300/80'
                           : 'hover:bg-white/70'
@@ -1342,7 +1345,7 @@ export const DashboardView: React.FC<Props> = ({
         </div>
       </div>
 
-      {selectedPlayer && (
+      {canUseResearchTools && selectedPlayer && (
         <PlayerDeepDive
           player={selectedPlayer}
           players={players}

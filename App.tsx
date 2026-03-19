@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { BarChart2, ChevronLeft, ChevronRight, Database, List, LogOut, Lock, Zap, GitCompare } from 'lucide-react';
-import { useDropzone } from 'react-dropzone';
+import { BarChart2, ChevronLeft, ChevronRight, List, LogOut, Lock, Zap, GitCompare } from 'lucide-react';
 import { useUser } from "@clerk/clerk-react"; 
 import { AppState, ViewState, ContestInput, ContestDerived, Entitlement, GameInfo } from './types';
 import { parseProjections, parsePipelineJson, parseOptimizerLineups, parseUserLineupsRows, canonicalizeId, normalizeName } from './utils/csvParser';
@@ -579,16 +578,25 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
   const todayStr = useMemo(() => getLocalDateStr(new Date()), []);
   const previewMaxDate = useMemo(() => getPreviewMaxDateStr(), []);
   const previewMinDate = useMemo(() => getPreviewMinDateStr(), []);
-  const clampPreviewDate = useCallback((dateStr: string): string => {
-    if (!previewMode) return dateStr;
+  const canUseResearchTools = hasEntitlement('full_research_tools');
+  const freeUserMinDate = useMemo(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - 7);
+    return getLocalDateStr(d);
+  }, []);
+  const freeUserMaxDate = todayStr;
+  const clampSelectableDate = useCallback((dateStr: string): string => {
+    if (!previewMode && canUseResearchTools) return dateStr;
     const parsed = parseLocalDate(dateStr);
-    const minDate = parseLocalDate(previewMinDate);
-    const maxDate = parseLocalDate(previewMaxDate);
-    if (!parsed || !minDate || !maxDate) return previewMaxDate;
-    if (parsed < minDate) return previewMinDate;
-    if (parsed > maxDate) return previewMaxDate;
+    const minDate = parseLocalDate(previewMode ? previewMinDate : freeUserMinDate);
+    const maxDate = parseLocalDate(previewMode ? previewMaxDate : freeUserMaxDate);
+    const fallbackDate = previewMode ? previewMaxDate : freeUserMaxDate;
+    if (!parsed || !minDate || !maxDate) return fallbackDate;
+    if (parsed < minDate) return previewMode ? previewMinDate : freeUserMinDate;
+    if (parsed > maxDate) return previewMode ? previewMaxDate : freeUserMaxDate;
     return getLocalDateStr(parsed);
-  }, [previewMode, previewMaxDate, previewMinDate]);
+  }, [canUseResearchTools, freeUserMaxDate, freeUserMinDate, previewMode, previewMaxDate, previewMinDate]);
   const shiftSelectedDate = useCallback((deltaDays: number) => {
     setSelectedDate((prev) => {
       const base = parseLocalDate(prev);
@@ -596,19 +604,21 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
       const next = new Date(base);
       next.setDate(next.getDate() + deltaDays);
       const nextStr = getLocalDateStr(next);
-      return clampPreviewDate(nextStr);
+      return clampSelectableDate(nextStr);
     });
-  }, [clampPreviewDate]);
+  }, [clampSelectableDate]);
   const allowHistoricalActuals = useMemo(() => isDateBeforeToday(selectedDate), [selectedDate]);
   const effectiveShowActuals = showActuals && allowHistoricalActuals;
   const canShiftPrev = useMemo(() => {
-    if (!previewMode) return true;
-    return selectedDate > previewMinDate;
-  }, [previewMode, previewMinDate, selectedDate]);
+    if (previewMode) return selectedDate > previewMinDate;
+    if (!canUseResearchTools) return selectedDate > freeUserMinDate;
+    return true;
+  }, [canUseResearchTools, freeUserMinDate, previewMode, previewMinDate, selectedDate]);
   const canShiftNext = useMemo(() => {
-    if (!previewMode) return true;
-    return selectedDate < previewMaxDate;
-  }, [previewMaxDate, previewMode, selectedDate]);
+    if (previewMode) return selectedDate < previewMaxDate;
+    if (!canUseResearchTools) return selectedDate < freeUserMaxDate;
+    return true;
+  }, [canUseResearchTools, freeUserMaxDate, previewMaxDate, previewMode, selectedDate]);
   const formattedLastModified = useMemo(() => {
     if (!dataLastModified) return null;
     const parsed = new Date(dataLastModified);
@@ -620,11 +630,21 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
     if (formattedLastModified) return formattedLastModified;
     return '—';
   }, [formattedLastModified]);
-  const canUseResearchTools = hasEntitlement('full_research_tools');
   const canAccessCompare = hasEntitlement('access_compare');
   const canAccessOptimizer = hasEntitlement('access_optimizer');
   const canAccessEntries = hasEntitlement('access_entries');
   const canAccessReport = hasEntitlement('access_report');
+  const roleLabel = useMemo(() => {
+    if (!user?.role) return '';
+    if (user.role === 'soft-launch') return 'member';
+    return user.role;
+  }, [user?.role]);
+  const deepDiveAllowedTabs = useMemo(() => {
+    if (user?.role !== 'soft-launch') return undefined;
+    return ['dfs', 'stats', 'depth'] as Array<'dfs' | 'stats' | 'matchup' | 'synergy' | 'depth'>;
+  }, [user?.role]);
+  const dateInputMin = previewMode ? previewMinDate : (canUseResearchTools ? undefined : freeUserMinDate);
+  const dateInputMax = previewMode ? previewMaxDate : (canUseResearchTools ? undefined : freeUserMaxDate);
 
   useEffect(() => {
     const previousDate = previousSelectedDateRef.current;
@@ -635,10 +655,10 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
   }, [selectedDate]);
 
   useEffect(() => {
-    if (!previewMode) return;
-    setSelectedDate((prev) => clampPreviewDate(prev));
-    setView(ViewState.RESEARCH);
-  }, [previewMode, clampPreviewDate]);
+    if (!previewMode && canUseResearchTools) return;
+    setSelectedDate((prev) => clampSelectableDate(prev));
+    if (previewMode) setView(ViewState.RESEARCH);
+  }, [canUseResearchTools, previewMode, clampSelectableDate]);
 
   useEffect(() => {
     let cancelled = false;
@@ -855,57 +875,6 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
     [state.slate.lineups, state.slate.players, state.contestState.input]
   );
 
-  const onDropMain = useCallback(async (acceptedFiles: File[]) => {
-    if (!hasEntitlement('admin_panel')) return;
-    const file = acceptedFiles[0];
-    if (!file) return;
-    setLoading(true);
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      try {
-        const content = e.target?.result as string;
-        const refData = parsePipelineJson(content);
-        let refPlayers = refData.referencePlayers || [];
-        
-        const games = resolveSlateGames(refData.games || [], refPlayers, refData.teams || [], selectedSlate);
-
-        const gameMap = new Map<string, GameInfo>();
-        games.forEach(g => {
-          gameMap.set(g.teamA.teamId, g);
-          gameMap.set(g.teamB.teamId, g);
-        });
-
-        refPlayers = refPlayers.map(p => {
-          if (p.opponent) return p;
-          const game = gameMap.get(p.team);
-          if (!game) return p;
-          const opponentId = game.teamA.teamId === p.team ? game.teamB.teamId : game.teamA.teamId;
-          return { ...p, opponent: opponentId };
-        });
-
-        setState(prev => ({
-          ...prev,
-          slate: {
-            ...prev.slate,
-            date: new Date().toISOString().split('T')[0],
-            games,
-            players: refPlayers,
-            lineups: refData.referenceLineups || [],
-          },
-          contestState: refData.contestState || prev.contestState,
-        }));
-        if (refData.contestState) {
-          setState(prev => ({ ...prev, contestState: refData.contestState }));
-        }
-        setDataLastModified(null);
-        setDepthCharts(null);
-        setStartingLineupLookup(new Map());
-      } catch (err) { alert("Data Error: Failed to parse lineup pack."); }
-      setLoading(false);
-    };
-    reader.readAsText(file);
-  }, [hasEntitlement, selectedSlate]);
-
   const onBeliefUpload = useCallback(async (acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
     if (!file) return;
@@ -941,14 +910,6 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
     setLoading(false);
   }, [state.slate.players]);
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
-    onDrop: onDropMain, 
-    accept: { 'application/json': ['.json'] }, 
-    multiple: false 
-  } as any);
-
-  
-
   return (
     <div className="min-h-screen font-sans bg-vellum text-ink flex flex-col selection:bg-drafting-orange selection:text-white">
       <header className="bg-vellum/80 border-b border-ink/10 sticky top-0 z-50 backdrop-blur-md">
@@ -965,7 +926,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                 <button
                   type="button"
                   onClick={() => shiftSelectedDate(-1)}
-                  disabled={previewMode && !canShiftPrev}
+                  disabled={!canShiftPrev}
                   className="inline-flex items-center justify-center bg-vellum border border-ink/20 rounded-sm w-7 h-7 text-ink/70 hover:text-drafting-orange hover:border-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                   aria-label="Previous day"
                   title="Previous day"
@@ -975,15 +936,15 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                 <input
                   type="date"
                   value={selectedDate}
-                  min={previewMode ? previewMinDate : undefined}
-                  max={previewMode ? previewMaxDate : undefined}
-                  onChange={(e) => setSelectedDate(clampPreviewDate(e.target.value))}
+                  min={dateInputMin}
+                  max={dateInputMax}
+                  onChange={(e) => setSelectedDate(clampSelectableDate(e.target.value))}
                   className="bg-vellum border border-ink/20 rounded-sm px-2 py-1 text-xs font-bold text-ink outline-none focus:border-drafting-orange"
                 />
                 <button
                   type="button"
                   onClick={() => shiftSelectedDate(1)}
-                  disabled={previewMode && !canShiftNext}
+                  disabled={!canShiftNext}
                   className="inline-flex items-center justify-center bg-vellum border border-ink/20 rounded-sm w-7 h-7 text-ink/70 hover:text-drafting-orange hover:border-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                   aria-label="Next day"
                   title="Next day"
@@ -1006,16 +967,21 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                   <span className="text-[9px] font-bold text-ink/70 uppercase tracking-widest">
                     Updated: {displayedUpdated}
                   </span>
-                  <span className="text-[8px] font-black text-drafting-orange uppercase opacity-80">{user?.role}</span>
+                  <span className="text-[8px] font-black text-drafting-orange uppercase opacity-80">{roleLabel}</span>
                 </div>
+              )}
+              {!previewMode && !canUseResearchTools && (
+                <a
+                  href="/pricing"
+                  className="hidden sm:inline-flex text-[9px] font-black text-white bg-drafting-orange border border-drafting-orange px-2 py-1 rounded uppercase tracking-widest hover:brightness-110 transition-all"
+                >
+                  UPGRADE PLAN
+                </a>
               )}
               {previewMode && (
                 <div className="hidden sm:block text-[9px] font-black uppercase tracking-widest text-ink/50">
                   Preview • Last 7 Days
                 </div>
-              )}
-              {!previewMode && hasEntitlement('admin_panel') && (
-                <button onClick={() => setView(ViewState.LOAD)} className="hidden sm:inline-flex text-[9px] font-black text-drafting-orange border border-drafting-orange/20 px-2 py-1 rounded uppercase tracking-widest hover:bg-drafting-orange/10 transition-all font-mono">UPDATE_DATA</button>
               )}
               {previewMode ? (
                 <a
@@ -1035,7 +1001,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
               <button
                 type="button"
                 onClick={() => shiftSelectedDate(-1)}
-                disabled={previewMode && !canShiftPrev}
+                disabled={!canShiftPrev}
                 className="inline-flex items-center justify-center bg-vellum border border-ink/20 rounded-sm w-7 h-7 text-ink/70 hover:text-drafting-orange hover:border-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                 aria-label="Previous day"
               >
@@ -1044,15 +1010,15 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
               <input
                 type="date"
                 value={selectedDate}
-                min={previewMode ? previewMinDate : undefined}
-                max={previewMode ? previewMaxDate : undefined}
-                onChange={(e) => setSelectedDate(clampPreviewDate(e.target.value))}
+                min={dateInputMin}
+                max={dateInputMax}
+                onChange={(e) => setSelectedDate(clampSelectableDate(e.target.value))}
                 className="bg-vellum border border-ink/20 rounded-sm px-2 py-1 text-xs font-bold text-ink outline-none focus:border-drafting-orange"
               />
               <button
                 type="button"
                 onClick={() => shiftSelectedDate(1)}
-                disabled={previewMode && !canShiftNext}
+                disabled={!canShiftNext}
                 className="inline-flex items-center justify-center bg-vellum border border-ink/20 rounded-sm w-7 h-7 text-ink/70 hover:text-drafting-orange hover:border-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                 aria-label="Next day"
               >
@@ -1069,9 +1035,19 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                 </button>
               )}
               {!previewMode && (
-                <div className="flex flex-col items-end">
-                  <span className="text-[9px] font-bold text-ink uppercase tracking-tighter">{user?.username}</span>
-                  <span className="text-[8px] font-bold text-ink/60 uppercase tracking-widest truncate max-w-[110px]">Upd: {displayedUpdated}</span>
+                <div className="flex items-center gap-2">
+                  {!canUseResearchTools && (
+                    <a
+                      href="/pricing"
+                      className="text-[8px] font-black text-white bg-drafting-orange border border-drafting-orange px-2 py-1 rounded uppercase tracking-widest hover:brightness-110 transition-all"
+                    >
+                      Upgrade Plan
+                    </a>
+                  )}
+                  <div className="flex flex-col items-end">
+                    <span className="text-[9px] font-bold text-ink uppercase tracking-tighter">{user?.username}</span>
+                    <span className="text-[8px] font-bold text-ink/60 uppercase tracking-widest truncate max-w-[110px]">Upd: {displayedUpdated}</span>
+                  </div>
                 </div>
               )}
             </div>
@@ -1080,17 +1056,6 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
       </header>
 
       <main className="flex-1 max-w-7xl mx-auto px-4 pt-6 pb-24 sm:pb-8 w-full">
-        {!previewMode && view === ViewState.LOAD && hasEntitlement('admin_panel') && (
-          <div className="max-w-xl mx-auto space-y-8 mt-6 pb-24">
-            <div {...getRootProps()} className={`border-2 border-dashed rounded-2xl p-12 text-center transition-all cursor-pointer ${isDragActive ? 'border-drafting-orange bg-drafting-orange/5' : 'border-ink/20 hover:border-drafting-orange bg-white/40'}`}>
-              <input {...getInputProps()} />
-              <div className="bg-drafting-orange/10 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border border-drafting-orange/20"><Database className="w-8 h-8 text-drafting-orange" /></div>
-              <p className="font-bold text-lg mb-1 uppercase tracking-tight italic text-ink">Initialize Physics Core (JSON)</p>
-              <p className="text-xs text-ink/60 font-mono italic tracking-tighter">Upload authoritative baseline and field metadata</p>
-            </div>
-          </div>
-        )}
-
         {view === ViewState.RESEARCH && (
           <DashboardView
             players={state.slate.players}
@@ -1108,6 +1073,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
             slateGameCounts={slateGameCounts}
             onSelectSlate={setSelectedSlate}
             canUseResearchTools={canUseResearchTools}
+            deepDiveAllowedTabs={deepDiveAllowedTabs}
           />
         )}
         {!previewMode && view === ViewState.COMPARE && (
@@ -1134,6 +1100,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
               injuryLookup={injuryLookup}
               depthCharts={depthCharts}
               startingLineupLookup={startingLineupLookup}
+              deepDiveAllowedTabs={deepDiveAllowedTabs}
             />
           ) : (
             <MembershipGateCard
@@ -1150,6 +1117,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                 games={state.slate.games}
                 showActuals={effectiveShowActuals}
                 slateDate={state.slate.date}
+                deepDiveAllowedTabs={deepDiveAllowedTabs}
               />
             ) : (
               <div className="max-w-2xl mx-auto mt-12 rounded-sm border border-ink/10 bg-white/55 p-6 text-sm text-ink/70">
@@ -1166,7 +1134,13 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
         {!previewMode && view === ViewState.REPORT && (
           canAccessReport ? (
             <ErrorBoundary fallback={<div className="p-4 text-ink">Report unavailable: component error.</div>}>
-              <ReportView players={state.slate.players || []} games={state.slate.games || []} slateDate={state.slate.date} />
+              <ReportView
+                players={state.slate.players || []}
+                games={state.slate.games || []}
+                slateDate={state.slate.date}
+                hideBestPossibleLineup={user?.role === 'soft-launch'}
+                deepDiveAllowedTabs={deepDiveAllowedTabs}
+              />
             </ErrorBoundary>
           ) : (
             <MembershipGateCard

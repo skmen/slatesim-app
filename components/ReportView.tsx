@@ -14,6 +14,8 @@ interface Props {
   players: Player[];
   games: GameInfo[];
   slateDate?: string;
+  hideBestPossibleLineup?: boolean;
+  deepDiveAllowedTabs?: Array<'dfs' | 'stats' | 'matchup' | 'synergy' | 'depth'>;
 }
 
 interface MatchupDescriptor {
@@ -881,7 +883,7 @@ const MetricLabel: React.FC<{ label: string; tooltip: string }> = ({ label, tool
   );
 };
 
-const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
+const ReportView: React.FC<Props> = ({ players, games, slateDate, hideBestPossibleLineup = false, deepDiveAllowedTabs }) => {
   if (!Array.isArray(players) || !Array.isArray(games)) {
     return (
       <div className="min-h-screen bg-vellum text-ink p-4">
@@ -915,7 +917,7 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
   useEffect(() => {
     let cancelled = false;
 
-    if (!isHistoricalSlate || players.length === 0 || !hasAnyActual) {
+    if (hideBestPossibleLineup || !isHistoricalSlate || players.length === 0 || !hasAnyActual) {
       setBestActualLineup(null);
       setBestLineupLoading(false);
       setBestLineupError(null);
@@ -947,7 +949,7 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
     return () => {
       cancelled = true;
     };
-  }, [players, isHistoricalSlate, hasAnyActual]);
+  }, [hideBestPossibleLineup, players, isHistoricalSlate, hasAnyActual]);
 
   const metricRows = useMemo(() => {
     if (!accuracy) return [];
@@ -1131,6 +1133,7 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
         )}
       </div>
 
+      {!hideBestPossibleLineup && (
       <div className="bg-white rounded-xl border border-ink/10 shadow-sm p-4 space-y-3">
         <div className="flex items-center justify-between gap-2">
           <p className="text-sm font-bold text-ink">Best Possible Lineup (Actuals)</p>
@@ -1230,6 +1233,7 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
           </div>
         )}
       </div>
+      )}
 
       {hasAnyActual && teamFptsTotals.length > 0 && (
         <div className="bg-white rounded-xl border border-ink/10 shadow-sm p-4 space-y-3">
@@ -1335,6 +1339,7 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate }) => {
           onClose={() => setSelectedPlayer(null)}
           isHistorical={isHistoricalSlate}
           showActuals={isHistoricalSlate}
+          allowedTabs={deepDiveAllowedTabs}
         />
       )}
     </div>
