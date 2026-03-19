@@ -544,11 +544,27 @@ const NavItem = ({ label, icon: Icon, targetView, entitlement, setView, view, ha
   );
 };
 
+type AdminViewMode = 'admin' | 'paid' | 'free';
+const PAID_VIEW_ENTITLEMENTS: Entitlement[] = [
+  'run_sim',
+  'view_diagnostics',
+  'export_data',
+  'view_projections',
+  'full_research_tools',
+  'access_compare',
+  'access_optimizer',
+  'access_entries',
+  'access_report',
+];
+const FREE_VIEW_ENTITLEMENTS: Entitlement[] = ['view_projections', 'view_diagnostics'];
+
 const AdminPagePanel: React.FC<{
   view: ViewState;
   setView: (view: ViewState) => void;
   selectedDate: string;
-}> = ({ view, setView, selectedDate }) => {
+  adminViewMode: AdminViewMode;
+  setAdminViewMode: (mode: AdminViewMode) => void;
+}> = ({ view, setView, selectedDate, adminViewMode, setAdminViewMode }) => {
   const appLinks: Array<{ label: string; target: ViewState }> = [
     { label: 'Research', target: ViewState.RESEARCH },
     { label: 'Compare', target: ViewState.COMPARE },
@@ -570,6 +586,42 @@ const AdminPagePanel: React.FC<{
         <div>
           <p className="text-[10px] font-black uppercase tracking-widest text-drafting-orange">Admin Panel</p>
           <p className="text-[10px] text-ink/60">Quick page access</p>
+        </div>
+        <div className="space-y-1">
+          <p className="text-[9px] font-black uppercase tracking-widest text-ink/50">View As</p>
+          <button
+            type="button"
+            onClick={() => setAdminViewMode('paid')}
+            className={`w-full text-left rounded-sm border px-2 py-1.5 text-[10px] font-black uppercase tracking-widest transition-colors ${
+              adminViewMode === 'paid'
+                ? 'border-drafting-orange bg-drafting-orange text-white'
+                : 'border-ink/15 bg-white text-ink/70 hover:border-drafting-orange/40 hover:text-drafting-orange'
+            }`}
+          >
+            View As Paid User
+          </button>
+          <button
+            type="button"
+            onClick={() => setAdminViewMode('free')}
+            className={`w-full text-left rounded-sm border px-2 py-1.5 text-[10px] font-black uppercase tracking-widest transition-colors ${
+              adminViewMode === 'free'
+                ? 'border-drafting-orange bg-drafting-orange text-white'
+                : 'border-ink/15 bg-white text-ink/70 hover:border-drafting-orange/40 hover:text-drafting-orange'
+            }`}
+          >
+            View As Free User
+          </button>
+          <button
+            type="button"
+            onClick={() => setAdminViewMode('admin')}
+            className={`w-full text-left rounded-sm border px-2 py-1.5 text-[10px] font-black uppercase tracking-widest transition-colors ${
+              adminViewMode === 'admin'
+                ? 'border-ink bg-ink text-white'
+                : 'border-ink/15 bg-white text-ink/70 hover:border-ink/40 hover:text-ink'
+            }`}
+          >
+            View As Admin
+          </button>
         </div>
         <div className="space-y-1">
           <p className="text-[9px] font-black uppercase tracking-widest text-ink/50">App Views</p>
@@ -626,6 +678,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
   const { user, logout, hasEntitlement } = useAuth();
   const [state, setState] = useState<AppState>(INITIAL_STATE);
   const [view, setView] = useState<ViewState>(ViewState.RESEARCH);
+  const [adminViewMode, setAdminViewMode] = useState<AdminViewMode>('admin');
   const [loading, setLoading] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [isHistorical, setIsHistorical] = useState(false);
@@ -643,10 +696,22 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
   const [selectedSlate, setSelectedSlate] = useState<string | null>(null);
   const [slateGameCounts, setSlateGameCounts] = useState<Record<string, number>>({});
   const slateDateRef = useRef<string | null>(null);
+  const isAdmin = user?.role === 'admin';
+  const effectiveRole = useMemo(() => {
+    if (!user?.role) return undefined;
+    if (!isAdmin || adminViewMode === 'admin') return user.role;
+    if (adminViewMode === 'paid') return 'soft-launch' as const;
+    return 'user' as const;
+  }, [adminViewMode, isAdmin, user?.role]);
+  const effectiveHasEntitlement = useCallback((entitlement: Entitlement) => {
+    if (!isAdmin || adminViewMode === 'admin') return hasEntitlement(entitlement);
+    const simulated = adminViewMode === 'paid' ? PAID_VIEW_ENTITLEMENTS : FREE_VIEW_ENTITLEMENTS;
+    return simulated.includes(entitlement);
+  }, [adminViewMode, hasEntitlement, isAdmin]);
   const todayStr = useMemo(() => getLocalDateStr(new Date()), []);
   const previewMaxDate = useMemo(() => getPreviewMaxDateStr(), []);
   const previewMinDate = useMemo(() => getPreviewMinDateStr(), []);
-  const canUseResearchTools = hasEntitlement('full_research_tools');
+  const canUseResearchTools = effectiveHasEntitlement('full_research_tools');
   const freeUserMinDate = useMemo(() => {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
@@ -698,22 +763,27 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
     if (formattedLastModified) return formattedLastModified;
     return '—';
   }, [formattedLastModified]);
-  const canAccessCompare = hasEntitlement('access_compare');
-  const canAccessOptimizer = hasEntitlement('access_optimizer');
-  const canAccessEntries = hasEntitlement('access_entries');
-  const canAccessReport = hasEntitlement('access_report');
-  const isAdmin = user?.role === 'admin';
+  const canAccessCompare = effectiveHasEntitlement('access_compare');
+  const canAccessOptimizer = effectiveHasEntitlement('access_optimizer');
+  const canAccessEntries = effectiveHasEntitlement('access_entries');
+  const canAccessReport = effectiveHasEntitlement('access_report');
   const roleLabel = useMemo(() => {
-    if (!user?.role) return '';
-    if (user.role === 'soft-launch') return 'member';
-    return user.role;
-  }, [user?.role]);
+    if (!effectiveRole) return '';
+    if (effectiveRole === 'soft-launch') return 'member';
+    return effectiveRole;
+  }, [effectiveRole]);
   const deepDiveAllowedTabs = useMemo(() => {
-    if (user?.role !== 'soft-launch') return undefined;
+    if (effectiveRole !== 'soft-launch') return undefined;
     return ['dfs', 'stats', 'depth'] as Array<'dfs' | 'stats' | 'matchup' | 'synergy' | 'depth'>;
-  }, [user?.role]);
+  }, [effectiveRole]);
   const dateInputMin = previewMode ? previewMinDate : (canUseResearchTools ? undefined : freeUserMinDate);
   const dateInputMax = previewMode ? previewMaxDate : (canUseResearchTools ? undefined : freeUserMaxDate);
+
+  useEffect(() => {
+    if (!isAdmin && adminViewMode !== 'admin') {
+      setAdminViewMode('admin');
+    }
+  }, [adminViewMode, isAdmin]);
 
   useEffect(() => {
     const previousDate = previousSelectedDateRef.current;
@@ -1131,6 +1201,8 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
               view={view}
               setView={setView}
               selectedDate={selectedDate}
+              adminViewMode={adminViewMode}
+              setAdminViewMode={setAdminViewMode}
             />
           )}
           <div className="min-w-0">
@@ -1216,7 +1288,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                     players={state.slate.players || []}
                     games={state.slate.games || []}
                     slateDate={state.slate.date}
-                    hideBestPossibleLineup={user?.role === 'soft-launch'}
+                    hideBestPossibleLineup={effectiveRole === 'soft-launch'}
                     deepDiveAllowedTabs={deepDiveAllowedTabs}
                   />
                 </ErrorBoundary>
@@ -1237,13 +1309,13 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
       {!previewMode && (
         <nav className="fixed bottom-0 left-0 right-0 bg-white/80 border-t border-ink/10 px-2 sm:px-6 py-2 pb-safe z-40 shadow-2xl backdrop-blur-md">
           <div className="flex justify-around items-center max-w-2xl mx-auto">
-            <NavItem label="Research" icon={BarChart2} targetView={ViewState.RESEARCH} setView={setView} view={view} hasEntitlement={hasEntitlement} />
-            <NavItem label="Compare" icon={GitCompare} targetView={ViewState.COMPARE} entitlement="access_compare" setView={setView} view={view} hasEntitlement={hasEntitlement} />
-            <NavItem label="Optimizer" icon={Zap} targetView={ViewState.OPTIMIZER} entitlement="access_optimizer" setView={setView} view={view} hasEntitlement={hasEntitlement} />
+            <NavItem label="Research" icon={BarChart2} targetView={ViewState.RESEARCH} setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
+            <NavItem label="Compare" icon={GitCompare} targetView={ViewState.COMPARE} entitlement="access_compare" setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
+            <NavItem label="Optimizer" icon={Zap} targetView={ViewState.OPTIMIZER} entitlement="access_optimizer" setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
             {selectedDate === getLocalDateStr(new Date()) && (
-              <NavItem label="Entries" icon={List} targetView={ViewState.ENTRY_MANAGER} entitlement="access_entries" setView={setView} view={view} hasEntitlement={hasEntitlement} />
+              <NavItem label="Entries" icon={List} targetView={ViewState.ENTRY_MANAGER} entitlement="access_entries" setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
             )}
-            <NavItem label="Report" icon={BarChart2} targetView={ViewState.REPORT} entitlement="access_report" setView={setView} view={view} hasEntitlement={hasEntitlement} />
+            <NavItem label="Report" icon={BarChart2} targetView={ViewState.REPORT} entitlement="access_report" setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
           </div>
         </nav>
       )}
