@@ -15,6 +15,7 @@ import { LineupProvider } from './context/LineupContext';
 import { SplashLogin } from './components/SplashLogin';
 import { PricingPage } from './components/PricingPage';
 import { TermsPage } from './components/TermsPage';
+import { PrivacyPage } from './components/PrivacyPage';
 import { LineupDrawer } from './components/LineupDrawer';
 import DKEntryManager from './components/DKEntryManager';
 import ReportView from './components/ReportView';
@@ -70,14 +71,14 @@ const INITIAL_STATE: AppState = {
 
 const ENTRY_MANAGER_SESSION_KEY = 'slatesim.entryManager.session.v1';
 
-const IntegrityFooter: React.FC = () => {
+const IntegrityFooter: React.FC<{ withBottomNav?: boolean }> = ({ withBottomNav = false }) => {
   const [time, setTime] = useState(new Date().toLocaleTimeString());
   useEffect(() => {
     const i = setInterval(() => setTime(new Date().toLocaleTimeString()), 1000);
     return () => clearInterval(i);
   }, []);
   return (
-    <footer className="w-full bg-black/40 border-t border-ink-border py-4 px-6 mt-12 backdrop-blur-md">
+    <footer className={`w-full bg-black/40 border-t border-ink-border py-4 px-6 mt-12 backdrop-blur-md ${withBottomNav ? 'mb-24 sm:mb-20' : ''}`}>
       <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4 text-[10px] font-black uppercase tracking-widest text-slate-400 font-mono">
         <div className="flex items-center gap-2">
           <Lock className="w-3 h-3 text-highlight" />
@@ -85,12 +86,21 @@ const IntegrityFooter: React.FC = () => {
           <span className="text-muted-slate">|</span>
           <span className="text-slate-400">Locked: {time}</span>
         </div>
-        <a
-          href="/terms"
-          className="text-slate-400/80 hover:text-drafting-orange transition-colors"
-        >
-          Terms of Service
-        </a>
+        <div className="flex items-center gap-2 text-[11px]">
+          <a
+            href="/terms"
+            className="text-slate-300 hover:text-drafting-orange transition-colors"
+          >
+            Terms of Service
+          </a>
+          <span className="text-slate-500">|</span>
+          <a
+            href="/privacy"
+            className="text-slate-300 hover:text-drafting-orange transition-colors"
+          >
+            Privacy Policy
+          </a>
+        </div>
       </div>
     </footer>
   );
@@ -1158,7 +1168,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
         )}
       </main>
 
-      <IntegrityFooter />
+      <IntegrityFooter withBottomNav={!previewMode} />
       {!previewMode && <LineupDrawer players={state.slate.players} showActuals={effectiveShowActuals} />}
 
       {!previewMode && (
@@ -1199,6 +1209,7 @@ const AuthShell: React.FC = () => {
   const isPricingRoute = typeof window !== 'undefined' && window.location.pathname === '/pricing';
   const isPreviewRoute = typeof window !== 'undefined' && window.location.pathname === '/preview';
   const isTermsRoute = typeof window !== 'undefined' && window.location.pathname === '/terms';
+  const isPrivacyRoute = typeof window !== 'undefined' && window.location.pathname === '/privacy';
 
   // Public pricing page (no auth required)
   if (isPricingRoute) {
@@ -1213,6 +1224,11 @@ const AuthShell: React.FC = () => {
   // Public terms page (no auth required)
   if (isTermsRoute) {
     return <TermsPage />;
+  }
+
+  // Public privacy page (no auth required)
+  if (isPrivacyRoute) {
+    return <PrivacyPage />;
   }
 
   if (!isLoaded) {

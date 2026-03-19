@@ -159,9 +159,15 @@ export const TermsPage: React.FC = () => {
       </div>
 
       <footer className="pb-8 text-center">
-        <a href="/terms" className="text-[11px] font-black uppercase tracking-widest text-ink/60 hover:text-drafting-orange transition-colors">
-          Terms of Service
-        </a>
+        <div className="flex items-center justify-center gap-2 text-[11px] font-black uppercase tracking-widest">
+          <a href="/terms" className="text-ink/60 hover:text-drafting-orange transition-colors">
+            Terms of Service
+          </a>
+          <span className="text-ink/40">|</span>
+          <a href="/privacy" className="text-ink/60 hover:text-drafting-orange transition-colors">
+            Privacy Policy
+          </a>
+        </div>
       </footer>
     </div>
   );
