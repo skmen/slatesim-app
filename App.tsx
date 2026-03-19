@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { BarChart2, ChevronLeft, ChevronRight, List, LogOut, Lock, Zap, GitCompare } from 'lucide-react';
+import { BarChart2, ChevronDown, ChevronLeft, ChevronRight, List, LogOut, Lock, Zap, GitCompare } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import { useUser, ClerkProvider, useAuth as useClerkAuth } from "@clerk/clerk-react"; 
 import { AppState, ViewState, ContestInput, ContestDerived, Entitlement, GameInfo } from './types';
@@ -68,6 +68,7 @@ const INITIAL_STATE: AppState = {
 };
 
 const ENTRY_MANAGER_SESSION_KEY = 'slatesim.entryManager.session.v1';
+const SITE_LOGO_SRC = '/slatesim-logo-v2.png';
 
 const IntegrityFooter: React.FC = () => {
   const [time, setTime] = useState(new Date().toLocaleTimeString());
@@ -134,17 +135,16 @@ const fetchAvailableSlates = async (date: string): Promise<string[]> => {
   }
 };
 
-const formatSlateLabel = (folder: string): string => {
-  const parts = folder.split('_');
-  // First segment is the base name (e.g. "Main", "Turbo", "Night")
-  const base = parts[0];
-  // Look for a "#G" segment anywhere (e.g. "2G", "3G")
-  const gameCountPart = parts.find((p) => /^\d+G$/i.test(p));
-  if (gameCountPart) {
-    const count = parseInt(gameCountPart, 10);
-    return `${base} (${count} game${count === 1 ? '' : 's'})`;
-  }
-  return base;
+const getSlateBaseLabel = (folder: string): string => {
+  const parts = String(folder || '').split('_');
+  const base = parts[0] || folder;
+  return base.replace(/-/g, ' ').trim().toUpperCase();
+};
+
+const formatSlatePickerLabel = (folder: string, gameCount: number | null): string => {
+  const base = getSlateBaseLabel(folder);
+  if (!gameCount || gameCount < 1) return `${base} - ? GAMES`;
+  return `${base} - ${gameCount} GAME${gameCount === 1 ? '' : 'S'}`;
 };
 
 const isDateBeforeToday = (dateStr: string): boolean => {
@@ -551,6 +551,99 @@ const NavItem = ({ label, icon: Icon, targetView, entitlement, setView, view, ha
   );
 };
 
+const SlateCardPicker: React.FC<{
+  availableSlates: string[];
+  selectedSlate: string | null;
+  slateGameCounts: Record<string, number>;
+  onSelectSlate: (slate: string | null) => void;
+  compact?: boolean;
+}> = ({ availableSlates, selectedSlate, slateGameCounts, onSelectSlate, compact = false }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const handleOutsideClick = (event: MouseEvent | TouchEvent) => {
+      if (!wrapperRef.current) return;
+      if (!wrapperRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsOpen(false);
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    document.addEventListener('touchstart', handleOutsideClick, { passive: true });
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      document.removeEventListener('touchstart', handleOutsideClick);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, []);
+
+  useEffect(() => {
+    setIsOpen(false);
+  }, [selectedSlate, availableSlates.length]);
+
+  const selectedCount = selectedSlate
+    ? (slateGameCounts[selectedSlate] ?? parseExpectedGameCount(selectedSlate))
+    : null;
+  const selectedLabel = selectedSlate
+    ? formatSlatePickerLabel(selectedSlate, selectedCount)
+    : 'SELECT A SLATE';
+
+  return (
+    <div ref={wrapperRef} className={`relative ${compact ? 'w-[180px]' : 'min-w-[230px]'}`}>
+      <button
+        type="button"
+        className={`w-full border border-ink/20 bg-vellum rounded-sm text-left transition-colors ${compact ? 'px-2 py-1' : 'px-3 py-1.5'} ${availableSlates.length > 1 ? 'hover:border-drafting-orange/60' : 'cursor-default'}`}
+        onClick={() => {
+          if (availableSlates.length > 1) setIsOpen((prev) => !prev);
+        }}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className={`font-black uppercase tracking-widest text-ink/55 ${compact ? 'text-[9px]' : 'text-[10px]'}`}>
+              Selected Slate
+            </div>
+            <div className={`font-black uppercase tracking-widest text-ink truncate ${compact ? 'text-[10px]' : 'text-xs'}`}>
+              {selectedLabel}
+            </div>
+          </div>
+          <ChevronDown className={`mt-0.5 shrink-0 text-ink/60 transition-transform ${compact ? 'w-3.5 h-3.5' : 'w-4 h-4'} ${isOpen ? 'rotate-180' : ''}`} />
+        </div>
+      </button>
+
+      <div
+        role="listbox"
+        className={`absolute left-0 right-0 mt-1 z-40 rounded-sm border border-ink/20 bg-vellum shadow-xl overflow-hidden transition-all duration-200 ${isOpen ? 'opacity-100 translate-y-0 pointer-events-auto' : 'opacity-0 -translate-y-1 pointer-events-none'}`}
+      >
+        <div className="max-h-56 overflow-y-auto">
+          {availableSlates.map((slate) => {
+            const gameCount = slateGameCounts[slate] ?? parseExpectedGameCount(slate);
+            const isActive = slate === selectedSlate;
+            return (
+              <button
+                key={slate}
+                type="button"
+                className={`w-full text-left font-black uppercase tracking-widest border-b border-ink/10 last:border-b-0 transition-colors ${compact ? 'px-2 py-1.5 text-[10px]' : 'px-3 py-2 text-xs'} ${isActive ? 'bg-drafting-orange/10 text-ink' : 'text-ink/75 hover:bg-white/70 hover:text-ink'}`}
+                onClick={() => {
+                  onSelectSlate(slate || null);
+                  setIsOpen(false);
+                }}
+              >
+                {formatSlatePickerLabel(slate, gameCount)}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }) => {
   const { user, logout, hasEntitlement } = useAuth();
   const [state, setState] = useState<AppState>(INITIAL_STATE);
@@ -570,6 +663,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
   const [startingLineupLookup, setStartingLineupLookup] = useState<StartingLineupLookup>(new Map());
   const [availableSlates, setAvailableSlates] = useState<string[]>([]);
   const [selectedSlate, setSelectedSlate] = useState<string | null>(null);
+  const [slateGameCounts, setSlateGameCounts] = useState<Record<string, number>>({});
   const slateDateRef = useRef<string | null>(null);
   const todayStr = useMemo(() => getLocalDateStr(new Date()), []);
   const previewMaxDate = useMemo(() => getPreviewMaxDateStr(), []);
@@ -629,6 +723,66 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
     setSelectedDate((prev) => clampPreviewDate(prev));
     setView(ViewState.RESEARCH);
   }, [previewMode, clampPreviewDate]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrateSlateCounts = async () => {
+      if (availableSlates.length === 0) {
+        setSlateGameCounts({});
+        return;
+      }
+
+      const baseCounts: Record<string, number> = {};
+      availableSlates.forEach((slate) => {
+        const parsedCount = parseExpectedGameCount(slate);
+        if (parsedCount) baseCounts[slate] = parsedCount;
+      });
+      setSlateGameCounts(baseCounts);
+
+      const missingCounts = availableSlates.filter((slate) => !baseCounts[slate]);
+      if (missingCounts.length === 0) return;
+
+      const resolved = await Promise.all(
+        missingCounts.map(async (slate) => {
+          try {
+            const resp = await fetch(`/api/projections?date=${selectedDate}&slate=${encodeURIComponent(slate)}`, { cache: 'no-cache' });
+            if (!resp.ok) return [slate, null] as const;
+            const payload = await resp.json();
+            const parsed = parsePipelineJson(payload);
+            const slateGames = resolveSlateGames(parsed.games || [], parsed.referencePlayers || [], parsed.teams || [], slate);
+            return [slate, slateGames.length > 0 ? slateGames.length : null] as const;
+          } catch {
+            return [slate, null] as const;
+          }
+        })
+      );
+
+      if (cancelled) return;
+      const fetchedCounts: Record<string, number> = {};
+      resolved.forEach(([slate, count]) => {
+        if (count && count > 0) fetchedCounts[slate] = count;
+      });
+      if (Object.keys(fetchedCounts).length > 0) {
+        setSlateGameCounts((prev) => ({ ...prev, ...fetchedCounts }));
+      }
+    };
+
+    hydrateSlateCounts();
+    return () => {
+      cancelled = true;
+    };
+  }, [availableSlates, selectedDate]);
+
+  useEffect(() => {
+    if (!selectedSlate) return;
+    const count = state.slate.games.length;
+    if (!count) return;
+    setSlateGameCounts((prev) => {
+      if (prev[selectedSlate] === count) return prev;
+      return { ...prev, [selectedSlate]: count };
+    });
+  }, [selectedSlate, state.slate.games.length]);
 
   useEffect(() => {
     if (view === ViewState.SLATE_NEWS) {
@@ -887,7 +1041,17 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
           <div className="h-12 sm:h-16 flex items-center justify-between gap-2 sm:gap-4">
             <div className="flex items-center gap-2 sm:gap-4">
               <div className="flex items-center gap-2 cursor-pointer p-2 rounded-sm" onClick={() => setView(ViewState.RESEARCH)}>
-                <img src="/slatesim-logo.svg" alt="Slate Sim" className="h-8 sm:h-10 w-auto object-contain" />
+                <img
+                  src={SITE_LOGO_SRC}
+                  alt="Slate Sim"
+                  className="h-8 sm:h-10 w-auto object-contain"
+                  onError={(event) => {
+                    const img = event.currentTarget;
+                    if (img.dataset.logoFallback === '1') return;
+                    img.dataset.logoFallback = '1';
+                    img.src = '/slatesim-logo.svg';
+                  }}
+                />
               </div>
               {/* Date controls — desktop only */}
               <div className="hidden sm:flex items-center gap-2">
@@ -920,19 +1084,13 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                 >
                   <ChevronRight className="w-4 h-4" />
                 </button>
-                {availableSlates.length > 1 && (
-                  <>
-                    <span className="text-[10px] font-black text-ink/60 uppercase tracking-widest">Slate</span>
-                    <select
-                      value={selectedSlate ?? ''}
-                      onChange={(e) => setSelectedSlate(e.target.value || null)}
-                      className="bg-vellum border border-ink/20 rounded-sm px-2 py-1 text-xs font-bold text-ink outline-none focus:border-drafting-orange cursor-pointer"
-                    >
-                      {availableSlates.map((s) => (
-                        <option key={s} value={s}>{formatSlateLabel(s)}</option>
-                      ))}
-                    </select>
-                  </>
+                {availableSlates.length > 0 && (
+                  <SlateCardPicker
+                    availableSlates={availableSlates}
+                    selectedSlate={selectedSlate}
+                    slateGameCounts={slateGameCounts}
+                    onSelectSlate={setSelectedSlate}
+                  />
                 )}
                 <button
                   onClick={() => setShowActuals((prev) => !prev)}
@@ -1004,16 +1162,14 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
               </button>
             </div>
             <div className="flex items-center gap-2">
-              {availableSlates.length > 1 && (
-                <select
-                  value={selectedSlate ?? ''}
-                  onChange={(e) => setSelectedSlate(e.target.value || null)}
-                  className="bg-vellum border border-ink/20 rounded-sm px-2 py-1 text-xs font-bold text-ink outline-none focus:border-drafting-orange cursor-pointer"
-                >
-                  {availableSlates.map((s) => (
-                    <option key={s} value={s}>{formatSlateLabel(s)}</option>
-                  ))}
-                </select>
+              {availableSlates.length > 0 && (
+                <SlateCardPicker
+                  availableSlates={availableSlates}
+                  selectedSlate={selectedSlate}
+                  slateGameCounts={slateGameCounts}
+                  onSelectSlate={setSelectedSlate}
+                  compact
+                />
               )}
               {allowHistoricalActuals && (
                 <button

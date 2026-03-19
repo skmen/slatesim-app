@@ -4,6 +4,7 @@ import { SignInButton } from "@clerk/clerk-react";
 import { LogIn, Cpu, BarChart2, Layers, Send, AlertTriangle, CheckCircle } from 'lucide-react';
 
 type Status = 'idle' | 'submitting' | 'success' | 'error';
+const SITE_LOGO_SRC = '/slatesim-logo-v2.png';
 
 const Feature: React.FC<{ icon: React.ElementType, title: string, children: React.ReactNode }> = ({ icon: Icon, title, children }) => (
   <div className="flex flex-col items-center text-center p-6 bg-white border border-gray-200 rounded-2xl shadow-sm">
@@ -65,7 +66,17 @@ export const SplashLogin: React.FC = () => {
       <header className="fixed top-0 left-0 right-0 z-50 bg-vellum/80 backdrop-blur-md border-b border-ink/10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <img src="/slatesim-logo.svg" alt="Slate Sim" className="h-9 sm:h-10 w-auto object-contain" />
+            <img
+              src={SITE_LOGO_SRC}
+              alt="Slate Sim"
+              className="h-9 sm:h-10 w-auto object-contain"
+              onError={(event) => {
+                const img = event.currentTarget;
+                if (img.dataset.logoFallback === '1') return;
+                img.dataset.logoFallback = '1';
+                img.src = '/slatesim-logo.svg';
+              }}
+            />
           </div>
           <div className="flex items-center gap-2">
             <a
