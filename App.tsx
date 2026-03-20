@@ -1209,7 +1209,11 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
         </div>
       </header>
 
-      <main className="flex-1 max-w-7xl mx-auto px-4 pt-6 pb-24 sm:pb-8 w-full">
+      <main
+        className={`flex-1 mx-auto px-4 pt-6 pb-24 sm:pb-8 w-full ${
+          isAdmin && !previewMode ? 'max-w-[1524px]' : 'max-w-7xl'
+        }`}
+      >
         <div className={isAdmin && !previewMode ? 'lg:grid lg:grid-cols-[220px_minmax(0,1fr)] lg:gap-6' : ''}>
           {isAdmin && !previewMode && (
             <AdminPagePanel

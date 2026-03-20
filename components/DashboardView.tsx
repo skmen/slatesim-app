@@ -67,6 +67,7 @@ const FILTER_COLUMNS = [
   { key: 'minutesProjection', label: 'Min' },
   { key: 'projection', label: 'Proj' },
   { key: 'ceiling', label: 'Ceiling' },
+  { key: 'ceilingGap', label: 'Ceiling Gap' },
   { key: 'floor', label: 'Floor' },
   { key: 'actual', label: 'Actual' },
   { key: 'leverageScore', label: 'Lev Score' },
@@ -245,6 +246,21 @@ const getBustPct = (player: Player): number | undefined => {
     'bustProb',
     'bust_prob',
   ]));
+};
+
+const getCeilingGap = (player: Player): number | undefined => {
+  const ceiling = Number(player.ceiling);
+  const projection = Number(player.projection);
+  if (!Number.isFinite(ceiling) || !Number.isFinite(projection)) return undefined;
+  return ceiling - projection;
+};
+
+const getCeilingGapClass = (ceilingGap: number | undefined): string => {
+  if (!Number.isFinite(Number(ceilingGap))) return 'text-ink/60';
+  const gap = Number(ceilingGap);
+  if (gap > 20) return 'text-red-600';
+  if (gap >= 16) return 'text-emerald-600';
+  return 'text-ink';
 };
 
 const getActualFpts = (player: Player): number | null => {
@@ -801,6 +817,7 @@ export const DashboardView: React.FC<Props> = ({
         case 'minutesProjection': return player.minutesProjection ?? -Infinity;
         case 'projection': return player.projection;
         case 'ceiling': return player.ceiling ?? -Infinity;
+        case 'ceilingGap': return getCeilingGap(player) ?? -Infinity;
         case 'floor': return player.floor ?? -Infinity;
         case 'actual': return getActual(player);
         default: return (player as any)[key];
@@ -823,6 +840,7 @@ export const DashboardView: React.FC<Props> = ({
         case 'minutesProjection': return player.minutesProjection;
         case 'projection': return player.projection;
         case 'ceiling': return player.ceiling;
+        case 'ceilingGap': return getCeilingGap(player);
         case 'floor': return player.floor;
         case 'actual': return getActual(player);
         default: return (player as any)[key];
@@ -913,7 +931,7 @@ export const DashboardView: React.FC<Props> = ({
         ? `"${str.replace(/"/g, '""')}"`
         : str;
     };
-    const headers = ['Player', 'Team', 'OPP', 'Pos', 'Salary', 'Value', 'Own', 'Usage', 'Min', 'Proj', 'Ceiling', 'Floor', 'Lev Score', 'Boom', 'Bust'];
+    const headers = ['Player', 'Team', 'OPP', 'Pos', 'Salary', 'Value', 'Own', 'Usage', 'Min', 'Proj', 'Ceiling', 'Ceiling Gap', 'Floor', 'Lev Score', 'Boom', 'Bust'];
     if (showActuals) headers.splice(10, 0, 'Actual');
     const rows = players.map((p) => {
       const row = [
@@ -928,6 +946,7 @@ export const DashboardView: React.FC<Props> = ({
         p.minutesProjection,
         p.projection,
         p.ceiling,
+        getCeilingGap(p),
         p.floor,
         p.leverageScore,
         p.boom,
@@ -1214,6 +1233,9 @@ export const DashboardView: React.FC<Props> = ({
                     <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('ceiling')}>
                       Ceiling{sortIndicator('ceiling')}
                     </th>
+                    <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('ceilingGap')}>
+                      Ceiling Gap{sortIndicator('ceilingGap')}
+                    </th>
                     <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('floor')}>
                       Floor{sortIndicator('floor')}
                     </th>
@@ -1240,6 +1262,7 @@ export const DashboardView: React.FC<Props> = ({
                     const leverageScore = getLeverageScore(player);
                     const boomPct = getBoomPct(player);
                     const bustPct = getBustPct(player);
+                    const ceilingGap = getCeilingGap(player);
                     const actualFpts = getActualFpts(player);
                     const exceededProjection = isHistorical && actualFpts !== null && actualFpts > Number(player.projection);
 
@@ -1314,6 +1337,9 @@ export const DashboardView: React.FC<Props> = ({
                       <td className="px-3 py-2 text-right text-ink/60">
                         {player.ceiling !== undefined ? Number(player.ceiling).toFixed(2) : '--'}
                       </td>
+                      <td className={`px-3 py-2 text-right ${getCeilingGapClass(ceilingGap)}`}>
+                        {ceilingGap !== undefined ? ceilingGap.toFixed(2) : '--'}
+                      </td>
                       <td className="px-3 py-2 text-right text-ink/60">
                         {player.floor !== undefined ? Number(player.floor).toFixed(2) : '--'}
                       </td>
@@ -1332,7 +1358,7 @@ export const DashboardView: React.FC<Props> = ({
                 ) : (
                   <tr>
                     <td
-                      colSpan={showActuals ? 16 : 15}
+                      colSpan={showActuals ? 17 : 16}
                       className="py-8 text-center text-[10px] font-black text-ink/40 uppercase tracking-widest"
                     >
                       No players matched the active search/filter criteria

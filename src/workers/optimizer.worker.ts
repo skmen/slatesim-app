@@ -904,6 +904,17 @@ const getGameSlug = (team: string, opponent: string): string => {
   return parts.join('_vs_');
 };
 
+const estimateDistinctGames = (players: Player[]): number => {
+  const keys = new Set<string>();
+  players.forEach((player) => {
+    const team = getTeamMaybe(player);
+    const opponent = getOpponentMaybe(player);
+    if (!team || !opponent) return;
+    keys.add(getGameSlug(team, opponent));
+  });
+  return keys.size;
+};
+
 const buildStatConstraintRules = (context: BuildContext): StatConstraintRule[] => {
   const { players, statSettings } = context;
   if (!statSettings.enable) return [];
@@ -2074,7 +2085,61 @@ const solveLineup = async (context: BuildContext): Promise<SolveLineupResult> =>
 
 const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
   const players = Array.isArray(payload.players) ? payload.players : [];
-  const config = withDefaultConfig(payload.config);
+  let config = withDefaultConfig(payload.config);
+  const inferredGameCount = estimateDistinctGames(players);
+  const isVerySmallPool = players.length <= 24;
+  const isSmallSlatePool = players.length < 30 || (inferredGameCount > 0 && inferredGameCount <= 2);
+
+  if (isSmallSlatePool) {
+    const existingMinUniquePlayers = Math.max(
+      1,
+      Math.floor(safeNumber(config.minUniquePlayers ?? (config as any).min_unique_players, 3)),
+    );
+    const relaxedMinUniquePlayers = Math.min(existingMinUniquePlayers, isVerySmallPool ? 1 : 2);
+    const relaxedSalaryFloor = Math.max(
+      0,
+      Math.min(config.salaryFloor, config.salaryCap - (isVerySmallPool ? 1800 : 1200)),
+    );
+    const relaxedDeltaFromBest = Math.max(
+      0,
+      Math.max(
+        safeNumber(config.deltaFromBestProjection ?? config.delta_from_best_projection, 8),
+        isVerySmallPool ? 14 : 12,
+      ),
+    );
+    const relaxedMinCountMinutesCore = Math.min(
+      Math.max(2, Math.floor(safeNumber(config.minCountMinutesCore ?? config.min_count_minutes_core, 6))),
+      isVerySmallPool ? 3 : 4,
+    );
+    const relaxedMaxCountLowMinutes = Math.max(
+      Math.floor(safeNumber(config.maxCountLowMinutes ?? config.max_count_low_minutes, 1)),
+      isVerySmallPool ? 3 : 2,
+    );
+    const existingStackMinPlayers = Math.max(
+      0,
+      Math.floor(safeNumber(config.stackMinPlayers ?? (config as any).stack_min_players, 0)),
+    );
+    const relaxedStackMinPlayers = inferredGameCount > 0 && inferredGameCount <= 2
+      ? 0
+      : Math.min(existingStackMinPlayers, 1);
+
+    config = {
+      ...config,
+      salaryFloor: relaxedSalaryFloor,
+      salary_floor: relaxedSalaryFloor,
+      minUniquePlayers: relaxedMinUniquePlayers,
+      min_unique_players: relaxedMinUniquePlayers,
+      deltaFromBestProjection: relaxedDeltaFromBest,
+      delta_from_best_projection: relaxedDeltaFromBest,
+      minCountMinutesCore: relaxedMinCountMinutesCore,
+      min_count_minutes_core: relaxedMinCountMinutesCore,
+      maxCountLowMinutes: relaxedMaxCountLowMinutes,
+      max_count_low_minutes: relaxedMaxCountLowMinutes,
+      stackMinPlayers: relaxedStackMinPlayers,
+      stack_min_players: relaxedStackMinPlayers,
+    };
+  }
+
   const statSettings = getStatConstraintSettings(config);
   const enableDiagnostics = config.enableDiagnostics === true;
   const forceFallback = config.forceFallback === true || config.force_fallback === true;
@@ -2214,10 +2279,10 @@ const buildLineups = async (payload: RequestPayload): Promise<Lineup[]> => {
     isCash ? safeNumber((config as any).cashMaxExposurePct, 65) : undefined,
   );
   let attempts = 0;
-  const maxAttempts = Math.max(config.numLineups * 8, 80);
+  const maxAttempts = Math.max(config.numLineups * (isSmallSlatePool ? 12 : 8), isSmallSlatePool ? 120 : 80);
   let lastSolveError = '';
   let noSolutionStreak = 0;
-  const maxNoSolutionStreak = 4;
+  const maxNoSolutionStreak = isSmallSlatePool ? 7 : 4;
   const defaultSolveDiagnostics: SolveLineupDiagnostics = {
     phase1Status: 'not_run',
     phase2Status: 'not_run',

@@ -22,7 +22,7 @@ import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
-import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260305-cashfilterfix';
+import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260320-smallslate-relax';
 import { usePlayerEnrichment } from '../src/hooks/usePlayerEnrichment';
 import { useLineupScoring } from '../src/hooks/useLineupScoring';
 
@@ -148,10 +148,10 @@ const POOL_FILTER_COLUMNS = [
   { key: 'salary', label: 'Salary' },
   { key: 'value', label: 'Value' },
   { key: 'usage', label: 'USG' },
-  { key: 'boom', label: 'Boom%' },
-  { key: 'bust', label: 'Bust%' },
+  { key: 'ownership', label: 'Own%' },
   { key: 'minutes', label: 'Min' },
   { key: 'projection', label: 'FPTS' },
+  { key: 'ceilingGap', label: 'Ceiling Gap' },
   { key: 'leverageScore', label: 'Lev Score' },
   { key: 'minExposure', label: 'Min Exp' },
   { key: 'maxExposure', label: 'Max Exp' },
@@ -430,6 +430,26 @@ const getBustPercent = (player: Player): number | undefined => {
     'bust_prob',
   ]);
   return normalizePercentValue(raw);
+};
+
+const getOwnershipPercent = (player: Player): number | undefined => {
+  const raw = readPercentLike(player, [
+    'ownership',
+    'projectedOwnership',
+    'projOwnership',
+    'own',
+    'OWN',
+    'OWN_PCT',
+    'ownership_pct',
+    'OWNERSHIP_PCT',
+  ]);
+  return normalizePercentValue(raw);
+};
+
+const getCeilingGapForProjection = (player: Player, projection: number | undefined): number | undefined => {
+  const ceiling = Number(player.ceiling);
+  if (!Number.isFinite(ceiling) || !Number.isFinite(Number(projection))) return undefined;
+  return ceiling - Number(projection);
 };
 
 const getLeverageTierRank = (player: Player): number => {
@@ -1447,6 +1467,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       const displayProjection = Number.isFinite(Number(overrides.projection))
         ? Number(overrides.projection)
         : (Number.isFinite(Number(player.projection)) ? Number(player.projection) : undefined);
+      const ceilingGap = getCeilingGapForProjection(player, displayProjection);
       switch (key) {
         case 'name': return player.name;
         case 'team': return player.team;
@@ -1454,10 +1475,10 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         case 'salary': return player.salary;
         case 'value': return valueScoreMap.get(player.id)?.composite;
         case 'usage': return getUsagePercent(player);
-        case 'boom': return getBoomPercent(player);
-        case 'bust': return getBustPercent(player);
+        case 'ownership': return getOwnershipPercent(player);
         case 'minutes': return displayMinutes;
         case 'projection': return displayProjection;
+        case 'ceilingGap': return ceilingGap;
         case 'leverageScore': return getLeverageScore(player) ?? '';
         case 'minExposure': return overrides.minExposure ?? '';
         case 'maxExposure': return overrides.maxExposure ?? '';
@@ -2378,11 +2399,11 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                           { key: 'salary', label: 'Salary', align: 'right' },
                           { key: 'value', label: 'Value', align: 'right' },
                           { key: 'usage', label: 'USG', align: 'right' },
-                          { key: 'boom', label: 'Boom%', align: 'right' },
-                          { key: 'bust', label: 'Bust%', align: 'right' },
+                          { key: 'ownership', label: 'Own%', align: 'right' },
                           { key: 'leverageScore', label: 'Lev Score', align: 'right' },
                           { key: 'minutes', label: 'Min', align: 'right' },
                           { key: 'projection', label: 'FPTS', align: 'right' },
+                          { key: 'ceilingGap', label: 'Ceiling Gap', align: 'right' },
                           { key: 'minExposure', label: 'Min Exp', align: 'right' },
                           { key: 'maxExposure', label: 'Max Exp', align: 'right' },
                         ] as { key: string; label: string; align: 'left' | 'right' }[]).map(({ key, label, align }) => {
@@ -2415,8 +2436,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                           : (Number.isFinite(Number(player.projection)) ? Number(player.projection) : undefined);
                         const displayValue = valueScoreMap.get(player.id)?.composite;
                         const usagePct = getUsagePercent(player);
-                        const boomPct = getBoomPercent(player);
-                        const bustPct = getBustPercent(player);
+                        const ownershipPct = getOwnershipPercent(player);
+                        const ceilingGap = getCeilingGapForProjection(player, displayProjection);
                         const isLocked = lockedIds.includes(player.id);
                         return (
                           <tr key={player.id} className="border-b border-ink/5">
@@ -2504,11 +2525,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                             <td className="px-2 py-1.5 text-right text-ink/60">
                               {Number.isFinite(Number(usagePct)) ? `${Number(usagePct).toFixed(1)}%` : '--'}
                             </td>
-                            <td className="px-2 py-1.5 text-right text-emerald-600">
-                              {Number.isFinite(Number(boomPct)) ? `${Number(boomPct).toFixed(1)}%` : '--'}
-                            </td>
-                            <td className="px-2 py-1.5 text-right text-red-600">
-                              {Number.isFinite(Number(bustPct)) ? `${Number(bustPct).toFixed(1)}%` : '--'}
+                            <td className="px-2 py-1.5 text-right text-ink/60">
+                              {Number.isFinite(Number(ownershipPct)) ? `${Number(ownershipPct).toFixed(1)}%` : '--'}
                             </td>
                             <td className="px-2 py-1.5 text-right text-ink/70 uppercase">
                               {getLeverageScore(player) !== null ? Number(getLeverageScore(player)).toFixed(2) : '--'}
@@ -2540,6 +2558,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                                 }}
                                 className="w-20 bg-white/70 border border-ink/20 rounded-sm px-1 py-0.5 text-[12px] font-bold font-mono text-right"
                               />
+                            </td>
+                            <td className="px-2 py-1.5 text-right text-ink/60">
+                              {Number.isFinite(Number(ceilingGap)) ? Number(ceilingGap).toFixed(2) : '--'}
                             </td>
                             <td className="px-2 py-1.5 text-right">
                               <input
