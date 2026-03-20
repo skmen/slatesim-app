@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { BarChart2, ChevronLeft, ChevronRight, List, LogOut, Zap, GitCompare } from 'lucide-react';
+import { BarChart2, ChevronLeft, ChevronRight, List, LogOut, Zap, GitCompare, Star } from 'lucide-react';
 import { useUser, useAuth as useClerkAuth } from "@clerk/clerk-react"; 
 import { AppState, ViewState, ContestInput, ContestDerived, Entitlement, GameInfo } from './types';
 import { parseProjections, parsePipelineJson, parseOptimizerLineups, parseUserLineupsRows, canonicalizeId, normalizeName } from './utils/csvParser';
@@ -21,6 +21,7 @@ import DKEntryManager from './components/DKEntryManager';
 import ReportView from './components/ReportView';
 import { CompareView } from './components/CompareView';
 import { SlateSimLogo } from './components/SlateSimLogo';
+import { SlateRecommendations } from './components/SlateRecommendations';
 
 // Simple error boundary to prevent report page from blanking the UI
 class ErrorBoundary extends React.Component<{ fallback: React.ReactNode }, { hasError: boolean }> {
@@ -574,6 +575,7 @@ const AdminPagePanel: React.FC<{
     { label: 'Optimizer', target: ViewState.OPTIMIZER },
     { label: 'Entries', target: ViewState.ENTRY_MANAGER },
     { label: 'Report', target: ViewState.REPORT },
+    { label: 'Picks', target: ViewState.SLATE_RECOMMENDATIONS },
   ];
   const routeLinks = [
     { label: 'Landing', href: '/' },
@@ -1318,6 +1320,9 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                 />
               )
             )}
+            {!previewMode && view === ViewState.SLATE_RECOMMENDATIONS && (
+              <SlateRecommendations />
+            )}
           </div>
         </div>
       </main>
@@ -1335,6 +1340,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
               <NavItem label="Entries" icon={List} targetView={ViewState.ENTRY_MANAGER} entitlement="access_entries" setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
             )}
             <NavItem label="Report" icon={BarChart2} targetView={ViewState.REPORT} entitlement="access_report" setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
+            <NavItem label="Picks" icon={Star} targetView={ViewState.SLATE_RECOMMENDATIONS} setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
           </div>
         </nav>
       )}
