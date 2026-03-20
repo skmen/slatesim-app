@@ -21,6 +21,7 @@ const ROLE_PERMISSIONS: Record<Role, Entitlement[]> = {
     'access_optimizer',
     'access_entries',
     'access_report',
+    'access_picks',
   ],
   'beta-user': [
     'run_sim',
@@ -32,6 +33,7 @@ const ROLE_PERMISSIONS: Record<Role, Entitlement[]> = {
     'access_optimizer',
     'access_entries',
     'access_report',
+    'access_picks',
   ],
   'soft-launch': [
     'run_sim',
@@ -43,6 +45,7 @@ const ROLE_PERMISSIONS: Record<Role, Entitlement[]> = {
     'access_optimizer',
     'access_entries',
     'access_report',
+    'access_picks',
   ],
   user: ['view_projections', 'view_diagnostics']
 };

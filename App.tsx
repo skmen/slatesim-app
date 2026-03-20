@@ -783,6 +783,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
   const canAccessOptimizer = effectiveHasEntitlement('access_optimizer');
   const canAccessEntries = effectiveHasEntitlement('access_entries');
   const canAccessReport = effectiveHasEntitlement('access_report');
+  const canAccessPicks = effectiveHasEntitlement('access_picks');
   const roleLabel = useMemo(() => {
     if (!effectiveRole) return '';
     if (effectiveRole === 'soft-launch') return 'member';
@@ -1321,7 +1322,14 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
               )
             )}
             {!previewMode && view === ViewState.SLATE_RECOMMENDATIONS && (
-              <SlateRecommendations />
+              canAccessPicks ? (
+                <SlateRecommendations players={state.slate.players || []} />
+              ) : (
+                <MembershipGateCard
+                  title="Picks Is For Paid Members"
+                  body="Upgrade to access slate recommendations and historical performance classifications."
+                />
+              )
             )}
           </div>
         </div>

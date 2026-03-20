@@ -157,7 +157,7 @@ export interface ContestState {
 
 export type Role = 'admin' | 'beta-user' | 'soft-launch' | 'user';
 
-export type Entitlement = 
+export type Entitlement =
   | 'run_sim'
   | 'view_diagnostics'
   | 'export_data'
@@ -167,7 +167,8 @@ export type Entitlement =
   | 'access_compare'
   | 'access_optimizer'
   | 'access_entries'
-  | 'access_report';
+  | 'access_report'
+  | 'access_picks';
 
 export interface User {
   username: string;
