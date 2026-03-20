@@ -42,8 +42,9 @@ const COLUMNS: ColDef[] = [
   { key: 'Ceiling',  label: 'Ceil',    tooltip: 'Upside ceiling projection — the score this player could achieve in an optimal game.',  align: 'right', sortable: true },
   { key: 'ceil_gap', label: 'Ceiling Gap', tooltip: 'Ceiling Gap = Ceiling minus Projection. Measures available upside. The 16–20 pt gap range correlated with highest overperformance rates (31%). Gaps above 20 may reflect inflated ceilings.', align: 'right', sortable: true },
   { key: 'Floor',    label: 'Floor',   tooltip: 'Downside floor projection — the score this player is likely to exceed even in a poor game.',  align: 'right', sortable: true },
-  { key: 'Tier',     label: 'Tier',    tooltip: 'Hover the badge to see position-specific reasoning.', sortable: true },
 ];
+
+const TIER_COL: ColDef = { key: 'Tier', label: 'Tier', tooltip: 'Hover the badge to see position-specific reasoning.', sortable: true };
 
 // ─── Ceiling gap mini bar ──────────────────────────────────────────────────────
 
@@ -173,6 +174,12 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({ players, showActuals }
                 onSort={handleSort}
               />
             )}
+            <SortHeader
+              col={TIER_COL}
+              sortCol={sortCol}
+              sortDir={sortDir}
+              onSort={handleSort}
+            />
             <th className="text-left py-2 px-2 text-[9px] font-black uppercase tracking-widest text-ink/50 whitespace-nowrap">
               Why
             </th>
