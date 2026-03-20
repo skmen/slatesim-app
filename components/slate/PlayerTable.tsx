@@ -5,12 +5,13 @@ import { TierBadge, PosBadge } from './TierBadge';
 
 interface PlayerTableProps {
   players: ClassifiedPlayer[];
+  showActuals?: boolean;
 }
 
 type SortCol =
   | 'Player' | 'Pos' | 'Team' | 'OPP' | 'Salary'
   | 'Own' | 'Usage' | 'Proj' | 'Ceiling' | 'ceil_gap'
-  | 'Floor' | 'Tier';
+  | 'Floor' | 'Actual' | 'Tier';
 
 const InfoIcon: React.FC<{ tooltip: string }> = ({ tooltip }) => (
   <span className="relative inline-flex group ml-1">
@@ -39,7 +40,7 @@ const COLUMNS: ColDef[] = [
   { key: 'Usage',    label: 'Usg%',    tooltip: 'Projected usage rate — the percentage of team plays a player is involved in while on the floor. Key threshold: ≥22%, with position-specific ceilings (Centers must be under 28%).', align: 'right', sortable: true },
   { key: 'Proj',     label: 'Proj',    tooltip: 'Model projected fantasy points for this slate.',                                  align: 'right', sortable: true },
   { key: 'Ceiling',  label: 'Ceil',    tooltip: 'Upside ceiling projection — the score this player could achieve in an optimal game.',  align: 'right', sortable: true },
-  { key: 'ceil_gap', label: 'Gap',     tooltip: 'Ceiling Gap = Ceiling minus Projection. Measures available upside. The 16–20 pt gap range correlated with highest overperformance rates (31%). Gaps above 20 may reflect inflated ceilings.', align: 'right', sortable: true },
+  { key: 'ceil_gap', label: 'Ceiling Gap', tooltip: 'Ceiling Gap = Ceiling minus Projection. Measures available upside. The 16–20 pt gap range correlated with highest overperformance rates (31%). Gaps above 20 may reflect inflated ceilings.', align: 'right', sortable: true },
   { key: 'Floor',    label: 'Floor',   tooltip: 'Downside floor projection — the score this player is likely to exceed even in a poor game.',  align: 'right', sortable: true },
   { key: 'Tier',     label: 'Tier',    tooltip: 'Hover the badge to see position-specific reasoning.', sortable: true },
 ];
@@ -124,7 +125,7 @@ const WhyCell: React.FC<{ condition: string; historicalRate: string; posReasonin
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export const PlayerTable: React.FC<PlayerTableProps> = ({ players }) => {
+export const PlayerTable: React.FC<PlayerTableProps> = ({ players, showActuals }) => {
   const [sortCol, setSortCol] = useState<SortCol>('Tier');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
 
@@ -164,6 +165,14 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({ players }) => {
                 onSort={handleSort}
               />
             ))}
+            {showActuals && (
+              <SortHeader
+                col={{ key: 'Actual', label: 'Actual', tooltip: 'Actual fantasy points scored.', align: 'right', sortable: true }}
+                sortCol={sortCol}
+                sortDir={sortDir}
+                onSort={handleSort}
+              />
+            )}
             <th className="text-left py-2 px-2 text-[9px] font-black uppercase tracking-widest text-ink/50 whitespace-nowrap">
               Why
             </th>
@@ -222,7 +231,7 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({ players }) => {
                 {p.Ceiling.toFixed(1)}
               </td>
 
-              {/* Gap */}
+              {/* Ceiling Gap */}
               <td className="py-2 px-2">
                 <GapBar gap={p.ceil_gap} />
               </td>
@@ -231,6 +240,16 @@ export const PlayerTable: React.FC<PlayerTableProps> = ({ players }) => {
               <td className="py-2 px-2 text-right text-[11px] font-mono text-ink/50">
                 {p.Floor.toFixed(1)}
               </td>
+
+              {/* Actuals (historical only) */}
+              {showActuals && (
+                <td className="py-2 px-2 text-right text-[11px] font-mono">
+                  {p.Actual != null
+                    ? <span className={p.Actual >= p.Proj ? 'text-green-600 font-bold' : 'text-red-500'}>{Number(p.Actual).toFixed(1)}</span>
+                    : <span className="text-ink/30">—</span>
+                  }
+                </td>
+              )}
 
               {/* Tier */}
               <td className="py-2 px-2">

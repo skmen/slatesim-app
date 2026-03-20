@@ -1323,7 +1323,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
             )}
             {!previewMode && view === ViewState.SLATE_RECOMMENDATIONS && (
               canAccessPicks ? (
-                <SlateRecommendations players={state.slate.players || []} />
+                <SlateRecommendations players={state.slate.players || []} showActuals={effectiveShowActuals} />
               ) : (
                 <MembershipGateCard
                   title="Picks Is For Paid Members"

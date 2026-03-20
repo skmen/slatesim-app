@@ -15,6 +15,7 @@ import { Player } from '@/types';
 
 interface SlateRecommendationsProps {
   players: Player[];
+  showActuals?: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -41,12 +42,13 @@ function playersToRawRows(players: Player[]): RawPlayerRow[] {
     Lev_Score: 0,
     Boom: null,
     Bust: null,
+    Actual: p.actual ?? null,
   }));
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export const SlateRecommendations: React.FC<SlateRecommendationsProps> = ({ players }) => {
+export const SlateRecommendations: React.FC<SlateRecommendationsProps> = ({ players, showActuals }) => {
   // ── Filter state ──────────────────────────────────────────────────────────
   const [posFilter, setPosFilter] = useState<PosFilter>('ALL');
   const [tierFilter, setTierFilter] = useState<TierFilter>('ALL');
@@ -172,7 +174,7 @@ export const SlateRecommendations: React.FC<SlateRecommendationsProps> = ({ play
             onSearchChange={setSearchQuery}
           />
 
-          <PlayerTable players={filteredPlayers} />
+          <PlayerTable players={filteredPlayers} showActuals={showActuals} />
 
           <OveruseWarning players={overusePlayers} />
         </div>
