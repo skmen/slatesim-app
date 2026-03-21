@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Player, ContestState } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useLineup } from '../context/LineupContext';
@@ -20,8 +20,12 @@ import {
   Box,
   Settings,
   PlusCircle,
-  Download
+  Download,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
+
+const PAGE_SIZE = 25;
 
 interface FilterRule {
   id: string;
@@ -106,6 +110,11 @@ export const ProjectionsView: React.FC<Props> = ({ players, referencePlayers, be
   const [sortKey, setSortKey] = useState<string>('DK_FPTS_PROJ');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(0);
+
+  useEffect(() => {
+    setCurrentPage(0);
+  }, [filters, sortKey, sortDir, players]);
 
   const addFilter = () => {
     const newFilter: FilterRule = {
@@ -167,6 +176,9 @@ export const ProjectionsView: React.FC<Props> = ({ players, referencePlayers, be
     });
     return result;
   }, [players, filters, sortKey, sortDir, isAdmin]);
+
+  const totalPages = Math.ceil(processedPlayers.length / PAGE_SIZE);
+  const paginatedPlayers = processedPlayers.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
 
   const formatValue = (val: any) => {
     if (val === undefined || val === null) return '--';
@@ -373,7 +385,7 @@ export const ProjectionsView: React.FC<Props> = ({ players, referencePlayers, be
               </tr>
             </thead>
             <tbody className="divide-y divide-ink/5">
-              {processedPlayers.map(p => {
+              {paginatedPlayers.map(p => {
                 const value = (p.projection / p.salary) * 1000;
                 const inLineup = isPlayerInLineup(p.id);
                 
@@ -424,9 +436,28 @@ export const ProjectionsView: React.FC<Props> = ({ players, referencePlayers, be
             </tbody>
           </table>
         </div>
-        <div className="p-3 bg-blueprint/5 border-t border-ink/10 flex justify-between items-center text-[10px] font-bold text-ink/40 uppercase tracking-widest font-mono">
-           <span>Total Players: {processedPlayers.length}</span>
-           <span className="flex items-center gap-2">Sorting: {getColLabel(sortKey)} [{sortDir}]</span>
+        <div className="p-3 bg-blueprint/5 border-t border-ink/10 flex flex-wrap justify-between items-center gap-2 text-[10px] font-bold text-ink/40 uppercase tracking-widest font-mono">
+          <span>Total Players: {processedPlayers.length}</span>
+          {totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
+                disabled={currentPage === 0}
+                className="p-1 rounded hover:bg-ink/10 disabled:opacity-30 transition-colors"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <span>Page {currentPage + 1} / {totalPages}</span>
+              <button
+                onClick={() => setCurrentPage(p => Math.min(totalPages - 1, p + 1))}
+                disabled={currentPage === totalPages - 1}
+                className="p-1 rounded hover:bg-ink/10 disabled:opacity-30 transition-colors"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+          <span className="flex items-center gap-2">Sorting: {getColLabel(sortKey)} [{sortDir}]</span>
         </div>
       </div>
     </div>
