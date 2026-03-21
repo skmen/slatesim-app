@@ -101,7 +101,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
 
       <div className="flex flex-wrap gap-4 items-end">
         {/* Salary range */}
-        <div className="space-y-1 min-w-[200px]">
+        <div className="space-y-1 w-full sm:w-auto sm:min-w-[200px]">
           <p className="text-[9px] font-black uppercase tracking-widest text-ink/50">
             Salary — ${salaryRange[0].toLocaleString()} – ${salaryRange[1].toLocaleString()}
           </p>
