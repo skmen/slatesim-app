@@ -14,11 +14,30 @@ const REQUIRED_COLS = ['Entry ID', 'Contest Name', 'Contest ID', 'Entry Fee', ..
 const SALARY_CAP = 50000;
 const ENTRY_MANAGER_SESSION_KEY = 'slatesim.entryManager.session.v1';
 
+const getLocalDateStr = (date: Date): string => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const normalizeSlateType = (selectedSlate?: string | null): string => {
+  const raw = String(selectedSlate || '');
+  const base = raw.split('_')[0] || raw;
+  const cleaned = base.toLowerCase().replace(/[^a-z]/g, '');
+  if (cleaned.startsWith('early')) return 'early';
+  if (cleaned.startsWith('main')) return 'main';
+  if (cleaned.startsWith('turbo')) return 'turbo';
+  if (cleaned.startsWith('night')) return 'night';
+  return cleaned || 'slate';
+};
+
 interface Props {
   players: Player[];
   games: GameInfo[];
   showActuals?: boolean;
   slateDate?: string;
+  selectedSlate?: string | null;
   deepDiveAllowedTabs?: Array<'dfs' | 'stats' | 'matchup' | 'synergy' | 'depth'>;
 }
 
@@ -170,7 +189,7 @@ const clearEntryManagerSession = () => {
   localStorage.removeItem(ENTRY_MANAGER_SESSION_KEY);
 };
 
-export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = false, slateDate = '', deepDiveAllowedTabs }) => {
+export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = false, slateDate = '', selectedSlate = null, deepDiveAllowedTabs }) => {
   const [entries, setEntries] = useState<Entry[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lineupFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -380,8 +399,10 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
+    const datePart = /^\d{4}-\d{2}-\d{2}$/.test(String(slateDate)) ? String(slateDate) : getLocalDateStr(new Date());
+    const slateType = normalizeSlateType(selectedSlate);
     a.href = url;
-    a.download = 'DKEntries-updated.csv';
+    a.download = `Contest_Entries_${datePart}_${slateType}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };

@@ -1293,6 +1293,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                     games={state.slate.games}
                     showActuals={effectiveShowActuals}
                     slateDate={state.slate.date}
+                    selectedSlate={selectedSlate}
                     deepDiveAllowedTabs={deepDiveAllowedTabs}
                   />
                 ) : (
