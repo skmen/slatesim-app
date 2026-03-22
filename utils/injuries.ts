@@ -48,6 +48,9 @@ const extractEntries = (payload: any): any[] => {
     payload.items,
     payload.results,
     payload.players,
+    payload.data,
+    payload.playerInjuries,
+    payload.injuryList,
     payload.data?.injuries,
     payload.data?.injuryReport,
     payload.data?.report,
@@ -58,15 +61,21 @@ const extractEntries = (payload: any): any[] => {
   ];
 
   for (const candidate of directCandidates) {
-    if (Array.isArray(candidate)) return candidate;
-    if (candidate && typeof candidate === 'object') {
+    if (Array.isArray(candidate) && candidate.length > 0) return candidate;
+    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
       const values = Object.values(candidate).filter((v) => v && typeof v === 'object');
       if (values.length > 0) return values as any[];
     }
   }
 
-  const values = Object.values(payload).filter((v) => v && typeof v === 'object');
-  if (values.length > 0) return values as any[];
+  // Final fallback: if any top-level value is a non-empty array, return it directly
+  // (avoids wrapping arrays-of-players as a single entry)
+  const topValues = Object.values(payload);
+  const firstArray = topValues.find((v) => Array.isArray(v) && (v as any[]).length > 0);
+  if (firstArray) return firstArray as any[];
+
+  const objectValues = topValues.filter((v) => v && typeof v === 'object' && !Array.isArray(v));
+  if (objectValues.length > 0) return objectValues as any[];
   return [];
 };
 
@@ -168,8 +177,15 @@ export const buildInjuryLookup = (payload: any): InjuryLookup => {
   const entries = extractEntries(payload);
   const lookup: InjuryLookup = new Map();
 
-  entries.forEach((entry) => {
+  const processEntry = (entry: any) => {
     if (!entry || typeof entry !== 'object') return;
+
+    // If entry is an array (e.g. team-keyed format: {LAL: [...], BOS: [...]}),
+    // recurse into each element rather than treating the array as a player object.
+    if (Array.isArray(entry)) {
+      entry.forEach(processEntry);
+      return;
+    }
 
     const name = extractName(entry);
     const status = extractStatus(entry);
@@ -189,8 +205,9 @@ export const buildInjuryLookup = (payload: any): InjuryLookup => {
 
     const playerId = extractPlayerId(entry);
     if (playerId) lookup.set(playerId, info);
-  });
+  };
 
+  entries.forEach(processEntry);
   return lookup;
 };
 
