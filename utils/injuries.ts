@@ -177,6 +177,12 @@ export const buildInjuryLookup = (payload: any): InjuryLookup => {
   const entries = extractEntries(payload);
   const lookup: InjuryLookup = new Map();
 
+  if (typeof window !== 'undefined' && (window as any).__SLATESIM_DEBUG_INJURIES__) {
+    console.log('[injuries] payload top-level keys:', payload ? Object.keys(payload) : null);
+    console.log('[injuries] entries count:', entries.length);
+    if (entries.length > 0) console.log('[injuries] first entry sample:', JSON.stringify(entries[0]).slice(0, 300));
+  }
+
   const processEntry = (entry: any) => {
     if (!entry || typeof entry !== 'object') return;
 
@@ -185,6 +191,18 @@ export const buildInjuryLookup = (payload: any): InjuryLookup => {
     if (Array.isArray(entry)) {
       entry.forEach(processEntry);
       return;
+    }
+
+    // If this entry looks like a team container (has a player list but no name/status),
+    // recurse into the player list rather than treating it as a player record.
+    const playerList =
+      entry.players || entry.injuries || entry.athletes || entry.roster || entry.members;
+    if (Array.isArray(playerList) && playerList.length > 0) {
+      const hasPlayerName = !!extractName(entry);
+      if (!hasPlayerName) {
+        playerList.forEach(processEntry);
+        return;
+      }
     }
 
     const name = extractName(entry);
@@ -203,11 +221,27 @@ export const buildInjuryLookup = (payload: any): InjuryLookup => {
     const normalizedName = normalizeName(name);
     if (normalizedName) lookup.set(normalizedName, info);
 
+    // Also store a first+last-only variant for names with middle names/words,
+    // so depth chart lookups succeed even when sources use different name formats.
+    const nameParts = name.trim().split(/\s+/).filter(Boolean);
+    if (nameParts.length >= 3) {
+      const firstLast = normalizeName(`${nameParts[0]} ${nameParts[nameParts.length - 1]}`);
+      if (firstLast && firstLast !== normalizedName && !lookup.has(firstLast)) {
+        lookup.set(firstLast, info);
+      }
+    }
+
     const playerId = extractPlayerId(entry);
     if (playerId) lookup.set(playerId, info);
   };
 
   entries.forEach(processEntry);
+
+  if (typeof window !== 'undefined' && (window as any).__SLATESIM_DEBUG_INJURIES__) {
+    console.log('[injuries] lookup size:', lookup.size);
+    console.log('[injuries] first 10 keys:', [...lookup.keys()].slice(0, 10));
+  }
+
   return lookup;
 };
 
