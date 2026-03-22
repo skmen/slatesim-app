@@ -695,6 +695,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
   const latestInitRequestRef = useRef(0);
   const [showActuals, setShowActuals] = useState(true);
   const [injuryLookup, setInjuryLookup] = useState<InjuryLookup>(new Map());
+  const [injuriesAsOf, setInjuriesAsOf] = useState<string | null>(null);
   const [dataLastModified, setDataLastModified] = useState<string | null>(null);
   const [depthCharts, setDepthCharts] = useState<any | null>(null);
   const [startingLineupLookup, setStartingLineupLookup] = useState<StartingLineupLookup>(new Map());
@@ -946,6 +947,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
           view: prev.view,
         }));
         setInjuryLookup(new Map());
+        setInjuriesAsOf(null);
         setDataLastModified(null);
         setDepthCharts(null);
         setStartingLineupLookup(new Map());
@@ -1010,6 +1012,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
         lastUpdated: Date.now(),
       }));
       setInjuryLookup(nextInjuryLookup);
+      setInjuriesAsOf(loadResult.data.injuriesAsOf ?? null);
       setDataLastModified(loadResult.lastModified?.latest ?? null);
       setDepthCharts(loadResult.data.depthCharts ?? null);
       setStartingLineupLookup(buildStartingLineupLookup(loadResult.data.startingLineups));
@@ -1235,6 +1238,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                 isHistorical={isHistorical}
                 showActuals={effectiveShowActuals}
                 injuryLookup={injuryLookup}
+                injuriesAsOf={injuriesAsOf}
                 depthCharts={depthCharts}
                 startingLineupLookup={startingLineupLookup}
                 previewMode={previewMode}

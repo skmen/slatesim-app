@@ -18,6 +18,8 @@ interface Props {
   previewMode?: boolean;
   depthCharts?: any | null;
   injuryLookup?: InjuryLookup | null;
+  injuriesAsOf?: string | null;
+  slateDate?: string | null;
   startingLineupLookup?: StartingLineupLookup | null;
   optimizerSettingsKey?: string;
   settingsRevision?: number;
@@ -461,6 +463,8 @@ export const PlayerDeepDive: React.FC<Props> = ({
   previewMode = false,
   depthCharts,
   injuryLookup,
+  injuriesAsOf,
+  slateDate,
   startingLineupLookup,
   optimizerSettingsKey,
   settingsRevision,
@@ -1973,6 +1977,11 @@ export const PlayerDeepDive: React.FC<Props> = ({
                   {player.team} Depth Chart
                 </h3>
               </div>
+              {injuriesAsOf && slateDate && injuriesAsOf < slateDate && (
+                <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-[10px] font-bold text-amber-700 uppercase tracking-wide">
+                  Injury data as of {injuriesAsOf} — statuses may be outdated for tonight's slate
+                </div>
+              )}
               {depthChartRows.length > 0 ? (
                 <div className="overflow-x-auto">
                   <table className="w-full border-collapse min-w-max">

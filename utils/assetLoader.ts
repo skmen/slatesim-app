@@ -7,6 +7,7 @@ export interface SlateEcosystemResult {
     injuries?: any | null;
     depthCharts?: any | null;
     startingLineups?: any | null;
+    injuriesAsOf?: string;
     history: {
       rotations: any | null;
       boxscores: any | null;
@@ -384,6 +385,7 @@ export const loadSlateEcosystem = async (
       injuries: injuries.data ?? null,
       depthCharts: depthCharts.data ?? null,
       startingLineups: startingLineups.data ?? null,
+      injuriesAsOf: injuries.asOf,
       history: {
         rotations: rotations.data ?? null,
         boxscores: boxscores.data ?? null,

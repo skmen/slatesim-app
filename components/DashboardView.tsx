@@ -13,6 +13,7 @@ interface Props {
   isHistorical: boolean;
   showActuals: boolean;
   injuryLookup?: InjuryLookup | null;
+  injuriesAsOf?: string | null;
   depthCharts?: any | null;
   startingLineupLookup?: StartingLineupLookup | null;
   previewMode?: boolean;
@@ -570,6 +571,7 @@ export const DashboardView: React.FC<Props> = ({
   isHistorical,
   showActuals,
   injuryLookup,
+  injuriesAsOf,
   depthCharts,
   startingLineupLookup,
   previewMode = false,
@@ -1380,9 +1382,11 @@ export const DashboardView: React.FC<Props> = ({
           isHistorical={isHistorical}
           showActuals={showActuals}
           injuryLookup={injuryLookup}
+          injuriesAsOf={injuriesAsOf}
           depthCharts={depthCharts}
           startingLineupLookup={startingLineupLookup}
           previewMode={previewMode}
+          slateDate={slateDate}
           optimizerSettingsKey={`optimizerAdvancedSettings:${slateDate || 'unspecified'}`}
           allowedTabs={deepDiveAllowedTabs}
         />
