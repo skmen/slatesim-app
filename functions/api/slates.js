@@ -1,7 +1,7 @@
 /**
  * Cloudflare Pages Function: Lists available slate subfolders for a given date.
  *
- * Checks for subfolders under /{date}/ that match Main*, Turbo*, or Night* patterns.
+ * Checks for subfolders under /{date}/ that match Early*, Main*, Turbo*, or Night* patterns.
  * Returns them sorted with Main* first, then alphabetically.
  *
  * Query:
@@ -15,7 +15,7 @@
  *   R2_SECRET_ACCESS_KEY   // R2 API token secret key
  *
  * Response:
- *   { date, slates: ["Main", "Turbo_2G", "Night"] }
+ *   { date, slates: ["Early_2G", "Main", "Night"] }
  */
 
 import {
@@ -27,7 +27,7 @@ import {
 
 const DEFAULT_DATA_BASE_URL = 'https://pub-513149f63c494eefba758cd3927e2285.r2.dev';
 
-const SLATE_PATTERNS = [/^main/i, /^turbo/i, /^night/i];
+const SLATE_PATTERNS = [/^early/i, /^main/i, /^turbo/i, /^night/i];
 
 function isSlateFolder(name) {
   return name.length > 0 && SLATE_PATTERNS.some((p) => p.test(name));
