@@ -3,7 +3,8 @@ import Papa from 'papaparse';
 import { Upload, Lock, Unlock, Download, Save, Zap, ShieldCheck, ShieldAlert, X } from 'lucide-react';
 import { Player, GameInfo, Lineup } from '../types';
 import { PlayerDeepDive } from './PlayerDeepDive';
-import { SavedLineupSet, loadSavedLineupSets } from '../utils/savedLineups';
+import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
+import { parseOptimizerLineups } from '../utils/csvParser';
 import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260302-priorityreset2';
 
 type Slot = 'PG' | 'SG' | 'SF' | 'PF' | 'C' | 'G' | 'F' | 'UTIL';
@@ -172,6 +173,7 @@ const clearEntryManagerSession = () => {
 export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = false, slateDate = '', deepDiveAllowedTabs }) => {
   const [entries, setEntries] = useState<Entry[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const lineupFileInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<{ entryIdx: number; slot: Slot } | null>(null);
   const [showCandidates, setShowCandidates] = useState(false);
   const [deepDivePlayer, setDeepDivePlayer] = useState<Player | null>(null);
@@ -417,6 +419,11 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     return savedLineupSets.filter((set) => set.slateDate === slateDate);
   }, [savedLineupSets, slateDate]);
 
+  const persistSavedLineupSets = (nextSets: SavedLineupSet[]) => {
+    setSavedLineupSets(nextSets);
+    saveSavedLineupSets(nextSets);
+  };
+
   const applySavedLineupSetToEntries = (savedSet: SavedLineupSet) => {
     if (!entries.length || savedSet.lineups.length === 0) return;
     const unassignedEntryIndexes = entries
@@ -440,6 +447,57 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     }
     setEntries(nextEntries);
     setShowImportLineupsModal(false);
+  };
+
+  const handleLineupImport = async (file: File) => {
+    try {
+      const parsedLineups = await parseOptimizerLineups(file, players);
+      const validLineups = parsedLineups.filter((lineup) => Array.isArray(lineup.playerIds) && lineup.playerIds.length > 0);
+      if (validLineups.length === 0) {
+        alert('No valid lineups were found in the selected file.');
+        return;
+      }
+
+      const now = Date.now();
+      const baseName = String(file.name || 'Imported Lineups').replace(/\.[^.]+$/, '');
+      const normalizedLineups: Lineup[] = validLineups.map((lineup, idx) => ({
+        id: lineup.id || `imported_${now}_${idx + 1}`,
+        playerIds: [...lineup.playerIds],
+        totalSalary: Number.isFinite(Number(lineup.totalSalary)) ? Number(lineup.totalSalary) : 0,
+        totalProjection: Number.isFinite(Number(lineup.totalProjection)) ? Number(lineup.totalProjection) : 0,
+        lineupSource: 'optimizer',
+      }));
+      const savedSet: SavedLineupSet = {
+        id: `saved_${now}_${Math.random().toString(36).slice(2, 8)}`,
+        name: baseName || 'Imported Lineups',
+        slateDate: slateDate || '',
+        salaryCap: SALARY_CAP,
+        createdAt: now,
+        lineups: normalizedLineups,
+      };
+
+      const nextSets = [savedSet, ...loadSavedLineupSets()];
+      persistSavedLineupSets(nextSets);
+
+      if (entries.length > 0) {
+        applySavedLineupSetToEntries(savedSet);
+        alert(`Imported ${savedSet.lineups.length} lineups and loaded them into your entries.`);
+      } else {
+        alert(`Imported ${savedSet.lineups.length} lineups and saved them to Saved Lineups.`);
+      }
+    } catch (error) {
+      console.error('Failed to import lineups file', error);
+      alert('Failed to import lineups CSV. Please confirm it includes lineup slot columns (PG, SG, SF, PF, C, G, F, UTIL).');
+    } finally {
+      if (lineupFileInputRef.current) lineupFileInputRef.current.value = '';
+    }
+  };
+
+  const onLineupFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      void handleLineupImport(file);
+    }
   };
 
   const runSingleLineupOptimization = (pool: Player[]): Promise<Lineup | null> => {
@@ -705,6 +763,15 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
           <h1 className="text-xl font-black uppercase tracking-wider text-black">Entry Manager</h1>
           <p className="text-sm text-black/60">{entries.length} Entries Loaded</p>
         </div>
+        <input ref={lineupFileInputRef} type="file" accept=".csv" className="hidden" onChange={onLineupFileChange} />
+        <button
+          type="button"
+          onClick={() => lineupFileInputRef.current?.click()}
+          className="px-3 py-1.5 rounded-sm border border-ink/20 text-[10px] font-black uppercase tracking-widest text-black hover:border-drafting-orange transition-all"
+        >
+          <Upload className="inline-block w-3 h-3 mr-1.5" />
+          Import Lineups CSV
+        </button>
         <button
           type="button"
           onClick={() => {
@@ -713,7 +780,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
           }}
           className="px-3 py-1.5 rounded-sm border border-ink/20 text-[10px] font-black uppercase tracking-widest text-black hover:border-drafting-orange transition-all"
         >
-          Import Lineups
+          Saved Lineups
         </button>
         <button
           onClick={runLateSwap}
@@ -918,7 +985,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
                 <p className="text-xs text-black/70 font-mono mt-1">
                   {entries.length > 0
                     ? 'Select a saved lineup set to map lineups across your entries.'
-                    : 'Load a DK entries CSV first, then import saved lineups.'}
+                    : 'No entries loaded yet. You can still import lineup files, and they will be saved here.'}
                 </p>
               </div>
               <button onClick={() => setShowImportLineupsModal(false)} className="p-2 text-black/50 hover:text-black transition-colors rounded-full">
