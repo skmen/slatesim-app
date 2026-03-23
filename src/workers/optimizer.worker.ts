@@ -386,16 +386,17 @@ const preprocessPlayers = (
     const gameTotalRaw = getGameTotalMaybe(player);
     const gameTotal = gameTotalRaw !== undefined ? gameTotalRaw : 220;
 
-    // Low-total game filter
+    const locked = Boolean((player as any).optimizerLocked);
+
+    // Low-total game filter — bypass for locked players (user explicitly wants them)
     if (
+      !locked &&
       gameTotalRaw !== undefined &&
       gameTotalRaw > 0 &&
       gameTotalRaw < config.stackMinGameTotal
     ) {
       continue;
     }
-
-    const locked = Boolean((player as any).optimizerLocked);
 
     // Per-player exposure bounds (component stamps these on each player before sending)
     const rawMinExp = safeNumber((player as any).optimizerMinExposure, 0);
