@@ -928,7 +928,7 @@ const attemptArchiveAdmission = (
     archive.push({
       lineup: lineup.slice(),
       score,
-      players: [...playerIdxs].sort((a, b) => a - b),
+      players: [...playerIdxs], // preserve DK slot order (PG,SG,SF,PF,C,G,F,UTIL)
     });
     for (const idx of playerIdxs) exposureCounts[idx]++;
     return true;
@@ -947,7 +947,7 @@ const attemptArchiveAdmission = (
     archive.push({
       lineup: lineup.slice(),
       score,
-      players: [...playerIdxs].sort((a, b) => a - b),
+      players: [...playerIdxs], // preserve DK slot order (PG,SG,SF,PF,C,G,F,UTIL)
     });
     for (const idx of playerIdxs) exposureCounts[idx]++;
     if (archive.length > maxSize) {
