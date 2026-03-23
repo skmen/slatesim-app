@@ -9,9 +9,6 @@ const DK_SLOTS = ['PG', 'SG', 'SF', 'PF', 'C', 'G', 'F', 'UTIL'] as const;
 type Slot = (typeof DK_SLOTS)[number];
 const workerScope = self as any;
 
-// R2 base URL — sourced from env var (VITE_R2_BASE_URL used throughout this project)
-const R2_BASE_URL = ((import.meta as any).env?.VITE_R2_BASE_URL as string ?? '').replace(/\/$/, '');
-
 // ---------------------------------------------------------------------------
 // Interfaces
 // ---------------------------------------------------------------------------
@@ -54,20 +51,9 @@ interface OptimizerConfig {
   delta_theta?: number;
 }
 
-/** NEW: config only — no players field */
 interface RequestPayload {
+  players: Player[];
   config?: OptimizerConfig;
-}
-
-/** Top-level shape of slate.json fetched from R2 */
-interface SlateJson {
-  players?: Player[];
-  data?: { projections?: Player[]; players?: Player[] };
-  projections?: Player[];
-  entries?: Player[];
-  generatedAt?: string;
-  slateDate?: string;
-  [key: string]: any;
 }
 
 interface QIEAConfig {
@@ -249,53 +235,6 @@ const getCeilingTieBreaker = (player: Player): number => {
 // ---------------------------------------------------------------------------
 
 const slotIndex = (slot: Slot): number => DK_SLOTS.indexOf(slot);
-
-// ---------------------------------------------------------------------------
-// R2 fetch — called first in onmessage before any other logic
-// ---------------------------------------------------------------------------
-
-const fetchSlate = async (): Promise<Player[]> => {
-  const url = `${R2_BASE_URL}/slate.json`;
-
-  let response: Response;
-  try {
-    response = await fetch(url);
-  } catch (err) {
-    throw new Error(
-      `Failed to reach R2: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      `slate.json fetch failed: HTTP ${response.status} ${response.statusText}`
-    );
-  }
-
-  let data: SlateJson;
-  try {
-    data = await response.json();
-  } catch {
-    throw new Error('slate.json is not valid JSON.');
-  }
-
-  // Support multiple player array key names used in this project's pipeline format
-  const players: unknown =
-    data.players ??
-    data.data?.projections ??
-    data.data?.players ??
-    (data as any).projections ??
-    (data as any).entries ??
-    (data as any).slate;
-
-  if (!Array.isArray(players) || players.length === 0) {
-    throw new Error(
-      'slate.json contains no players. Confirm the R2 file has been uploaded for today.'
-    );
-  }
-
-  return players as Player[];
-};
 
 // ---------------------------------------------------------------------------
 // Config resolution
@@ -1208,23 +1147,22 @@ const runQIEA = async (
 
 workerScope.onmessage = async (event: MessageEvent<RequestPayload>) => {
   try {
-    const { config: rawConfig } = event.data || {};
+    const { players: rawPlayers, config: rawConfig } = event.data || { players: [] };
 
-    // 1. Fetch slate — first async operation
-    workerScope.postMessage({ type: 'fetch_start' });
-    const rawPlayers = await fetchSlate();
-    workerScope.postMessage({ type: 'fetch_done', playerCount: rawPlayers.length });
+    if (!Array.isArray(rawPlayers) || rawPlayers.length === 0) {
+      throw new Error('No players provided. Load the slate before running the optimizer.');
+    }
 
-    // 2. Resolve config — after fetch so config errors don't block the fetch_start signal
+    // 1. Resolve config
     const qieaConfig = resolveQIEAConfig(rawConfig);
     const resolvedConfig = resolveRunConfig(rawConfig);
 
-    // 3. Preprocess players and build eligibility matrix
+    // 2. Preprocess players and build eligibility matrix
     const players = preprocessPlayers(rawPlayers, qieaConfig, resolvedConfig.salaryCap);
     const eligibility = buildEligibilityMatrix(players);
 
     if (players.length < 8) {
-      throw new Error('Not enough eligible players in slate.json to build a lineup.');
+      throw new Error('Not enough eligible players to build a lineup.');
     }
     for (let s = 0; s < DK_SLOTS.length; s++) {
       const ok = players.some((_p, j) => eligibility[s][j]);
