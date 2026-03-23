@@ -76,6 +76,7 @@ interface QIEAConfig {
   ownershipPenalty:   number;   // default 0.10
   teamStackWeights:   Record<string, number>;
   stackMinGameTotal:  number;   // default 215
+  maxExposure:        number;   // global max exposure % for all non-locked players, default 100
 }
 
 interface QIEAPlayer {
@@ -87,9 +88,11 @@ interface QIEAPlayer {
   opponent:   string;
   gameSlug:   string;
   gameTotal:  number;
-  positions:  string[];
-  locked:     boolean;
-  excluded:   boolean;
+  positions:      string[];
+  locked:         boolean;
+  excluded:       boolean;
+  minExposurePct: number;   // 0-100, from optimizerMinExposure
+  maxExposurePct: number;   // 0-100, from optimizerMaxExposure or global cap
 }
 
 interface ArchiveEntry {
@@ -320,6 +323,7 @@ const resolveQIEAConfig = (config?: OptimizerConfig): QIEAConfig => {
     ownershipPenalty,
     teamStackWeights,
     stackMinGameTotal,
+    maxExposure: clamp(safeNumber((config as any)?.maxExposure, 100), 0, 100),
   };
 };
 
@@ -393,6 +397,14 @@ const preprocessPlayers = (
 
     const locked = Boolean((player as any).optimizerLocked);
 
+    // Per-player exposure bounds (component stamps these on each player before sending)
+    const rawMinExp = safeNumber((player as any).optimizerMinExposure, 0);
+    const rawMaxExp = (player as any).optimizerMaxExposure !== undefined
+      ? safeNumber((player as any).optimizerMaxExposure, config.maxExposure)
+      : config.maxExposure;
+    const minExposurePct = locked ? 100 : clamp(rawMinExp, 0, 100);
+    const maxExposurePct = locked ? 100 : clamp(rawMaxExp, minExposurePct, 100);
+
     result.push({
       index: i,
       salary: Math.max(0, safeNumber(player.salary, 0)),
@@ -405,6 +417,8 @@ const preprocessPlayers = (
       positions,
       locked,
       excluded: false,
+      minExposurePct,
+      maxExposurePct,
     });
   }
 
@@ -469,6 +483,18 @@ const initThetas = (
             (Math.PI / 8);
           thetas[i][j] = clamp(BASE + boost, 0.001, Math.PI / 2 - 0.001);
         }
+      }
+    }
+  }
+
+  // Min-exposure bias: scale theta upward proportional to required exposure %
+  // A player at 50% min exposure gets a proportional push toward PI/2
+  for (let j = 0; j < n; j++) {
+    const minPct = players[j].minExposurePct;
+    if (minPct > 0 && !players[j].locked) {
+      const boost = (minPct / 100) * (Math.PI / 4);
+      for (let i = 0; i < popSize; i++) {
+        thetas[i][j] = clamp(thetas[i][j] + boost, 0.001, Math.PI / 2 - 0.001);
       }
     }
   }
@@ -887,13 +913,21 @@ const attemptArchiveAdmission = (
   playerIdxs: number[],
   minHamming: number,
   maxSize: number,
+  exposureCounts: number[],
+  maxAllowedByPlayer: number[],
 ): boolean => {
+  // Hard max-exposure gate: reject if any player in this lineup is already at their cap
+  for (const idx of playerIdxs) {
+    if (exposureCounts[idx] >= maxAllowedByPlayer[idx]) return false;
+  }
+
   if (archive.length === 0) {
     archive.push({
       lineup: lineup.slice(),
       score,
       players: [...playerIdxs].sort((a, b) => a - b),
     });
+    for (const idx of playerIdxs) exposureCounts[idx]++;
     return true;
   }
 
@@ -912,11 +946,14 @@ const attemptArchiveAdmission = (
       score,
       players: [...playerIdxs].sort((a, b) => a - b),
     });
+    for (const idx of playerIdxs) exposureCounts[idx]++;
     if (archive.length > maxSize) {
+      // Evict lowest-scoring entry and decrement its exposure counts
       let minIdx = 0;
       for (let i = 1; i < archive.length; i++) {
         if (archive[i].score < archive[minIdx].score) minIdx = i;
       }
+      for (const idx of archive[minIdx].players) exposureCounts[idx]--;
       archive.splice(minIdx, 1);
     }
     return true;
@@ -1045,6 +1082,13 @@ const runQIEA = async (
     .map((p, i) => (p.locked ? i : -1))
     .filter((i) => i !== -1);
 
+  // Per-player max lineup count derived from maxExposurePct and total requested lineups
+  const maxAllowedByPlayer = players.map((p) =>
+    Math.max(1, Math.floor((p.maxExposurePct / 100) * resolvedConfig.numLineups))
+  );
+  // Live count of how many archive entries each player currently appears in
+  const exposureCounts = new Array<number>(players.length).fill(0);
+
   let patienceCounter = 0;
   let lastArchiveSize = 0;
   let lastBestScore = -Infinity;
@@ -1089,6 +1133,8 @@ const runQIEA = async (
           lineupIdxs[i],
           config.minHamming,
           resolvedConfig.numLineups,
+          exposureCounts,
+          maxAllowedByPlayer,
         )
       ) {
         archiveChanged = true;
