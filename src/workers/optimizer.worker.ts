@@ -552,6 +552,7 @@ const repairLineup = (
 
   try {
     const bits = new Uint8Array(collapsed);
+    const lockedSet = new Set(lockedIndexes);
 
     // STEP 1: Force locked players in
     for (const li of lockedIndexes) {
@@ -565,7 +566,6 @@ const repairLineup = (
     }
 
     if (active.length > 8) {
-      const lockedSet = new Set(lockedIndexes);
       const sortable = active
         .filter((j) => !lockedSet.has(j))
         .sort(
@@ -635,8 +635,8 @@ const repairLineup = (
           players[a].projection >= players[b].projection ? a : b
         );
 
-        // Drop lowest proj/salary active player not yet assigned to a slot
-        const unassignedActive = active.filter((j) => !usedPlayers.has(j));
+        // Drop lowest proj/salary active player not yet assigned (never a locked player)
+        const unassignedActive = active.filter((j) => !usedPlayers.has(j) && !lockedSet.has(j));
         if (unassignedActive.length === 0) return invalidResult;
 
         const victim = unassignedActive.reduce((a, b) =>
@@ -686,6 +686,7 @@ const repairLineup = (
       let toDrop = -1;
 
       usedPlayers.forEach((pIdx) => {
+        if (lockedSet.has(pIdx)) return;  // never evict locked players
         const slot = slotOf.get(pIdx);
         if (!slot) return;
         const si = slotIndex(slot);
@@ -741,6 +742,7 @@ const repairLineup = (
       let lowestSalaryPlayer = -1;
       let lowestSalary = Infinity;
       usedPlayers.forEach((j) => {
+        if (lockedSet.has(j)) return;  // never replace locked players
         if (players[j].salary < lowestSalary) {
           lowestSalary = players[j].salary;
           lowestSalaryPlayer = j;
