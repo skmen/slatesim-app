@@ -1731,15 +1731,19 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div className="space-y-1.5">
               <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Lineups</label>
-              <select
+              <input
+                type="number"
+                min={1}
+                max={2000}
                 value={config.numLineups}
-                onChange={(e) => setConfig({ ...config, numLineups: Number.parseInt(e.target.value, 10) || 1 })}
+                onChange={(e) => {
+                  const val = Number.parseInt(e.target.value, 10);
+                  if (!Number.isNaN(val)) {
+                    setConfig({ ...config, numLineups: Math.min(2000, Math.max(1, val)) });
+                  }
+                }}
                 className="w-full bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
-              >
-                {[1, 10, 20, 50, 100, 150, 250, 500, 1000].map((val) => (
-                  <option key={val} value={val}>{val}</option>
-                ))}
-              </select>
+              />
             </div>
 
             <div className="space-y-1.5">
