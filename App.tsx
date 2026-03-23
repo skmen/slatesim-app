@@ -1353,7 +1353,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
               <NavItem label="Entries" icon={List} targetView={ViewState.ENTRY_MANAGER} entitlement="access_entries" setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
             )}
             <NavItem label="Report" icon={BarChart2} targetView={ViewState.REPORT} entitlement="access_report" setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
-            <NavItem label="Picks" icon={Star} targetView={ViewState.SLATE_RECOMMENDATIONS} setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
+            <NavItem label="Picks" icon={Star} targetView={ViewState.SLATE_RECOMMENDATIONS} entitlement="access_picks" setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
           </div>
         </nav>
       )}

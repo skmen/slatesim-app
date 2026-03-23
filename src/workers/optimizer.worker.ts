@@ -1125,6 +1125,11 @@ const runQIEA = async (
       }
     }
 
+    // Relax Hamming constraint as archive fills: 3 → 2 → 1
+    const fillRatio = archive.length / resolvedConfig.numLineups;
+    const effectiveMinHamming =
+      fillRatio >= 0.9 ? 1 : fillRatio >= 0.75 ? 2 : config.minHamming;
+
     let archiveChanged = false;
     for (let i = 0; i < config.popSize; i++) {
       if (!validMask[i]) continue;
@@ -1134,7 +1139,7 @@ const runQIEA = async (
           scores[i],
           repaired[i],
           lineupIdxs[i],
-          config.minHamming,
+          effectiveMinHamming,
           resolvedConfig.numLineups,
           exposureCounts,
           maxAllowedByPlayer,
@@ -1184,6 +1189,31 @@ const runQIEA = async (
     // Yield to the event loop every 50 generations
     if (gen % 50 === 49) {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  // Post-loop greedy fill: if QIEA stalled before filling the archive,
+  // generate random valid lineups with progressively relaxed Hamming until full.
+  if (archive.length < resolvedConfig.numLineups) {
+    const target = resolvedConfig.numLineups;
+    const maxAttempts = (target - archive.length) * 500;
+    for (let attempt = 0; attempt < maxAttempts && archive.length < target; attempt++) {
+      const rand = new Uint8Array(players.length);
+      for (let j = 0; j < players.length; j++) {
+        rand[j] = players[j].locked ? 1 : Math.random() < 0.25 ? 1 : 0;
+      }
+      const result = repairLineup(
+        rand, players, eligibility,
+        resolvedConfig.salaryCap, resolvedConfig.salaryFloor, lockedIndexes,
+      );
+      if (!result.valid) continue;
+      const score = scoreLineup(result.playerIdxs, players, config);
+      const remaining = target - archive.length;
+      const relaxedHamming = remaining <= Math.ceil(target * 0.15) ? 1 : 2;
+      attemptArchiveAdmission(
+        archive, score, result.lineup, result.playerIdxs,
+        relaxedHamming, target, exposureCounts, maxAllowedByPlayer,
+      );
     }
   }
 

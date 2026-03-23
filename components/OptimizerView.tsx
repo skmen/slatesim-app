@@ -84,6 +84,11 @@ interface OptimizerConfigState {
     wForm: number;
   };
   enforceUpsideStructureConstraints: boolean;
+  // QIEA algorithm tuning
+  minHamming: number;
+  patience: number;
+  generations: number;
+  popSize: number;
 }
 
 const DEFAULT_ADVANCED_MINIMUMS: AdvancedMinimumSettings = {
@@ -931,6 +936,10 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       wForm: 0.3,
     },
     enforceUpsideStructureConstraints: true,
+    minHamming: 3,
+    patience: 150,
+    generations: 500,
+    popSize: 128,
   });
 
   const [generatedLineups, setGeneratedLineups] = useState<Lineup[]>([]);
@@ -2683,6 +2692,40 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                         })}
                       </div>
                     </div>
+                  </div>
+                </div>
+
+                <div className="border border-ink/10 rounded-sm p-3 bg-white/60">
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-ink/50 mb-3">Algorithm Tuning</h4>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+                    {(
+                      [
+                        { key: 'minHamming', label: 'Min Hamming', min: 1, max: 7, step: 1, title: 'Minimum player difference between archive lineups (1–7). Lower = more similar lineups.' },
+                        { key: 'patience', label: 'Patience', min: 10, max: 500, step: 10, title: 'Generations without archive progress before early exit (10–500).' },
+                        { key: 'generations', label: 'Generations', min: 50, max: 2000, step: 50, title: 'Maximum QIEA generations to run (50–2000).' },
+                        { key: 'popSize', label: 'Population', min: 16, max: 512, step: 16, title: 'QIEA population size per generation (16–512).' },
+                      ] as { key: 'minHamming' | 'patience' | 'generations' | 'popSize'; label: string; min: number; max: number; step: number; title: string }[]
+                    ).map(({ key, label, min, max, step, title }) => (
+                      <div key={key}>
+                        <label className="text-[9px] font-black uppercase tracking-widest text-ink/40 block mb-1" title={title}>
+                          {label}
+                        </label>
+                        <input
+                          type="number"
+                          min={min}
+                          max={max}
+                          step={step}
+                          value={config[key] as number}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value, 10);
+                            if (!isNaN(val) && val >= min && val <= max) {
+                              setConfig((prev) => ({ ...prev, [key]: val }));
+                            }
+                          }}
+                          className="w-full bg-white border border-ink/20 rounded-sm px-2 py-1 text-[11px] font-mono text-ink focus:border-drafting-orange outline-none"
+                        />
+                      </div>
+                    ))}
                   </div>
                 </div>
 
