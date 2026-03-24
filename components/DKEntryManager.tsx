@@ -616,6 +616,12 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     const unlockedSlots = SLOT_ORDER.filter((slot) => !lockedSlots.has(slot));
     if (unlockedSlots.length === 0) return nextSlots;
 
+    const lockedSalary = [...lockedSlots].reduce((sum, slot) => {
+      const player = getPlayerFromString(entry.slots[slot]);
+      return sum + Number(player?.salary || 0);
+    }, 0);
+    const salaryBudget = SALARY_CAP - lockedSalary;
+
     const optimizedById = new Map<string, Player>();
     optimizedPlayers.forEach((player) => {
       if (!usedPlayerIds.has(player.id)) {
@@ -636,12 +642,13 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     const currentAssignment = new Map<Slot, Player>();
     const assignmentUsedIds = new Set<string>(usedPlayerIds);
 
-    const backtrack = (slotIndex: number): boolean => {
+    const backtrack = (slotIndex: number, usedSalary: number): boolean => {
       if (slotIndex >= unlockedSlots.length) return true;
       const slot = unlockedSlots[slotIndex];
       const eligibleCandidates = candidateOrder
         .filter((player) => !assignmentUsedIds.has(player.id))
         .filter((player) => canPlayerFitSlot(player, slot))
+        .filter((player) => usedSalary + Number(player.salary || 0) <= salaryBudget)
         .sort((a, b) => {
           const aFromOptimized = optimizedById.has(a.id) ? 1 : 0;
           const bFromOptimized = optimizedById.has(b.id) ? 1 : 0;
@@ -652,7 +659,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
       for (const player of eligibleCandidates) {
         currentAssignment.set(slot, player);
         assignmentUsedIds.add(player.id);
-        if (backtrack(slotIndex + 1)) return true;
+        if (backtrack(slotIndex + 1, usedSalary + Number(player.salary || 0))) return true;
         assignmentUsedIds.delete(player.id);
         currentAssignment.delete(slot);
       }
@@ -660,7 +667,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
       return false;
     };
 
-    const assigned = backtrack(0);
+    const assigned = backtrack(0, 0);
     if (!assigned) return null;
 
     unlockedSlots.forEach((slot) => {
