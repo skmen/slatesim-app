@@ -97,6 +97,15 @@ const stripSlotTags = (value: string): string => {
   return stripOutTag(stripLockedTag(value));
 };
 
+const extractSlotDisplayName = (value: string): string => {
+  const normalized = stripSlotTags(value);
+  if (!normalized) return '';
+  return normalized
+    .replace(/\s*\(\d+\)\s*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
 const isPlayerOut = (playerStr: string): boolean => {
   return /\(OUT\)/i.test(String(playerStr || ''));
 };
@@ -374,17 +383,19 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
           if (!raw) return '';
           const idMatch = raw.match(/\((\d+)\)/);
           const playerId = idMatch?.[1];
-          // If the DK CSV has a player pool, use it as the authority.
-          // If the player is in the DK slate with a salary they are NOT out.
-          if (dkSlatePlayerIds.size > 0) {
-            if (playerId && dkSlatePlayerIds.has(playerId)) return raw;
-            return `${raw} (OUT)`;
-          }
-          // Fallback: check the projections playerMap (original behaviour)
           const found = playerId
             ? playerMap.get(playerId) ?? playerMap.get(raw) ?? playerMap.get(raw.toLowerCase())
             : playerMap.get(raw) ?? playerMap.get(raw.toLowerCase());
-          if (!found || Number(found.salary) === 0) return `${raw} (OUT)`;
+          const addOutTag = (value: string): string => (/\(OUT\)/i.test(value) ? value : `${value} (OUT)`);
+          // If the DK CSV has a player pool, use it as the authority.
+          // Some out players can still appear in this section, so keep the player map
+          // as a second source to avoid rendering unresolved slots as empty.
+          if (dkSlatePlayerIds.size > 0) {
+            if (playerId && dkSlatePlayerIds.has(playerId) && found && Number(found.salary) > 0) return raw;
+            return addOutTag(raw);
+          }
+          // Fallback: check the projections playerMap (original behaviour)
+          if (!found || Number(found.salary) === 0) return addOutTag(raw);
           return raw;
         };
 
@@ -1016,14 +1027,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
                                     const locked = isPlayerLocked(playerStr);
                                     const proj = player ? (playerScores[player.id] || player.projection || 0) : 0;
                                     const salaryK = player ? `$${(player.salary / 1000).toFixed(1)}k` : null;
-                                    // For OUT players not in the pool, extract display name from the raw string
-                                    const outDisplayName = isOut && !player
-                                      ? playerStr
-                                          .replace(/\s*\(OUT\)\s*/gi, '')
-                                          .replace(/\s*\(LOCKED\)\s*/gi, '')
-                                          .replace(/\s*\(\d+\)\s*/g, '')
-                                          .trim()
-                                      : null;
+                                    const unresolvedDisplayName = !player ? extractSlotDisplayName(playerStr) : '';
                                     return (
                                         <div
                                           key={slot}
@@ -1038,10 +1042,10 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
                                                 <span className="text-[9px] font-black bg-red-100 text-red-700 px-1 rounded uppercase tracking-wider whitespace-nowrap">OUT</span>
                                                 {salaryK && <span className="text-[11px] text-black/40 font-mono whitespace-nowrap">{salaryK}</span>}
                                               </div>
-                                            ) : outDisplayName ? (
+                                            ) : unresolvedDisplayName ? (
                                               <div className="flex items-center w-full min-w-0 gap-2">
-                                                <span className="text-[11px] font-bold text-black/40 line-through truncate flex-1 min-w-0">{outDisplayName}</span>
-                                                <span className="text-[9px] font-black bg-red-100 text-red-700 px-1 rounded uppercase tracking-wider whitespace-nowrap">OUT</span>
+                                                <span className={`text-[11px] font-bold truncate flex-1 min-w-0 ${isOut ? 'text-black/40 line-through' : 'text-black/70'}`}>{unresolvedDisplayName}</span>
+                                                {isOut && <span className="text-[9px] font-black bg-red-100 text-red-700 px-1 rounded uppercase tracking-wider whitespace-nowrap">OUT</span>}
                                               </div>
                                             ) : player ? (
                                               <div className="flex items-center w-full min-w-0 gap-2">
