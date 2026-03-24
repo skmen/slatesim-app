@@ -1287,20 +1287,28 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
             )}
             {!previewMode && view === ViewState.ENTRY_MANAGER && (
               canAccessEntries ? (
-                selectedDate === getLocalDateStr(new Date()) ? (
-                  <DKEntryManager
-                    players={state.slate.players}
-                    games={state.slate.games}
-                    showActuals={effectiveShowActuals}
-                    slateDate={state.slate.date}
-                    selectedSlate={selectedSlate}
-                    deepDiveAllowedTabs={deepDiveAllowedTabs}
-                  />
-                ) : (
-                  <div className="max-w-2xl mx-auto mt-12 rounded-sm border border-ink/10 bg-white/55 p-6 text-sm text-ink/70">
-                    Entries are available only for today&apos;s slate.
-                  </div>
-                )
+                (() => {
+                  const isToday = selectedDate === getLocalDateStr(new Date());
+                  const isHistorical = isDateBeforeToday(selectedDate);
+                  if (isToday || (isAdmin && isHistorical)) {
+                    return (
+                      <DKEntryManager
+                        players={state.slate.players}
+                        games={state.slate.games}
+                        showActuals={effectiveShowActuals}
+                        slateDate={state.slate.date}
+                        selectedSlate={selectedSlate}
+                        deepDiveAllowedTabs={deepDiveAllowedTabs}
+                        isHistoricalMode={isAdmin && isHistorical}
+                      />
+                    );
+                  }
+                  return (
+                    <div className="max-w-2xl mx-auto mt-12 rounded-sm border border-ink/10 bg-white/55 p-6 text-sm text-ink/70">
+                      Entries are available only for today&apos;s slate.
+                    </div>
+                  );
+                })()
               ) : (
                 <MembershipGateCard
                   title="Entries Is In Soft Launch"
@@ -1349,7 +1357,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
             <NavItem label="Research" icon={BarChart2} targetView={ViewState.RESEARCH} setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
             <NavItem label="Compare" icon={GitCompare} targetView={ViewState.COMPARE} entitlement="access_compare" setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
             <NavItem label="Optimizer" icon={Zap} targetView={ViewState.OPTIMIZER} entitlement="access_optimizer" setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
-            {selectedDate === getLocalDateStr(new Date()) && (
+            {(selectedDate === getLocalDateStr(new Date()) || (isAdmin && isDateBeforeToday(selectedDate))) && (
               <NavItem label="Entries" icon={List} targetView={ViewState.ENTRY_MANAGER} entitlement="access_entries" setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />
             )}
             <NavItem label="Report" icon={BarChart2} targetView={ViewState.REPORT} entitlement="access_report" setView={setView} view={view} hasEntitlement={effectiveHasEntitlement} />

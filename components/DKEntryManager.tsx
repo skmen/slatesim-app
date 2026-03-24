@@ -39,6 +39,7 @@ interface Props {
   slateDate?: string;
   selectedSlate?: string | null;
   deepDiveAllowedTabs?: Array<'dfs' | 'stats' | 'matchup' | 'synergy' | 'depth'>;
+  isHistoricalMode?: boolean;
 }
 
 export type Entry = {
@@ -88,8 +89,20 @@ const stripLockedTag = (value: string): string => {
   return String(value || '').replace(/\s*\(LOCKED\)\s*$/i, '').trim();
 };
 
+const stripOutTag = (value: string): string => {
+  return String(value || '').replace(/\s*\(OUT\)\s*$/i, '').trim();
+};
+
+const stripSlotTags = (value: string): string => {
+  return stripOutTag(stripLockedTag(value));
+};
+
+const isPlayerOut = (playerStr: string): boolean => {
+  return /\(OUT\)/i.test(String(playerStr || ''));
+};
+
 const isEntryUnassigned = (entry: Entry): boolean => {
-  return SLOT_ORDER.every((slot) => stripLockedTag(entry.slots[slot] || '') === '');
+  return SLOT_ORDER.every((slot) => stripSlotTags(entry.slots[slot] || '') === '');
 };
 
 const getPlayerPositions = (player: Player): string[] => {
@@ -189,7 +202,7 @@ const clearEntryManagerSession = () => {
   localStorage.removeItem(ENTRY_MANAGER_SESSION_KEY);
 };
 
-export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = false, slateDate = '', selectedSlate = null, deepDiveAllowedTabs }) => {
+export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = false, slateDate = '', selectedSlate = null, deepDiveAllowedTabs, isHistoricalMode = false }) => {
   const [entries, setEntries] = useState<Entry[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lineupFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -203,11 +216,20 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
   const [showImportLineupsModal, setShowImportLineupsModal] = useState(false);
   const [savedLineupSets, setSavedLineupSets] = useState<SavedLineupSet[]>([]);
   const [isLateSwapRunning, setIsLateSwapRunning] = useState(false);
+  const [lateSwapProgress, setLateSwapProgress] = useState<{ current: number; total: number } | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const playerRefs = useRef<Record<string, HTMLDivElement>>({});
 
   const gameStartedCache = useMemo(() => {
     const cache = new Map<string, boolean>();
+    // In historical mode all games are treated as not-started so admin can freely toggle locks
+    if (isHistoricalMode) {
+      games.forEach((game) => {
+        cache.set(game.teamA.abbreviation, false);
+        cache.set(game.teamB.abbreviation, false);
+      });
+      return cache;
+    }
     const now = new Date();
     games.forEach((game) => {
       const gameTime = parseGameTime(game.gameTime);
@@ -216,7 +238,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
       cache.set(game.teamB.abbreviation, started);
     });
     return cache;
-  }, [games]);
+  }, [games, isHistoricalMode]);
 
   const playerMap = useMemo(() => {
     const map = new Map<string, Player>();
@@ -233,7 +255,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     const raw = String(playerStr || '').trim();
     if (!raw) return undefined;
 
-    const normalized = stripLockedTag(raw);
+    const normalized = stripSlotTags(raw);
     const idMatch = normalized.match(/\((\d+)\)/);
     if (idMatch?.[1]) {
       const byId = playerMap.get(idMatch[1]);
@@ -337,13 +359,33 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
         const newEntries: Entry[] = [];
         const newPlayerScores: Record<string, number> = {};
 
+        const markOutIfNeeded = (rawSlot: string): string => {
+          const raw = rawSlot.trim();
+          if (!raw) return '';
+          const idMatch = raw.match(/\((\d+)\)/);
+          const found = idMatch?.[1]
+            ? playerMap.get(idMatch[1]) ?? playerMap.get(raw) ?? playerMap.get(raw.toLowerCase())
+            : playerMap.get(raw) ?? playerMap.get(raw.toLowerCase());
+          if (!found || Number(found.salary) === 0) {
+            return `${raw} (OUT)`;
+          }
+          return raw;
+        };
+
         rows.forEach((row) => {
           const firstCell = String(row[0] || '').trim().toLowerCase();
           if (firstCell === 'entry id') return;
           if (row[0] && row[2]) { // Entry row
+            const rawSlots = [row[4], row[5], row[6], row[7], row[8], row[9], row[10], row[11]];
             const slots: Record<Slot, string> = {
-              PG: row[4] || '', SG: row[5] || '', SF: row[6] || '', PF: row[7] || '',
-              C: row[8] || '', G: row[9] || '', F: row[10] || '', UTIL: row[11] || '',
+              PG: markOutIfNeeded(rawSlots[0] || ''),
+              SG: markOutIfNeeded(rawSlots[1] || ''),
+              SF: markOutIfNeeded(rawSlots[2] || ''),
+              PF: markOutIfNeeded(rawSlots[3] || ''),
+              C:  markOutIfNeeded(rawSlots[4] || ''),
+              G:  markOutIfNeeded(rawSlots[5] || ''),
+              F:  markOutIfNeeded(rawSlots[6] || ''),
+              UTIL: markOutIfNeeded(rawSlots[7] || ''),
             };
             newEntries.push({
               entryId: row[0],
@@ -392,7 +434,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     if (!entries.length) return;
     const rows = entries.map((en) => {
       const row: Record<string, string> = { 'Entry ID': en.entryId, 'Contest Name': en.contestName, 'Contest ID': en.contestId, 'Entry Fee': en.entryFee };
-      SLOT_ORDER.forEach((s) => { row[s] = en.slots[s] || ''; });
+      SLOT_ORDER.forEach((s) => { row[s] = stripSlotTags(en.slots[s] || ''); });
       return row;
     });
     const csv = Papa.unparse(rows, { columns: REQUIRED_COLS });
@@ -616,12 +658,6 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     const unlockedSlots = SLOT_ORDER.filter((slot) => !lockedSlots.has(slot));
     if (unlockedSlots.length === 0) return nextSlots;
 
-    const lockedSalary = [...lockedSlots].reduce((sum, slot) => {
-      const player = getPlayerFromString(entry.slots[slot]);
-      return sum + Number(player?.salary || 0);
-    }, 0);
-    const salaryBudget = SALARY_CAP - lockedSalary;
-
     const optimizedById = new Map<string, Player>();
     optimizedPlayers.forEach((player) => {
       if (!usedPlayerIds.has(player.id)) {
@@ -630,6 +666,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     });
 
     const fallbackPlayers: Player[] = unlockedSlots
+      .filter((slot) => !isPlayerOut(entry.slots[slot]))
       .map((slot) => getPlayerFromString(entry.slots[slot]))
       .filter((player): player is Player => Boolean(player))
       .filter((player) => !usedPlayerIds.has(player.id));
@@ -755,12 +792,16 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
   const runLateSwap = async () => {
     if (isLateSwapRunning || entries.length === 0) return;
     setIsLateSwapRunning(true);
+    setLateSwapProgress({ current: 0, total: entries.length });
 
     try {
       const nextEntries: Entry[] = [];
       let optimizedCount = 0;
 
-      for (const entry of entries) {
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        setLateSwapProgress({ current: i + 1, total: entries.length });
+
         const pool = buildLateSwapPool(entry);
         const optimized = await runSingleLineupOptimization(pool);
         if (!optimized) {
@@ -787,6 +828,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
       alert('Late swap optimization failed. Please try again.');
     } finally {
       setIsLateSwapRunning(false);
+      setLateSwapProgress(null);
     }
   };
 
@@ -817,14 +859,30 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
         >
           Saved Lineups
         </button>
-        <button
-          onClick={runLateSwap}
-          disabled={isLateSwapRunning || entries.length === 0}
-          className="ml-auto px-4 py-2 rounded-lg bg-drafting-orange text-white font-bold text-sm uppercase tracking-widest shadow hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          <Zap className="inline-block w-4 h-4 mr-2"/>
-          {isLateSwapRunning ? 'Optimizing...' : 'Run Late Swap'}
-        </button>
+        <div className="ml-auto flex flex-col items-end gap-1.5">
+          <button
+            onClick={runLateSwap}
+            disabled={isLateSwapRunning || entries.length === 0}
+            className="px-4 py-2 rounded-lg bg-drafting-orange text-white font-bold text-sm uppercase tracking-widest shadow hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Zap className="inline-block w-4 h-4 mr-2"/>
+            {isLateSwapRunning ? 'Optimizing...' : 'Run Late Swap'}
+          </button>
+          {lateSwapProgress && (
+            <div className="w-full min-w-[160px]">
+              <div className="flex justify-between text-[10px] font-mono text-black/50 mb-0.5">
+                <span>Entry {lateSwapProgress.current} of {lateSwapProgress.total}</span>
+                <span>{Math.round((lateSwapProgress.current / lateSwapProgress.total) * 100)}%</span>
+              </div>
+              <div className="h-1.5 bg-ink/10 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-drafting-orange rounded-full transition-all duration-200"
+                  style={{ width: `${(lateSwapProgress.current / lateSwapProgress.total) * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {loadedFileName && (
@@ -886,7 +944,11 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
                                 <p className="text-sm font-bold text-black mt-1">{game.teamA.abbreviation} vs {game.teamB.abbreviation}</p>
                                 <p className="text-xs text-black/60">{game.gameTime}</p>
                             </div>
-                            {isUpcoming && (
+                            {isLive ? (
+                                <div className="p-2 rounded-full bg-red-100 text-red-600" title="Game in progress — players auto-locked">
+                                    <Lock className="w-5 h-5"/>
+                                </div>
+                            ) : (
                                 <button onClick={() => toggleManualLock(game)} className={`p-2 rounded-full transition-colors ${manuallyLocked ? 'bg-blue-100 text-blue-700' : 'bg-white border border-ink/10 text-black hover:border-drafting-orange'}`}>
                                     {manuallyLocked ? <Lock className="w-5 h-5"/> : <Unlock className="w-5 h-5"/>}
                                 </button>
@@ -928,22 +990,38 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
                             <div className="p-3 space-y-2">
                                 {SLOT_ORDER.map(slot => {
                                     const playerStr = entry.slots[slot];
+                                    const isOut = isPlayerOut(playerStr);
                                     const player = getPlayerFromString(playerStr);
                                     const locked = isPlayerLocked(playerStr);
                                     const proj = player ? (playerScores[player.id] || player.projection || 0) : 0;
-                                    const salaryK = player ? `$${(player.salary / 1000).toFixed(1)}k` : '$0.0k';
+                                    const salaryK = player ? `$${(player.salary / 1000).toFixed(1)}k` : null;
+                                    // For OUT players not in the pool, extract display name from the raw string
+                                    const outDisplayName = isOut && !player
+                                      ? stripSlotTags(playerStr).replace(/\s*\(\d+\)\s*$/, '').trim()
+                                      : null;
                                     return (
                                         <div
                                           key={slot}
                                           onClick={() => !locked && openSwapModal(idx, slot)}
-                                          className={`relative flex items-center justify-between rounded border px-2 py-1.5 ${locked ? 'bg-ink/5 border-ink/10' : 'bg-vellum border-ink/10 hover:border-drafting-orange cursor-pointer'}`}
+                                          className={`relative flex items-center justify-between rounded border px-2 py-1.5 ${locked ? 'bg-ink/5 border-ink/10' : isOut ? 'bg-red-50 border-red-200 hover:border-red-400 cursor-pointer' : 'bg-vellum border-ink/10 hover:border-drafting-orange cursor-pointer'}`}
                                         >
                                           <div className="flex items-center gap-3 w-full">
                                             <span className="text-[10px] font-black uppercase text-black/60 min-w-[28px]">{slot}</span>
-                                            {player ? (
+                                            {player && isOut ? (
+                                              <div className="flex items-center w-full min-w-0 gap-2">
+                                                <span className="text-[11px] font-bold text-black/40 line-through truncate flex-1 min-w-0">{formatPlayerName(player.name)}</span>
+                                                <span className="text-[9px] font-black bg-red-100 text-red-700 px-1 rounded uppercase tracking-wider whitespace-nowrap">OUT</span>
+                                                {salaryK && <span className="text-[11px] text-black/40 font-mono whitespace-nowrap">{salaryK}</span>}
+                                              </div>
+                                            ) : outDisplayName ? (
+                                              <div className="flex items-center w-full min-w-0 gap-2">
+                                                <span className="text-[11px] font-bold text-black/40 line-through truncate flex-1 min-w-0">{outDisplayName}</span>
+                                                <span className="text-[9px] font-black bg-red-100 text-red-700 px-1 rounded uppercase tracking-wider whitespace-nowrap">OUT</span>
+                                              </div>
+                                            ) : player ? (
                                               <div className="flex items-center w-full min-w-0 gap-2">
                                                 <span className={`text-[11px] font-bold text-black truncate flex-1 min-w-0 ${locked ? 'opacity-70' : ''}`}>{formatPlayerName(player.name)}</span>
-                                                <span className="text-[11px] text-black/70 font-mono whitespace-nowrap">{salaryK}</span>
+                                                {salaryK && <span className="text-[11px] text-black/70 font-mono whitespace-nowrap">{salaryK}</span>}
                                                 <span className="text-[11px] text-black/70 font-mono ml-auto whitespace-nowrap">{locked ? 'Current' : 'Proj'}: {proj.toFixed(2)}</span>
                                               </div>
                                             ) : (
