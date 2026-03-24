@@ -642,13 +642,12 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     const currentAssignment = new Map<Slot, Player>();
     const assignmentUsedIds = new Set<string>(usedPlayerIds);
 
-    const backtrack = (slotIndex: number, usedSalary: number): boolean => {
+    const backtrack = (slotIndex: number): boolean => {
       if (slotIndex >= unlockedSlots.length) return true;
       const slot = unlockedSlots[slotIndex];
       const eligibleCandidates = candidateOrder
         .filter((player) => !assignmentUsedIds.has(player.id))
         .filter((player) => canPlayerFitSlot(player, slot))
-        .filter((player) => usedSalary + Number(player.salary || 0) <= salaryBudget)
         .sort((a, b) => {
           const aFromOptimized = optimizedById.has(a.id) ? 1 : 0;
           const bFromOptimized = optimizedById.has(b.id) ? 1 : 0;
@@ -659,7 +658,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
       for (const player of eligibleCandidates) {
         currentAssignment.set(slot, player);
         assignmentUsedIds.add(player.id);
-        if (backtrack(slotIndex + 1, usedSalary + Number(player.salary || 0))) return true;
+        if (backtrack(slotIndex + 1)) return true;
         assignmentUsedIds.delete(player.id);
         currentAssignment.delete(slot);
       }
@@ -667,13 +666,21 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
       return false;
     };
 
-    const assigned = backtrack(0, 0);
+    const assigned = backtrack(0);
     if (!assigned) return null;
 
     unlockedSlots.forEach((slot) => {
       const player = currentAssignment.get(slot);
       nextSlots[slot] = player ? playerLabel(player) : '';
     });
+
+    // Final salary cap check — optimizer players are always within budget, but
+    // any fallback (original entry) players that slipped in might push over.
+    const totalSalary = SLOT_ORDER.reduce((sum, slot) => {
+      const player = getPlayerFromString(nextSlots[slot]);
+      return sum + Number(player?.salary || 0);
+    }, 0);
+    if (totalSalary > SALARY_CAP) return null;
 
     return nextSlots;
   };
