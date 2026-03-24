@@ -5,7 +5,7 @@ import { Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Line, C
 import { RotationVisualizer } from './RotationVisualizer';
 import { useLineup } from '../context/LineupContext';
 import { getTeamDepthChartRows, DepthChartRow } from '../utils/depthChart';
-import { getInjuryInfoByName, InjuryLookup } from '../utils/injuries';
+import { getInjuryInfoByName, InjuryLookup, isDoubtfulInjuryStatus, isOutInjuryStatus, isQuestionableInjuryStatus } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 
 interface Props {
@@ -693,12 +693,11 @@ export const PlayerDeepDive: React.FC<Props> = ({
   }, [depthChartColumnCount]);
 
   const getInjuryTag = (name: string): string | null => {
-    const info = getInjuryInfoByName(name, injuryLookup);
+    const info = getInjuryInfoByName(name, injuryLookup, player.team);
     if (!info) return null;
-    const status = String(info.status || '').toLowerCase();
-    if (status.includes('out') || status === 'o') return 'OUT';
-    if (status.includes('doubtful') || status === 'd') return 'DD';
-    if (status.includes('questionable') || info.isQuestionable || status === 'q') return 'Q';
+    if (isOutInjuryStatus(info.status)) return 'OUT';
+    if (isDoubtfulInjuryStatus(info.status)) return 'DD';
+    if (isQuestionableInjuryStatus(info.status) || info.isQuestionable) return 'Q';
     return null;
   };
 

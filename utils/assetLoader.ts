@@ -234,7 +234,9 @@ export const loadSlateEcosystem = async (
   const slateUrl = slateFolder
     ? `${INTERNAL_PROJECTIONS_URL}?date=${targetDate}&slate=${encodeURIComponent(slateFolder)}`
     : `${INTERNAL_PROJECTIONS_URL}?date=${targetDate}`;
-  const defaultInjuriesUrl = `${INTERNAL_DECRYPT_URL}?file=injuries&date=${targetDate}`;
+  const defaultInjuriesUrl = slateFolder
+    ? `${INTERNAL_DECRYPT_URL}?file=injuries&date=${targetDate}&slate=${encodeURIComponent(slateFolder)}`
+    : `${INTERNAL_DECRYPT_URL}?file=injuries&date=${targetDate}`;
   const defaultDepthChartsUrl = `${INTERNAL_DECRYPT_URL}?file=nba_depth_charts&date=${targetDate}`;
   const defaultStartingLineupsUrl = slateFolder
     ? `${INTERNAL_DECRYPT_URL}?file=nba_starting_lineups&date=${targetDate}&slate=${encodeURIComponent(slateFolder)}`
@@ -245,7 +247,7 @@ export const loadSlateEcosystem = async (
 
   const settled = await Promise.allSettled([
     fetchRequiredJson(slateUrl, fetcher),
-    fetchOptionalWithFallback(targetDate, 'injuries.json', 30, { fetcher }),
+    fetchOptionalWithFallback(targetDate, 'injuries.json', 1, { slateFolder, fetcher }),
     fetchOptionalWithFallback(targetDate, 'nba_depth_charts.json', 30, { fetcher }),
     fetchOptionalByFilenameCandidates(targetDate, STARTING_LINEUP_FILENAMES, 1, { slateFolder, fetcher }),
     includeHistory ? fetchOptionalWithFallback(targetDate, 'rotations.json', 30, { slateFolder, fetcher }) : Promise.resolve({ data: null, asOf: targetDate, url: defaultRotationsUrl }),

@@ -5,11 +5,13 @@ export interface InjuryInfo {
   status: string;
   reason?: string;
   isQuestionable: boolean;
+  team?: string;
 }
 
 export type InjuryLookup = Map<string, InjuryInfo>;
 
 const normalizeKey = (key: string) => key.toLowerCase().replace(/[^a-z0-9]/g, '');
+const normalizeTeamToken = (value: any): string => String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').trim();
 
 const readByNormalizedKey = (obj: any, keys: string[]): any => {
   if (!obj || typeof obj !== 'object') return undefined;
@@ -149,6 +151,30 @@ const extractPlayerId = (entry: any): string => {
   return canonical || toStringValue(idRaw);
 };
 
+const extractTeam = (entry: any): string => {
+  const direct = readByNormalizedKey(entry, [
+    'teamid',
+    'team',
+    'teamabbr',
+    'teamabbrev',
+    'teamabbreviation',
+    'team_code',
+    'teamcode',
+    'abbr',
+  ]);
+  const directTeam = normalizeTeamToken(toStringValue(direct));
+  if (directTeam) return directTeam;
+
+  const teamObj = entry?.team;
+  if (teamObj && typeof teamObj === 'object') {
+    const nested = readByNormalizedKey(teamObj, ['id', 'abbr', 'abbreviation', 'teamabbr', 'teamid', 'name']);
+    const nestedTeam = normalizeTeamToken(toStringValue(nested));
+    if (nestedTeam) return nestedTeam;
+  }
+
+  return '';
+};
+
 const tokenizeStatus = (status: string): string[] => {
   return String(status || '')
     .toLowerCase()
@@ -157,14 +183,39 @@ const tokenizeStatus = (status: string): string[] => {
     .filter(Boolean);
 };
 
-export const isUnavailableInjuryStatus = (status: string | undefined | null): boolean => {
+const hasSingleToken = (tokens: string[], token: string): boolean => tokens.length === 1 && tokens[0] === token;
+
+export const isOutInjuryStatus = (status: string | undefined | null): boolean => {
   if (!status) return false;
   const tokens = tokenizeStatus(status);
   if (tokens.length === 0) return false;
+  if (tokens.includes('out') || tokens.includes('inactive')) return true;
+  if (hasSingleToken(tokens, 'o')) return true;
+  return false;
+};
 
+export const isDoubtfulInjuryStatus = (status: string | undefined | null): boolean => {
+  if (!status) return false;
+  const tokens = tokenizeStatus(status);
+  if (tokens.length === 0) return false;
   if (tokens.includes('doubtful')) return true;
-  if (tokens.includes('out')) return true;
-  if (tokens.length === 1 && (tokens[0] === 'o' || tokens[0] === 'd')) return true;
+  if (hasSingleToken(tokens, 'd')) return true;
+  return false;
+};
+
+export const isQuestionableInjuryStatus = (status: string | undefined | null): boolean => {
+  if (!status) return false;
+  const tokens = tokenizeStatus(status);
+  if (tokens.length === 0) return false;
+  if (tokens.includes('questionable') || tokens.includes('gtd')) return true;
+  if (hasSingleToken(tokens, 'q')) return true;
+  return false;
+};
+
+export const isUnavailableInjuryStatus = (status: string | undefined | null): boolean => {
+  if (!status) return false;
+  if (isOutInjuryStatus(status)) return true;
+  if (isDoubtfulInjuryStatus(status)) return true;
   return false;
 };
 
@@ -176,6 +227,38 @@ export const shouldExcludePlayerForInjury = (info: InjuryInfo | undefined | null
 export const buildInjuryLookup = (payload: any): InjuryLookup => {
   const entries = extractEntries(payload);
   const lookup: InjuryLookup = new Map();
+
+  const makeNameTeamKey = (name: string, team: string): string => {
+    const normalizedName = normalizeName(name);
+    const normalizedTeam = normalizeTeamToken(team);
+    return normalizedName && normalizedTeam ? `${normalizedName}::${normalizedTeam}` : '';
+  };
+
+  const statusRank = (info: InjuryInfo): number => {
+    if (isOutInjuryStatus(info.status)) return 4;
+    if (isDoubtfulInjuryStatus(info.status)) return 3;
+    if (info.isQuestionable || isQuestionableInjuryStatus(info.status)) return 2;
+    if (String(info.status || '').trim()) return 1;
+    return 0;
+  };
+
+  const shouldReplaceInfo = (current: InjuryInfo | undefined, next: InjuryInfo): boolean => {
+    if (!current) return true;
+    const currentRank = statusRank(current);
+    const nextRank = statusRank(next);
+    if (nextRank !== currentRank) return nextRank > currentRank;
+    if (!current.reason && !!next.reason) return true;
+    if (!current.team && !!next.team) return true;
+    return false;
+  };
+
+  const setLookup = (key: string, info: InjuryInfo) => {
+    if (!key) return;
+    const existing = lookup.get(key);
+    if (shouldReplaceInfo(existing, info)) {
+      lookup.set(key, info);
+    }
+  };
 
   if (typeof window !== 'undefined' && (window as any).__SLATESIM_DEBUG_INJURIES__) {
     console.log('[injuries] payload top-level keys:', payload ? Object.keys(payload) : null);
@@ -209,6 +292,7 @@ export const buildInjuryLookup = (payload: any): InjuryLookup => {
     const status = extractStatus(entry);
     const reason = extractReason(entry);
     const isQuestionable = isQuestionableStatus(entry, status);
+    const team = extractTeam(entry);
 
     if (!name || (!status && !isQuestionable)) return;
 
@@ -216,23 +300,27 @@ export const buildInjuryLookup = (payload: any): InjuryLookup => {
       status: status || 'Questionable',
       reason: reason || undefined,
       isQuestionable,
+      team: team || undefined,
     };
 
     const normalizedName = normalizeName(name);
-    if (normalizedName) lookup.set(normalizedName, info);
+    if (normalizedName) setLookup(normalizedName, info);
 
     // Also store a first+last-only variant for names with middle names/words,
     // so depth chart lookups succeed even when sources use different name formats.
     const nameParts = name.trim().split(/\s+/).filter(Boolean);
     if (nameParts.length >= 3) {
       const firstLast = normalizeName(`${nameParts[0]} ${nameParts[nameParts.length - 1]}`);
-      if (firstLast && firstLast !== normalizedName && !lookup.has(firstLast)) {
-        lookup.set(firstLast, info);
+      if (firstLast && firstLast !== normalizedName) {
+        setLookup(firstLast, info);
       }
     }
 
+    const nameTeamKey = makeNameTeamKey(name, team);
+    if (nameTeamKey) setLookup(nameTeamKey, info);
+
     const playerId = extractPlayerId(entry);
-    if (playerId) lookup.set(playerId, info);
+    if (playerId) setLookup(playerId, info);
   };
 
   entries.forEach(processEntry);
@@ -250,11 +338,16 @@ export const getPlayerInjuryInfo = (player: Player, lookup?: InjuryLookup | null
   const byId = lookup.get(canonicalizeId(player.id)) ?? lookup.get(String(player.id));
   if (byId) return byId;
 
+  const byNameTeam = lookup.get(`${normalizeName(player.name)}::${normalizeTeamToken((player as any).team)}`);
+  if (byNameTeam) return byNameTeam;
+
   const byName = lookup.get(normalizeName(player.name));
   return byName;
 };
 
-export const getInjuryInfoByName = (name: string, lookup?: InjuryLookup | null): InjuryInfo | undefined => {
+export const getInjuryInfoByName = (name: string, lookup?: InjuryLookup | null, team?: string): InjuryInfo | undefined => {
   if (!lookup || lookup.size === 0 || !name) return undefined;
+  const byNameTeam = team ? lookup.get(`${normalizeName(name)}::${normalizeTeamToken(team)}`) : undefined;
+  if (byNameTeam) return byNameTeam;
   return lookup.get(normalizeName(name));
 };
