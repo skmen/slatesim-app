@@ -2701,7 +2701,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
 
                 <div className="border border-ink/10 rounded-sm p-3 bg-white/60">
                   <h4 className="text-[10px] font-black uppercase tracking-widest text-ink/50 mb-3">Algorithm Tuning</h4>
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-4">
                     {(
                       [
                         { key: 'minHamming', label: 'Min Hamming', min: 1, max: 7, step: 1, title: 'Minimum player difference between archive lineups (1–7). Lower = more similar lineups.' },
@@ -2711,22 +2711,39 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                       ] as { key: 'minHamming' | 'patience' | 'generations' | 'popSize'; label: string; min: number; max: number; step: number; title: string }[]
                     ).map(({ key, label, min, max, step, title }) => (
                       <div key={key}>
-                        <label className="text-[9px] font-black uppercase tracking-widest text-ink/40 block mb-1" title={title}>
-                          {label}
-                        </label>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-[9px] font-black uppercase tracking-widest text-ink/40" title={title}>
+                            {label}
+                          </label>
+                          <input
+                            type="number"
+                            min={min}
+                            max={max}
+                            step={step}
+                            value={config[key] as number}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value, 10);
+                              if (!isNaN(val)) {
+                                setConfig((prev) => ({ ...prev, [key]: Math.min(max, Math.max(min, val)) }));
+                              }
+                            }}
+                            onBlur={(e) => {
+                              const val = parseInt(e.target.value, 10);
+                              setConfig((prev) => ({ ...prev, [key]: isNaN(val) ? min : Math.min(max, Math.max(min, val)) }));
+                            }}
+                            className="w-14 bg-white border border-ink/20 rounded-sm px-1.5 py-0.5 text-[11px] font-mono text-ink text-right focus:border-drafting-orange outline-none"
+                          />
+                        </div>
                         <input
-                          type="number"
+                          type="range"
                           min={min}
                           max={max}
                           step={step}
                           value={config[key] as number}
                           onChange={(e) => {
-                            const val = parseInt(e.target.value, 10);
-                            if (!isNaN(val) && val >= min && val <= max) {
-                              setConfig((prev) => ({ ...prev, [key]: val }));
-                            }
+                            setConfig((prev) => ({ ...prev, [key]: parseInt(e.target.value, 10) }));
                           }}
-                          className="w-full bg-white border border-ink/20 rounded-sm px-2 py-1 text-[11px] font-mono text-ink focus:border-drafting-orange outline-none"
+                          className="w-full h-1 accent-orange-500 cursor-pointer"
                         />
                       </div>
                     ))}
