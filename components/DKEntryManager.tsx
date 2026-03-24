@@ -359,16 +359,32 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
         const newEntries: Entry[] = [];
         const newPlayerScores: Record<string, number> = {};
 
+        // Build the slate player set from the DK CSV's own player pool columns
+        // (col 16 = numeric ID, col 18 = salary). This is the authoritative source
+        // for who is actually on the slate — not the projections file.
+        const dkSlatePlayerIds = new Set<string>();
+        rows.forEach((row) => {
+          const id = String(row[16] || '').trim();
+          const salary = Number(String(row[18] || '0').replace(/[^0-9]/g, ''));
+          if (/^\d+$/.test(id) && salary > 0) dkSlatePlayerIds.add(id);
+        });
+
         const markOutIfNeeded = (rawSlot: string): string => {
           const raw = rawSlot.trim();
           if (!raw) return '';
           const idMatch = raw.match(/\((\d+)\)/);
-          const found = idMatch?.[1]
-            ? playerMap.get(idMatch[1]) ?? playerMap.get(raw) ?? playerMap.get(raw.toLowerCase())
-            : playerMap.get(raw) ?? playerMap.get(raw.toLowerCase());
-          if (!found || Number(found.salary) === 0) {
+          const playerId = idMatch?.[1];
+          // If the DK CSV has a player pool, use it as the authority.
+          // If the player is in the DK slate with a salary they are NOT out.
+          if (dkSlatePlayerIds.size > 0) {
+            if (playerId && dkSlatePlayerIds.has(playerId)) return raw;
             return `${raw} (OUT)`;
           }
+          // Fallback: check the projections playerMap (original behaviour)
+          const found = playerId
+            ? playerMap.get(playerId) ?? playerMap.get(raw) ?? playerMap.get(raw.toLowerCase())
+            : playerMap.get(raw) ?? playerMap.get(raw.toLowerCase());
+          if (!found || Number(found.salary) === 0) return `${raw} (OUT)`;
           return raw;
         };
 
@@ -604,6 +620,9 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     SLOT_ORDER.forEach((slot) => {
       const playerStr = entry.slots[slot];
       if (!playerStr || !isPlayerLocked(playerStr)) return;
+      // Locked+OUT means the game started but the player didn't play.
+      // Don't force the optimizer to include them — they're not available.
+      if (isPlayerOut(playerStr)) return;
       const player = getPlayerFromString(playerStr);
       if (player?.id) lockedPlayerIds.add(player.id);
     });
@@ -645,11 +664,13 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
 
     SLOT_ORDER.forEach((slot) => {
       const existing = entry.slots[slot];
-      const existingPlayer = getPlayerFromString(existing);
-      if (existing && isPlayerLocked(existing) && existingPlayer) {
+      if (existing && isPlayerLocked(existing)) {
+        // Keep locked slots regardless of whether the player is in the pool.
+        // A locked+OUT player (game started, player didn't play) can't be swapped.
         nextSlots[slot] = existing;
         lockedSlots.add(slot);
-        usedPlayerIds.add(existingPlayer.id);
+        const existingPlayer = getPlayerFromString(existing);
+        if (existingPlayer?.id) usedPlayerIds.add(existingPlayer.id);
       } else {
         nextSlots[slot] = '';
       }
@@ -997,7 +1018,11 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
                                     const salaryK = player ? `$${(player.salary / 1000).toFixed(1)}k` : null;
                                     // For OUT players not in the pool, extract display name from the raw string
                                     const outDisplayName = isOut && !player
-                                      ? stripSlotTags(playerStr).replace(/\s*\(\d+\)\s*$/, '').trim()
+                                      ? playerStr
+                                          .replace(/\s*\(OUT\)\s*/gi, '')
+                                          .replace(/\s*\(LOCKED\)\s*/gi, '')
+                                          .replace(/\s*\(\d+\)\s*/g, '')
+                                          .trim()
                                       : null;
                                     return (
                                         <div
