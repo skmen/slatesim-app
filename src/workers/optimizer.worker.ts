@@ -925,6 +925,30 @@ const attemptArchiveAdmission = (
   maxAllowedByPlayer: number[],
   minRequiredByPlayer: number[],
 ): boolean => {
+  const totalDeficitForCounts = (counts: number[]): number => {
+    let total = 0;
+    for (let i = 0; i < counts.length; i++) {
+      const need = minRequiredByPlayer[i] - counts[i];
+      if (need > 0) total += need;
+    }
+    return total;
+  };
+
+  const totalDeficitAfterChange = (lineupToAdd: number[], lineupToRemove: number[] | null): number => {
+    const addSet = new Set(lineupToAdd);
+    const removeSet = lineupToRemove ? new Set(lineupToRemove) : null;
+    let total = 0;
+    for (let i = 0; i < exposureCounts.length; i++) {
+      const afterCount =
+        exposureCounts[i] +
+        (addSet.has(i) ? 1 : 0) -
+        (removeSet?.has(i) ? 1 : 0);
+      const need = minRequiredByPlayer[i] - afterCount;
+      if (need > 0) total += need;
+    }
+    return total;
+  };
+
   const canSatisfyMinExposureAfterChange = (lineupToAdd: number[], lineupToRemove: number[] | null): boolean => {
     const addSet = new Set(lineupToAdd);
     const removeSet = lineupToRemove ? new Set(lineupToRemove) : null;
@@ -966,7 +990,6 @@ const attemptArchiveAdmission = (
 
   if (minDist < minHamming) return false;
 
-  const worstScore = archive.reduce((min, e) => Math.min(min, e.score), Infinity);
   if (archive.length < maxSize) {
     // Hard max-exposure gate for append
     for (const idx of playerIdxs) {
@@ -983,22 +1006,47 @@ const attemptArchiveAdmission = (
     return true;
   }
 
-  if (score <= worstScore) return false;
+  const currentDeficit = totalDeficitForCounts(exposureCounts);
+  let selectedEvictIdx = -1;
+  let bestDeficitReduction = -1;
+  let bestScoreDelta = -Infinity;
 
   // Candidate replacement when archive is full.
-  let evictIdx = 0;
-  for (let i = 1; i < archive.length; i++) {
-    if (archive[i].score < archive[evictIdx].score) evictIdx = i;
-  }
-  const evictPlayers = archive[evictIdx].players;
+  for (let evictIdx = 0; evictIdx < archive.length; evictIdx++) {
+    const evictPlayers = archive[evictIdx].players;
+    const evictSet = new Set(evictPlayers);
 
-  // Max exposure gate for replacement (considering evicted lineup's exposure release).
-  const evictSet = new Set(evictPlayers);
-  for (const idx of playerIdxs) {
-    const released = evictSet.has(idx) ? 1 : 0;
-    if (exposureCounts[idx] - released >= maxAllowedByPlayer[idx]) return false;
+    // Max exposure gate for replacement (considering evicted lineup's exposure release).
+    let violatesMax = false;
+    for (const idx of playerIdxs) {
+      const released = evictSet.has(idx) ? 1 : 0;
+      if (exposureCounts[idx] - released >= maxAllowedByPlayer[idx]) {
+        violatesMax = true;
+        break;
+      }
+    }
+    if (violatesMax) continue;
+    if (!canSatisfyMinExposureAfterChange(playerIdxs, evictPlayers)) continue;
+
+    const nextDeficit = totalDeficitAfterChange(playerIdxs, evictPlayers);
+    const deficitReduction = currentDeficit - nextDeficit;
+    const scoreDelta = score - archive[evictIdx].score;
+    const improvesDeficit = deficitReduction > 0;
+
+    // Maintain quality unless replacement helps satisfy minimum exposure obligations.
+    if (!improvesDeficit && scoreDelta <= 0) continue;
+
+    if (
+      deficitReduction > bestDeficitReduction ||
+      (deficitReduction === bestDeficitReduction && scoreDelta > bestScoreDelta)
+    ) {
+      selectedEvictIdx = evictIdx;
+      bestDeficitReduction = deficitReduction;
+      bestScoreDelta = scoreDelta;
+    }
   }
-  if (!canSatisfyMinExposureAfterChange(playerIdxs, evictPlayers)) return false;
+
+  if (selectedEvictIdx === -1) return false;
 
   archive.push({
     lineup: lineup.slice(),
@@ -1006,8 +1054,8 @@ const attemptArchiveAdmission = (
     players: [...playerIdxs],
   });
   for (const idx of playerIdxs) exposureCounts[idx]++;
-  for (const idx of archive[evictIdx].players) exposureCounts[idx]--;
-  archive.splice(evictIdx, 1);
+  for (const idx of archive[selectedEvictIdx].players) exposureCounts[idx]--;
+  archive.splice(selectedEvictIdx, 1);
   return true;
 };
 
