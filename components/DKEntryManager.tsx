@@ -21,6 +21,64 @@ const getLocalDateStr = (date: Date): string => {
   return `${y}-${m}-${d}`;
 };
 
+const SOURCE_TIMEZONE_MAP: Record<string, string> = {
+  ET: 'America/New_York',
+  EST: 'America/New_York',
+  EDT: 'America/New_York',
+  CT: 'America/Chicago',
+  CST: 'America/Chicago',
+  CDT: 'America/Chicago',
+  MT: 'America/Denver',
+  MST: 'America/Denver',
+  MDT: 'America/Denver',
+  PT: 'America/Los_Angeles',
+  PST: 'America/Los_Angeles',
+  PDT: 'America/Los_Angeles',
+};
+
+const getTimeZoneOffsetMinutes = (date: Date, timeZone: string): number => {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(date);
+  const values: Record<string, string> = {};
+  parts.forEach((part) => {
+    if (part.type !== 'literal') values[part.type] = part.value;
+  });
+  const year = Number(values.year);
+  const month = Number(values.month);
+  const day = Number(values.day);
+  const rawHour = Number(values.hour);
+  const hour = rawHour === 24 ? 0 : rawHour;
+  const minute = Number(values.minute);
+  const second = Number(values.second);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day) || !Number.isFinite(hour) || !Number.isFinite(minute) || !Number.isFinite(second)) {
+    return 0;
+  }
+  const asUtc = Date.UTC(year, month - 1, day, hour, minute, second);
+  return (asUtc - date.getTime()) / 60000;
+};
+
+const buildDateFromWallTime = (year: number, month: number, day: number, hour24: number, minute: number, sourceTimeZone?: string): Date => {
+  if (!sourceTimeZone) {
+    return new Date(year, month - 1, day, hour24, minute, 0);
+  }
+  const naiveUtc = Date.UTC(year, month - 1, day, hour24, minute, 0);
+  let utcMs = naiveUtc;
+  for (let i = 0; i < 2; i += 1) {
+    const offset = getTimeZoneOffsetMinutes(new Date(utcMs), sourceTimeZone);
+    utcMs = naiveUtc - (offset * 60_000);
+  }
+  return new Date(utcMs);
+};
+
 const normalizeSlateType = (selectedSlate?: string | null): string => {
   const raw = String(selectedSlate || '');
   const base = raw.split('_')[0] || raw;
@@ -64,17 +122,34 @@ interface EntryManagerSession {
 
 const parseGameTime = (timeStr: string): Date | null => {
   if (!timeStr) return null;
+  const raw = String(timeStr).trim();
+  if (!raw || /^tbd$/i.test(raw)) return null;
+
+  // Supports both "7:00 PM EST" and "... 03/23/2026 09:30PM ET" formats.
+  const withDate = raw.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})\s*(AM|PM)\s*([A-Z]{2,3})?/i);
+  const timeOnly = raw.match(/(\d{1,2}):(\d{2})\s*(AM|PM)\s*([A-Z]{2,3})?/i);
+  if (!withDate && !timeOnly) return null;
+
   const now = new Date();
-  const timePart = timeStr.match(/(\d{1,2}:\d{2})\s*(AM|PM)/i);
-  if (!timePart) return null;
+  const month = withDate ? Number(withDate[1]) : now.getMonth() + 1;
+  const day = withDate ? Number(withDate[2]) : now.getDate();
+  const year = withDate ? Number(withDate[3]) : now.getFullYear();
+  let hours = Number(withDate ? withDate[4] : timeOnly?.[1] || 0);
+  const minutes = Number(withDate ? withDate[5] : timeOnly?.[2] || 0);
+  const modifier = String(withDate ? withDate[6] : timeOnly?.[3] || '').toUpperCase();
+  const zoneToken = String(withDate ? withDate[7] : timeOnly?.[4] || '').toUpperCase();
 
-  let [_, time, modifier] = timePart;
-  let [hours, minutes] = time.split(':').map(Number);
+  if (modifier === 'PM' && hours < 12) hours += 12;
+  if (modifier === 'AM' && hours === 12) hours = 0;
 
-  if (modifier.toUpperCase() === 'PM' && hours < 12) hours += 12;
-  if (modifier.toUpperCase() === 'AM' && hours === 12) hours = 0;
+  const sourceTimeZone = SOURCE_TIMEZONE_MAP[zoneToken];
+  return buildDateFromWallTime(year, month, day, hours, minutes, sourceTimeZone);
+};
 
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes);
+const formatGameTimeLocal = (timeStr: string): string => {
+  const parsed = parseGameTime(timeStr);
+  if (!parsed) return String(timeStr || 'TBD');
+  return parsed.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
 };
 
 const formatPlayerName = (name: string) => {
@@ -104,6 +179,12 @@ const extractSlotDisplayName = (value: string): string => {
     .replace(/\s*\(\d+\)\s*/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+};
+
+const extractSlotPlayerId = (value: string): string => {
+  const normalized = stripSlotTags(value);
+  const idMatch = normalized.match(/\((\d+)\)/);
+  return idMatch?.[1] || '';
 };
 
 const isPlayerOut = (playerStr: string): boolean => {
@@ -383,18 +464,17 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
           if (!raw) return '';
           const idMatch = raw.match(/\((\d+)\)/);
           const playerId = idMatch?.[1];
-          const found = playerId
-            ? playerMap.get(playerId) ?? playerMap.get(raw) ?? playerMap.get(raw.toLowerCase())
-            : playerMap.get(raw) ?? playerMap.get(raw.toLowerCase());
           const addOutTag = (value: string): string => (/\(OUT\)/i.test(value) ? value : `${value} (OUT)`);
           // If the DK CSV has a player pool, use it as the authority.
-          // Some out players can still appear in this section, so keep the player map
-          // as a second source to avoid rendering unresolved slots as empty.
+          // If the player is in the DK slate with salary, keep as active.
           if (dkSlatePlayerIds.size > 0) {
-            if (playerId && dkSlatePlayerIds.has(playerId) && found && Number(found.salary) > 0) return raw;
+            if (playerId && dkSlatePlayerIds.has(playerId)) return raw;
             return addOutTag(raw);
           }
           // Fallback: check the projections playerMap (original behaviour)
+          const found = playerId
+            ? playerMap.get(playerId) ?? playerMap.get(raw) ?? playerMap.get(raw.toLowerCase())
+            : playerMap.get(raw) ?? playerMap.get(raw.toLowerCase());
           if (!found || Number(found.salary) === 0) return addOutTag(raw);
           return raw;
         };
@@ -620,7 +700,10 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
         config: {
           numLineups: 1,
           salaryCap: SALARY_CAP,
+          salaryFloor: 0,
           maxExposure: 100,
+          stackMinGameTotal: 0,
+          enableStackScoring: false,
         },
       });
     });
@@ -634,8 +717,13 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
       // Locked+OUT means the game started but the player didn't play.
       // Don't force the optimizer to include them — they're not available.
       if (isPlayerOut(playerStr)) return;
-      const player = getPlayerFromString(playerStr);
-      if (player?.id) lockedPlayerIds.add(player.id);
+      const parsedId = extractSlotPlayerId(playerStr);
+      if (parsedId) {
+        lockedPlayerIds.add(parsedId);
+        return;
+      }
+      const resolved = getPlayerFromString(playerStr);
+      if (resolved?.id) lockedPlayerIds.add(resolved.id);
     });
 
     const lockedTeams = new Set<string>();
@@ -663,7 +751,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
       });
   };
 
-  const assignOptimizedLineupToEntry = (entry: Entry, optimized: Lineup): Record<Slot, string> | null => {
+  const assignOptimizedLineupToEntry = (entry: Entry, optimized: Lineup, pool: Player[]): Record<Slot, string> | null => {
     const optimizedPlayers = (optimized.playerIds || [])
       .map((id) => playerMap.get(id))
       .filter((player): player is Player => Boolean(player));
@@ -680,8 +768,13 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
         // A locked+OUT player (game started, player didn't play) can't be swapped.
         nextSlots[slot] = existing;
         lockedSlots.add(slot);
-        const existingPlayer = getPlayerFromString(existing);
-        if (existingPlayer?.id) usedPlayerIds.add(existingPlayer.id);
+        const parsedId = extractSlotPlayerId(existing);
+        if (parsedId) {
+          usedPlayerIds.add(parsedId);
+        } else {
+          const existingPlayer = getPlayerFromString(existing);
+          if (existingPlayer?.id) usedPlayerIds.add(existingPlayer.id);
+        }
       } else {
         nextSlots[slot] = '';
       }
@@ -703,10 +796,22 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
       .filter((player): player is Player => Boolean(player))
       .filter((player) => !usedPlayerIds.has(player.id));
 
-    const candidateOrder = [
-      ...Array.from(optimizedById.values()),
-      ...fallbackPlayers.filter((player) => !optimizedById.has(player.id)),
-    ];
+    const poolCandidates = pool
+      .filter((player) => !Boolean((player as any).optimizerExcluded))
+      .filter((player) => !Boolean((player as any).optimizerLocked))
+      .filter((player) => !usedPlayerIds.has(player.id))
+      .sort((a, b) => Number(b.projection || 0) - Number(a.projection || 0));
+
+    const candidateOrder: Player[] = [];
+    const seenCandidateIds = new Set<string>();
+    const pushCandidate = (candidate?: Player | null) => {
+      if (!candidate?.id || seenCandidateIds.has(candidate.id)) return;
+      seenCandidateIds.add(candidate.id);
+      candidateOrder.push(candidate);
+    };
+    Array.from(optimizedById.values()).forEach(pushCandidate);
+    fallbackPlayers.forEach(pushCandidate);
+    poolCandidates.forEach(pushCandidate);
 
     const currentAssignment = new Map<Slot, Player>();
     const assignmentUsedIds = new Set<string>(usedPlayerIds);
@@ -841,14 +946,15 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
           continue;
         }
 
-        const reassignedSlots = assignOptimizedLineupToEntry(entry, optimized);
+        const reassignedSlots = assignOptimizedLineupToEntry(entry, optimized, pool);
         if (!reassignedSlots) {
           nextEntries.push(entry);
           continue;
         }
 
+        const changed = SLOT_ORDER.some((slot) => (entry.slots[slot] || '') !== (reassignedSlots[slot] || ''));
         nextEntries.push(hydrateEntry({ ...entry, slots: reassignedSlots }));
-        optimizedCount += 1;
+        if (changed) optimizedCount += 1;
       }
 
       setEntries(nextEntries);
@@ -974,7 +1080,7 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
                                     {isLive ? 'Live' : 'Upcoming'}
                                 </span>
                                 <p className="text-sm font-bold text-black mt-1">{game.teamA.abbreviation} vs {game.teamB.abbreviation}</p>
-                                <p className="text-xs text-black/60">{game.gameTime}</p>
+                                <p className="text-xs text-black/60">{formatGameTimeLocal(game.gameTime)}</p>
                             </div>
                             {isLive ? (
                                 <div className="p-2 rounded-full bg-red-100 text-red-600" title="Game in progress — players auto-locked">
