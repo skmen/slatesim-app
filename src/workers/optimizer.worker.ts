@@ -108,6 +108,11 @@ interface RepairResult {
   valid:      boolean;
 }
 
+interface ExposureBounds {
+  minRequiredByPlayer: number[];
+  maxAllowedByPlayer: number[];
+}
+
 // ---------------------------------------------------------------------------
 // Utility functions (preserved from original)
 // ---------------------------------------------------------------------------
@@ -918,13 +923,32 @@ const attemptArchiveAdmission = (
   maxSize: number,
   exposureCounts: number[],
   maxAllowedByPlayer: number[],
+  minRequiredByPlayer: number[],
 ): boolean => {
-  // Hard max-exposure gate: reject if any player in this lineup is already at their cap
-  for (const idx of playerIdxs) {
-    if (exposureCounts[idx] >= maxAllowedByPlayer[idx]) return false;
-  }
+  const canSatisfyMinExposureAfterChange = (lineupToAdd: number[], lineupToRemove: number[] | null): boolean => {
+    const addSet = new Set(lineupToAdd);
+    const removeSet = lineupToRemove ? new Set(lineupToRemove) : null;
+    const archiveSizeAfter = archive.length + 1 - (lineupToRemove ? 1 : 0);
+    const remainingSlotsAfter = maxSize - archiveSizeAfter;
+
+    for (let i = 0; i < exposureCounts.length; i++) {
+      const afterCount =
+        exposureCounts[i] +
+        (addSet.has(i) ? 1 : 0) -
+        (removeSet?.has(i) ? 1 : 0);
+      const neededAfter = Math.max(0, minRequiredByPlayer[i] - afterCount);
+      if (neededAfter > remainingSlotsAfter) return false;
+    }
+
+    return true;
+  };
 
   if (archive.length === 0) {
+    for (const idx of playerIdxs) {
+      if (exposureCounts[idx] >= maxAllowedByPlayer[idx]) return false;
+    }
+    if (!canSatisfyMinExposureAfterChange(playerIdxs, null)) return false;
+
     archive.push({
       lineup: lineup.slice(),
       score,
@@ -943,26 +967,68 @@ const attemptArchiveAdmission = (
   if (minDist < minHamming) return false;
 
   const worstScore = archive.reduce((min, e) => Math.min(min, e.score), Infinity);
-  if (score > worstScore || archive.length < maxSize) {
+  if (archive.length < maxSize) {
+    // Hard max-exposure gate for append
+    for (const idx of playerIdxs) {
+      if (exposureCounts[idx] >= maxAllowedByPlayer[idx]) return false;
+    }
+    if (!canSatisfyMinExposureAfterChange(playerIdxs, null)) return false;
+
     archive.push({
       lineup: lineup.slice(),
       score,
       players: [...playerIdxs], // preserve DK slot order (PG,SG,SF,PF,C,G,F,UTIL)
     });
     for (const idx of playerIdxs) exposureCounts[idx]++;
-    if (archive.length > maxSize) {
-      // Evict lowest-scoring entry and decrement its exposure counts
-      let minIdx = 0;
-      for (let i = 1; i < archive.length; i++) {
-        if (archive[i].score < archive[minIdx].score) minIdx = i;
-      }
-      for (const idx of archive[minIdx].players) exposureCounts[idx]--;
-      archive.splice(minIdx, 1);
-    }
     return true;
   }
 
-  return false;
+  if (score <= worstScore) return false;
+
+  // Candidate replacement when archive is full.
+  let evictIdx = 0;
+  for (let i = 1; i < archive.length; i++) {
+    if (archive[i].score < archive[evictIdx].score) evictIdx = i;
+  }
+  const evictPlayers = archive[evictIdx].players;
+
+  // Max exposure gate for replacement (considering evicted lineup's exposure release).
+  const evictSet = new Set(evictPlayers);
+  for (const idx of playerIdxs) {
+    const released = evictSet.has(idx) ? 1 : 0;
+    if (exposureCounts[idx] - released >= maxAllowedByPlayer[idx]) return false;
+  }
+  if (!canSatisfyMinExposureAfterChange(playerIdxs, evictPlayers)) return false;
+
+  archive.push({
+    lineup: lineup.slice(),
+    score,
+    players: [...playerIdxs],
+  });
+  for (const idx of playerIdxs) exposureCounts[idx]++;
+  for (const idx of archive[evictIdx].players) exposureCounts[idx]--;
+  archive.splice(evictIdx, 1);
+  return true;
+};
+
+const buildExposureBounds = (
+  players: QIEAPlayer[],
+  numLineups: number,
+): ExposureBounds => {
+  const minRequiredByPlayer = players.map((p) =>
+    p.locked
+      ? numLineups
+      : Math.max(0, Math.ceil((p.minExposurePct / 100) * numLineups - 1e-9))
+  );
+
+  const maxAllowedByPlayer = players.map((p, i) => {
+    const rawMax = p.locked
+      ? numLineups
+      : Math.max(0, Math.floor((p.maxExposurePct / 100) * numLineups + 1e-9));
+    return clamp(rawMax, minRequiredByPlayer[i], numLineups);
+  });
+
+  return { minRequiredByPlayer, maxAllowedByPlayer };
 };
 
 const selectTargets = (
@@ -1085,10 +1151,7 @@ const runQIEA = async (
     .map((p, i) => (p.locked ? i : -1))
     .filter((i) => i !== -1);
 
-  // Per-player max lineup count derived from maxExposurePct and total requested lineups
-  const maxAllowedByPlayer = players.map((p) =>
-    Math.max(1, Math.floor((p.maxExposurePct / 100) * resolvedConfig.numLineups))
-  );
+  const { minRequiredByPlayer, maxAllowedByPlayer } = buildExposureBounds(players, resolvedConfig.numLineups);
   // Live count of how many archive entries each player currently appears in
   const exposureCounts = new Array<number>(players.length).fill(0);
 
@@ -1143,6 +1206,7 @@ const runQIEA = async (
           resolvedConfig.numLineups,
           exposureCounts,
           maxAllowedByPlayer,
+          minRequiredByPlayer,
         )
       ) {
         archiveChanged = true;
@@ -1212,7 +1276,7 @@ const runQIEA = async (
       const relaxedHamming = remaining <= Math.ceil(target * 0.15) ? 1 : 2;
       attemptArchiveAdmission(
         archive, score, result.lineup, result.playerIdxs,
-        relaxedHamming, target, exposureCounts, maxAllowedByPlayer,
+        relaxedHamming, target, exposureCounts, maxAllowedByPlayer, minRequiredByPlayer,
       );
     }
   }
@@ -1268,6 +1332,29 @@ workerScope.onmessage = async (event: MessageEvent<RequestPayload>) => {
     if (archive.length === 0) {
       throw new Error(
         'No valid lineups found. Check salary cap, positions, and slate data.'
+      );
+    }
+
+    const { minRequiredByPlayer } = buildExposureBounds(players, resolvedConfig.numLineups);
+    const achievedExposureCounts = new Array<number>(players.length).fill(0);
+    archive.forEach((entry) => {
+      entry.players.forEach((idx) => {
+        achievedExposureCounts[idx] += 1;
+      });
+    });
+    const unmetMinPlayers = players
+      .map((p, idx) => ({ idx, need: minRequiredByPlayer[idx], got: achievedExposureCounts[idx] }))
+      .filter((x) => x.need > x.got)
+      .sort((a, b) => (b.need - b.got) - (a.need - a.got));
+
+    if (unmetMinPlayers.length > 0) {
+      const sample = unmetMinPlayers
+        .slice(0, 5)
+        .map(({ idx, need, got }) => `${rawPlayers[players[idx].index]?.name || `Player ${idx}`} (${got}/${need})`)
+        .join(', ');
+      throw new Error(
+        `Unable to satisfy minimum exposure constraints for ${unmetMinPlayers.length} player(s): ${sample}. ` +
+        'Try reducing min exposure, increasing lineups, or widening your player pool.'
       );
     }
 
