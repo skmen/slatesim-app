@@ -23,17 +23,20 @@ const getLocalDateStr = (date: Date): string => {
 
 const SOURCE_TIMEZONE_MAP: Record<string, string> = {
   ET: 'America/New_York',
-  EST: 'America/New_York',
-  EDT: 'America/New_York',
   CT: 'America/Chicago',
-  CST: 'America/Chicago',
-  CDT: 'America/Chicago',
   MT: 'America/Denver',
-  MST: 'America/Denver',
-  MDT: 'America/Denver',
   PT: 'America/Los_Angeles',
-  PST: 'America/Los_Angeles',
-  PDT: 'America/Los_Angeles',
+};
+
+const SOURCE_FIXED_UTC_OFFSET_MINUTES: Record<string, number> = {
+  EST: -5 * 60,
+  EDT: -4 * 60,
+  CST: -6 * 60,
+  CDT: -5 * 60,
+  MST: -7 * 60,
+  MDT: -6 * 60,
+  PST: -8 * 60,
+  PDT: -7 * 60,
 };
 
 const getTimeZoneOffsetMinutes = (date: Date, timeZone: string): number => {
@@ -77,6 +80,11 @@ const buildDateFromWallTime = (year: number, month: number, day: number, hour24:
     utcMs = naiveUtc - (offset * 60_000);
   }
   return new Date(utcMs);
+};
+
+const buildDateFromFixedOffset = (year: number, month: number, day: number, hour24: number, minute: number, offsetMinutes: number): Date => {
+  const naiveUtc = Date.UTC(year, month - 1, day, hour24, minute, 0);
+  return new Date(naiveUtc - (offsetMinutes * 60_000));
 };
 
 const normalizeSlateType = (selectedSlate?: string | null): string => {
@@ -142,6 +150,11 @@ const parseGameTime = (timeStr: string): Date | null => {
   if (modifier === 'PM' && hours < 12) hours += 12;
   if (modifier === 'AM' && hours === 12) hours = 0;
 
+  const fixedOffsetMinutes = SOURCE_FIXED_UTC_OFFSET_MINUTES[zoneToken];
+  if (Number.isFinite(fixedOffsetMinutes)) {
+    return buildDateFromFixedOffset(year, month, day, hours, minutes, fixedOffsetMinutes);
+  }
+
   const sourceTimeZone = SOURCE_TIMEZONE_MAP[zoneToken];
   return buildDateFromWallTime(year, month, day, hours, minutes, sourceTimeZone);
 };
@@ -185,6 +198,46 @@ const extractSlotPlayerId = (value: string): string => {
   const normalized = stripSlotTags(value);
   const idMatch = normalized.match(/\((\d+)\)/);
   return idMatch?.[1] || '';
+};
+
+const normalizePlayerId = (value: unknown): string => String(value ?? '').trim();
+
+const statusTokensFromValue = (value: unknown): string[] => {
+  return String(value ?? '')
+    .toLowerCase()
+    .split(/[^a-z]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+};
+
+const OUT_STATUS_KEY_NORMS = new Set([
+  'status',
+  'injurystatus',
+  'injury',
+  'injurydesignation',
+  'gamestatus',
+  'game_status',
+  'availability',
+]);
+
+const OUT_STATUS_TOKENS = new Set([
+  'out',
+  'inactive',
+  'suspended',
+  'susp',
+  'ir',
+  'dnp',
+  'o',
+]);
+
+const isPlayerMarkedOutByStatus = (player: Player): boolean => {
+  for (const [key, raw] of Object.entries(player as Record<string, unknown>)) {
+    const norm = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!OUT_STATUS_KEY_NORMS.has(norm)) continue;
+    const tokens = statusTokensFromValue(raw);
+    if (tokens.some((token) => OUT_STATUS_TOKENS.has(token))) return true;
+  }
+  return false;
 };
 
 const isPlayerOut = (playerStr: string): boolean => {
@@ -711,19 +764,26 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
 
   const buildLateSwapPool = (entry: Entry): Player[] => {
     const lockedPlayerIds = new Set<string>();
+    const outPlayerIds = new Set<string>();
     SLOT_ORDER.forEach((slot) => {
       const playerStr = entry.slots[slot];
-      if (!playerStr || !isPlayerLocked(playerStr)) return;
-      // Locked+OUT means the game started but the player didn't play.
-      // Don't force the optimizer to include them — they're not available.
-      if (isPlayerOut(playerStr)) return;
+      if (!playerStr) return;
+      // OUT players should never be selected by the late-swap optimizer,
+      // regardless of whether their game has started.
+      if (isPlayerOut(playerStr)) {
+        const outId = extractSlotPlayerId(playerStr);
+        if (outId) outPlayerIds.add(outId);
+        return;
+      }
+      if (!isPlayerLocked(playerStr)) return;
       const parsedId = extractSlotPlayerId(playerStr);
       if (parsedId) {
         lockedPlayerIds.add(parsedId);
         return;
       }
       const resolved = getPlayerFromString(playerStr);
-      if (resolved?.id) lockedPlayerIds.add(resolved.id);
+      const resolvedId = normalizePlayerId(resolved?.id);
+      if (resolvedId) lockedPlayerIds.add(resolvedId);
     });
 
     const lockedTeams = new Set<string>();
@@ -740,9 +800,12 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
     return players
       .filter((player) => Number(player.salary) > 0 && Number(player.projection) > 0)
       .map((player) => {
+        const playerId = normalizePlayerId(player.id);
         const playerTeam = String(player.team || '').toUpperCase();
-        const isLockedPlayer = lockedPlayerIds.has(player.id);
-        const isExcluded = !isLockedPlayer && lockedTeams.has(playerTeam);
+        const isLockedPlayer = !!playerId && lockedPlayerIds.has(playerId);
+        const isOutPlayer = !!playerId && outPlayerIds.has(playerId);
+        const isStatusOut = isPlayerMarkedOutByStatus(player);
+        const isExcluded = isOutPlayer || isStatusOut || (!isLockedPlayer && lockedTeams.has(playerTeam));
         return {
           ...player,
           optimizerLocked: isLockedPlayer,
@@ -773,7 +836,8 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
           usedPlayerIds.add(parsedId);
         } else {
           const existingPlayer = getPlayerFromString(existing);
-          if (existingPlayer?.id) usedPlayerIds.add(existingPlayer.id);
+          const existingPlayerId = normalizePlayerId(existingPlayer?.id);
+          if (existingPlayerId) usedPlayerIds.add(existingPlayerId);
         }
       } else {
         nextSlots[slot] = '';
@@ -785,8 +849,9 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
 
     const optimizedById = new Map<string, Player>();
     optimizedPlayers.forEach((player) => {
-      if (!usedPlayerIds.has(player.id)) {
-        optimizedById.set(player.id, player);
+      const normalizedId = normalizePlayerId(player.id);
+      if (normalizedId && !usedPlayerIds.has(normalizedId)) {
+        optimizedById.set(normalizedId, player);
       }
     });
 
@@ -794,59 +859,101 @@ export const DKEntryManager: React.FC<Props> = ({ players, games, showActuals = 
       .filter((slot) => !isPlayerOut(entry.slots[slot]))
       .map((slot) => getPlayerFromString(entry.slots[slot]))
       .filter((player): player is Player => Boolean(player))
-      .filter((player) => !usedPlayerIds.has(player.id));
+      .filter((player) => {
+        const normalizedId = normalizePlayerId(player.id);
+        return normalizedId ? !usedPlayerIds.has(normalizedId) : false;
+      });
 
     const poolCandidates = pool
       .filter((player) => !Boolean((player as any).optimizerExcluded))
       .filter((player) => !Boolean((player as any).optimizerLocked))
-      .filter((player) => !usedPlayerIds.has(player.id))
+      .filter((player) => {
+        const normalizedId = normalizePlayerId(player.id);
+        return normalizedId ? !usedPlayerIds.has(normalizedId) : false;
+      })
       .sort((a, b) => Number(b.projection || 0) - Number(a.projection || 0));
 
     const candidateOrder: Player[] = [];
     const seenCandidateIds = new Set<string>();
     const pushCandidate = (candidate?: Player | null) => {
-      if (!candidate?.id || seenCandidateIds.has(candidate.id)) return;
-      seenCandidateIds.add(candidate.id);
+      const normalizedId = normalizePlayerId(candidate?.id);
+      if (!normalizedId || seenCandidateIds.has(normalizedId)) return;
+      seenCandidateIds.add(normalizedId);
       candidateOrder.push(candidate);
     };
     Array.from(optimizedById.values()).forEach(pushCandidate);
     fallbackPlayers.forEach(pushCandidate);
     poolCandidates.forEach(pushCandidate);
 
-    const currentAssignment = new Map<Slot, Player>();
-    const assignmentUsedIds = new Set<string>(usedPlayerIds);
+    const assignSlots = (slotsToAssign: Slot[], seedUsedIds: Set<string>): Map<Slot, Player> | null => {
+      const assignment = new Map<Slot, Player>();
+      const assignmentUsedIds = new Set<string>(seedUsedIds);
 
-    const backtrack = (slotIndex: number): boolean => {
-      if (slotIndex >= unlockedSlots.length) return true;
-      const slot = unlockedSlots[slotIndex];
-      const eligibleCandidates = candidateOrder
-        .filter((player) => !assignmentUsedIds.has(player.id))
-        .filter((player) => canPlayerFitSlot(player, slot))
-        .sort((a, b) => {
-          const aFromOptimized = optimizedById.has(a.id) ? 1 : 0;
-          const bFromOptimized = optimizedById.has(b.id) ? 1 : 0;
-          if (aFromOptimized !== bFromOptimized) return bFromOptimized - aFromOptimized;
-          return Number(b.projection || 0) - Number(a.projection || 0);
-        });
+      const backtrack = (slotIndex: number): boolean => {
+        if (slotIndex >= slotsToAssign.length) return true;
+        const slot = slotsToAssign[slotIndex];
+        const eligibleCandidates = candidateOrder
+          .filter((player) => {
+            const normalizedId = normalizePlayerId(player.id);
+            return normalizedId ? !assignmentUsedIds.has(normalizedId) : false;
+          })
+          .filter((player) => canPlayerFitSlot(player, slot))
+          .sort((a, b) => {
+            const aFromOptimized = optimizedById.has(normalizePlayerId(a.id)) ? 1 : 0;
+            const bFromOptimized = optimizedById.has(normalizePlayerId(b.id)) ? 1 : 0;
+            if (aFromOptimized !== bFromOptimized) return bFromOptimized - aFromOptimized;
+            return Number(b.projection || 0) - Number(a.projection || 0);
+          });
 
-      for (const player of eligibleCandidates) {
-        currentAssignment.set(slot, player);
-        assignmentUsedIds.add(player.id);
-        if (backtrack(slotIndex + 1)) return true;
-        assignmentUsedIds.delete(player.id);
-        currentAssignment.delete(slot);
-      }
+        for (const player of eligibleCandidates) {
+          const normalizedId = normalizePlayerId(player.id);
+          if (!normalizedId) continue;
+          assignment.set(slot, player);
+          assignmentUsedIds.add(normalizedId);
+          if (backtrack(slotIndex + 1)) return true;
+          assignmentUsedIds.delete(normalizedId);
+          assignment.delete(slot);
+        }
+        return false;
+      };
 
-      return false;
+      return backtrack(0) ? assignment : null;
     };
 
-    const assigned = backtrack(0);
-    if (!assigned) return null;
+    const fullAssignment = assignSlots(unlockedSlots, usedPlayerIds);
+    if (fullAssignment) {
+      unlockedSlots.forEach((slot) => {
+        const player = fullAssignment.get(slot);
+        nextSlots[slot] = player ? playerLabel(player) : '';
+      });
+    } else {
+      // Fallback: if full reassignment is infeasible, still force replacements
+      // for unlocked OUT slots so users are not left with dead players.
+      const outUnlockedSlots = unlockedSlots.filter((slot) => isPlayerOut(entry.slots[slot]));
+      if (outUnlockedSlots.length === 0) return null;
 
-    unlockedSlots.forEach((slot) => {
-      const player = currentAssignment.get(slot);
-      nextSlots[slot] = player ? playerLabel(player) : '';
-    });
+      const usedForOutOnly = new Set<string>(usedPlayerIds);
+      unlockedSlots
+        .filter((slot) => !isPlayerOut(entry.slots[slot]))
+        .forEach((slot) => {
+          nextSlots[slot] = entry.slots[slot] || '';
+          const parsedId = extractSlotPlayerId(entry.slots[slot] || '');
+          if (parsedId) {
+            usedForOutOnly.add(parsedId);
+            return;
+          }
+          const existing = getPlayerFromString(entry.slots[slot] || '');
+          const existingId = normalizePlayerId(existing?.id);
+          if (existingId) usedForOutOnly.add(existingId);
+        });
+
+      const outOnlyAssignment = assignSlots(outUnlockedSlots, usedForOutOnly);
+      if (!outOnlyAssignment) return null;
+      outUnlockedSlots.forEach((slot) => {
+        const player = outOnlyAssignment.get(slot);
+        nextSlots[slot] = player ? playerLabel(player) : '';
+      });
+    }
 
     // Final salary cap check — optimizer players are always within budget, but
     // any fallback (original entry) players that slipped in might push over.
