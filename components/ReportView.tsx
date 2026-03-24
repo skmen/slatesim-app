@@ -1214,7 +1214,7 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate, hideBestPossib
                       <td className="px-3 py-2 text-ink/60">{opponent}</td>
                       <td className="px-3 py-2 text-ink/60">{player.position || '--'}</td>
                       <td className="px-3 py-2 text-right text-ink/60">{formatSalaryK(Number(player.salary))}</td>
-                      <td className="px-3 py-2 text-right text-ink/60">{valueScore.composite.toFixed(1)}</td>
+                      <td className="px-3 py-2 text-right text-ink/60">{valueScore.outcomeProfile.potentialComposite.toFixed(1)}</td>
                       <td className="px-3 py-2 text-right text-ink/60">{ownership !== undefined ? `${ownership.toFixed(1)}%` : '--'}</td>
                       <td className="px-3 py-2 text-right text-ink/60">{usage !== undefined ? `${usage.toFixed(1)}%` : '--'}</td>
                       <td className="px-3 py-2 text-right text-ink/60">{minutes !== undefined ? minutes.toFixed(1) : '--'}</td>

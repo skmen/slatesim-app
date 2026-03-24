@@ -62,6 +62,9 @@ export interface ValueScoreComponents {
 
   // Final weighted composite (0–100)
   composite: number;
+
+  // Tier-scaled outcome representation (elite/mid/value/punt)
+  outcomeProfile: ValueOutcomeProfile;
 }
 
 export interface ValueScoreWeights {
@@ -73,10 +76,35 @@ export interface ValueScoreWeights {
   ownership?: number; // default 0.05
 }
 
+export type PlayerArchetype = 'elite' | 'mid_range' | 'value' | 'punt';
+
+export interface ArchetypeThresholds {
+  eliteMinSalary?: number; // default 9000+
+  midMinSalary?: number;   // default 6500+
+  valueMinSalary?: number; // default 4500+
+}
+
+export interface ValueOutcomeProfile {
+  archetype: PlayerArchetype;
+  targetMultiplier: number;
+  targetPoints: number;
+  projectedFloor: number;
+  projectedMedian: number;
+  projectedCeiling: number;
+  hitTargetPct: number;
+  smashPct: number;
+  bustPct: number;
+  volatility: number;
+  tierAdjustedComposite: number;
+  potentialComposite: number;
+}
+
 export interface ValueScoreOptions {
   weights?: ValueScoreWeights;
   /** Number of recent history games to average for form score. Default: 5 */
   recentFormGames?: number;
+  /** Salary cutoffs for archetype bucketing. */
+  archetypeThresholds?: ArchetypeThresholds;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +263,89 @@ const DEFAULT_WEIGHTS: Required<ValueScoreWeights> = {
   ownership: 0.05,
 };
 
+const DEFAULT_ARCHETYPE_THRESHOLDS: Required<ArchetypeThresholds> = {
+  eliteMinSalary: 9000,
+  midMinSalary: 6500,
+  valueMinSalary: 4500,
+};
+
+interface ArchetypeModel {
+  targetMultiplier: number;
+  fallbackFloorPct: number;
+  fallbackCeilingPct: number;
+  volatilityBoost: number;
+  weights: Required<ValueScoreWeights>;
+}
+
+const ARCHETYPE_MODELS: Record<PlayerArchetype, ArchetypeModel> = {
+  elite: {
+    targetMultiplier: 5.2,
+    fallbackFloorPct: 0.76,
+    fallbackCeilingPct: 1.42,
+    volatilityBoost: 0.95,
+    // Prioritize ceiling + game context more than pure salary value.
+    weights: { value: 0.12, dvp: 0.18, vegas: 0.20, form: 0.15, ceiling: 0.28, ownership: 0.07 },
+  },
+  mid_range: {
+    targetMultiplier: 5.5,
+    fallbackFloorPct: 0.72,
+    fallbackCeilingPct: 1.50,
+    volatilityBoost: 1.0,
+    weights: { value: 0.20, dvp: 0.18, vegas: 0.15, form: 0.18, ceiling: 0.18, ownership: 0.11 },
+  },
+  value: {
+    targetMultiplier: 5.8,
+    fallbackFloorPct: 0.67,
+    fallbackCeilingPct: 1.58,
+    volatilityBoost: 1.08,
+    weights: { value: 0.28, dvp: 0.14, vegas: 0.10, form: 0.20, ceiling: 0.14, ownership: 0.14 },
+  },
+  punt: {
+    targetMultiplier: 6.2,
+    fallbackFloorPct: 0.58,
+    fallbackCeilingPct: 1.82,
+    volatilityBoost: 1.20,
+    // Punt plays are mostly about asymmetric upside and leverage.
+    weights: { value: 0.24, dvp: 0.10, vegas: 0.08, form: 0.11, ceiling: 0.27, ownership: 0.20 },
+  },
+};
+
+const logisticPct = (x: number): number => clamp(100 / (1 + Math.exp(-x)), 0, 100);
+
+export const getPlayerArchetype = (
+  salary: number,
+  thresholds: ArchetypeThresholds = {},
+): PlayerArchetype => {
+  const merged = { ...DEFAULT_ARCHETYPE_THRESHOLDS, ...thresholds };
+  if (salary >= merged.eliteMinSalary) return 'elite';
+  if (salary >= merged.midMinSalary) return 'mid_range';
+  if (salary >= merged.valueMinSalary) return 'value';
+  return 'punt';
+};
+
+const weightedSubscore = (
+  subscores: ValueScoreComponents['subscores'],
+  weights: Required<ValueScoreWeights>,
+): number => {
+  const totalWeight =
+    weights.value +
+    weights.dvp +
+    weights.vegas +
+    weights.form +
+    weights.ceiling +
+    weights.ownership;
+  if (totalWeight <= 0) return 50;
+  return (
+    (subscores.value * weights.value +
+      subscores.dvp * weights.dvp +
+      subscores.vegas * weights.vegas +
+      subscores.form * weights.form +
+      subscores.ceiling * weights.ceiling +
+      subscores.ownership * weights.ownership) /
+    totalWeight
+  );
+};
+
 /**
  * Computes a composite DFS value score (0–100) for a single player.
  *
@@ -329,6 +440,82 @@ export const calculateValueScore = (
     100,
   );
 
+  const subscores: ValueScoreComponents['subscores'] = {
+    value: Number(valueScore.toFixed(1)),
+    dvp: Number(dvpScore.toFixed(1)),
+    vegas: Number(vegasScore.toFixed(1)),
+    form: Number(formScore.toFixed(1)),
+    ceiling: Number(ceilingScore.toFixed(1)),
+    ownership: Number(ownershipScore.toFixed(1)),
+  };
+
+  const archetype = getPlayerArchetype(salary, options.archetypeThresholds);
+  const archetypeModel = ARCHETYPE_MODELS[archetype];
+  const tierAdjustedComposite = clamp(
+    weightedSubscore(subscores, archetypeModel.weights),
+    0,
+    100,
+  );
+
+  const projectedFloor =
+    floor !== null ? floor : Number((projection * archetypeModel.fallbackFloorPct).toFixed(2));
+  const projectedCeiling =
+    ceiling !== null ? ceiling : Number((projection * archetypeModel.fallbackCeilingPct).toFixed(2));
+
+  const rawMedian =
+    projection *
+    (0.92 + (subscores.form - 50) / 300 + (subscores.vegas - 50) / 500);
+  const projectedMedian = clamp(
+    Number(rawMedian.toFixed(2)),
+    Math.min(projectedFloor, projectedCeiling),
+    Math.max(projectedFloor, projectedCeiling),
+  );
+
+  const targetPoints = salary > 0
+    ? Number(((salary / 1000) * archetypeModel.targetMultiplier).toFixed(2))
+    : Number(projection.toFixed(2));
+  const smashPoints = salary > 0
+    ? Number(((salary / 1000) * (archetypeModel.targetMultiplier + 0.9)).toFixed(2))
+    : Number((projection * 1.30).toFixed(2));
+  const bustPoints = salary > 0
+    ? Number(((salary / 1000) * Math.max(3.5, archetypeModel.targetMultiplier - 1.4)).toFixed(2))
+    : Number((projection * 0.75).toFixed(2));
+
+  const spread = Math.max(
+    3,
+    ((Math.max(projectedCeiling, projectedFloor) - Math.min(projectedCeiling, projectedFloor)) / 2) *
+      archetypeModel.volatilityBoost,
+  );
+  const hitTargetPct = logisticPct((projectedMedian - targetPoints) / spread);
+  const smashPct = logisticPct((projectedCeiling - smashPoints) / (spread * 1.15));
+  const bustPct = logisticPct((bustPoints - projectedMedian) / (spread * 0.90));
+  const volatility = linearScale(
+    (Math.max(projectedCeiling, projectedFloor) - Math.min(projectedCeiling, projectedFloor)) /
+      Math.max(projection, 1),
+    0.35,
+    1.40,
+  );
+  const potentialComposite = clamp(
+    tierAdjustedComposite * 0.60 + hitTargetPct * 0.25 + smashPct * 0.20 - bustPct * 0.15,
+    0,
+    100,
+  );
+
+  const outcomeProfile: ValueOutcomeProfile = {
+    archetype,
+    targetMultiplier: archetypeModel.targetMultiplier,
+    targetPoints,
+    projectedFloor: Number(projectedFloor.toFixed(2)),
+    projectedMedian: Number(projectedMedian.toFixed(2)),
+    projectedCeiling: Number(projectedCeiling.toFixed(2)),
+    hitTargetPct: Number(hitTargetPct.toFixed(1)),
+    smashPct: Number(smashPct.toFixed(1)),
+    bustPct: Number(bustPct.toFixed(1)),
+    volatility: Number(volatility.toFixed(1)),
+    tierAdjustedComposite: Number(tierAdjustedComposite.toFixed(1)),
+    potentialComposite: Number(potentialComposite.toFixed(1)),
+  };
+
   return {
     projection,
     salary,
@@ -340,15 +527,9 @@ export const calculateValueScore = (
     ceiling,
     floor,
     ownership,
-    subscores: {
-      value: Number(valueScore.toFixed(1)),
-      dvp: Number(dvpScore.toFixed(1)),
-      vegas: Number(vegasScore.toFixed(1)),
-      form: Number(formScore.toFixed(1)),
-      ceiling: Number(ceilingScore.toFixed(1)),
-      ownership: Number(ownershipScore.toFixed(1)),
-    },
+    subscores,
     composite: Number(composite.toFixed(1)),
+    outcomeProfile,
   };
 };
 

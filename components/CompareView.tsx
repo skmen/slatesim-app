@@ -507,7 +507,7 @@ export const CompareView: React.FC<Props> = ({ players, games, showActuals }) =>
         player,
         opp: (teamAbbrevMap.get(player.opponent) || player.opponent || '--').toUpperCase(),
         position: selectedPosition,
-        value: valueScoreMap.get(player.id)?.composite ?? null,
+        value: valueScoreMap.get(player.id)?.outcomeProfile.potentialComposite ?? null,
         ownership: getPlayerStat(player, ['ownership', 'OWNERSHIP_PCT']),
         minutes: getPlayerStat(player, ['minutesProjection', 'minutes', 'min', 'MINUTES_PROJ']),
         usage: getPlayerStat(player, ['usageRate', 'usage_rate', 'USG%', 'USAGE_PCT']),
