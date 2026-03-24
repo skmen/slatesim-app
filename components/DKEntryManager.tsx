@@ -29,6 +29,10 @@ const SOURCE_TIMEZONE_MAP: Record<string, string> = {
 };
 
 const SOURCE_FIXED_UTC_OFFSET_MINUTES: Record<string, number> = {
+  ET: -5 * 60,
+  CT: -6 * 60,
+  MT: -7 * 60,
+  PT: -8 * 60,
   EST: -5 * 60,
   EDT: -4 * 60,
   CST: -6 * 60,
