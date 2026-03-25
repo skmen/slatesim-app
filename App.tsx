@@ -1386,7 +1386,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
 // --- AUTH SHELL FIX ---
 // Handles the case where Clerk hangs indefinitely due to blocked workers.
 const AuthShell: React.FC = () => {
-  const { isLoaded, isSignedIn } = useUser();
+  const { isLoaded, isSignedIn, user } = useUser();
   const isPricingRoute = typeof window !== 'undefined' && window.location.pathname === '/pricing';
   const isPreviewRoute = typeof window !== 'undefined' && window.location.pathname === '/preview';
   const isTermsRoute = typeof window !== 'undefined' && window.location.pathname === '/terms';
@@ -1403,6 +1403,35 @@ const AuthShell: React.FC = () => {
     }, 2500);
     return () => window.clearTimeout(timeoutId);
   }, [isLoaded]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!isLoaded || !isSignedIn || !user) return;
+
+    const currentUrl = new URL(window.location.href);
+    const checkoutStatus = currentUrl.searchParams.get('checkout');
+    if (checkoutStatus !== 'success') return;
+
+    let cancelled = false;
+    const syncPostCheckoutEntitlements = async () => {
+      try {
+        // Pull latest Clerk metadata after webhook sync so access updates immediately.
+        await user.reload();
+      } catch (error) {
+        console.warn('[checkout] failed to reload Clerk user after success redirect', error);
+      } finally {
+        if (cancelled) return;
+        currentUrl.searchParams.delete('checkout');
+        const nextPath = `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`;
+        window.history.replaceState({}, '', nextPath || '/');
+      }
+    };
+
+    void syncPostCheckoutEntitlements();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoaded, isSignedIn, user]);
 
   // Public pricing page (no auth required)
   if (isPricingRoute) {
