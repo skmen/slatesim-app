@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { SignInButton } from "@clerk/clerk-react";
+import { SignInButton, SignUpButton } from "@clerk/clerk-react";
 import { LogIn, Cpu, BarChart2, Layers } from 'lucide-react';
 import { SlateSimLogo } from './SlateSimLogo';
 import { SportsBounceBackground } from './SportsBounceBackground';
@@ -33,6 +33,11 @@ export const SplashLogin: React.FC = () => {
             >
               Preview
             </a>
+            <SignUpButton mode="modal" forceRedirectUrl="/pricing">
+              <button className="px-4 py-2 border border-drafting-orange/50 hover:border-drafting-orange bg-white text-drafting-orange text-xs font-black uppercase rounded-lg transition-colors">
+                Sign Up
+              </button>
+            </SignUpButton>
             <SignInButton mode="modal">
               <button className="px-4 py-2 bg-accent hover:opacity-90 text-black text-xs font-black uppercase rounded-lg transition-colors flex items-center gap-2">
                 <LogIn className="w-4 h-4" /> Log In
@@ -62,10 +67,12 @@ export const SplashLogin: React.FC = () => {
           </p>
 
           <div className="mt-10 max-w-lg mx-auto bg-white p-6 border border-gray-200 rounded-2xl shadow-2xl">
-            <h3 className="text-sm font-bold uppercase tracking-widest text-accent mb-4">Private Beta Closed</h3>
-            <div className="w-full bg-accent/10 border border-accent/30 text-accent font-black py-3 rounded-lg text-center uppercase tracking-widest text-sm">
-              SOFT LAUNCH COMING SOON
-            </div>
+            <h3 className="text-sm font-bold uppercase tracking-widest text-accent mb-4">Start Your Account</h3>
+            <SignUpButton mode="modal" forceRedirectUrl="/pricing">
+              <button className="w-full bg-accent/10 border border-accent/30 text-accent font-black py-3 rounded-lg text-center uppercase tracking-widest text-sm hover:bg-accent/15 transition-colors">
+                Create Free Account
+              </button>
+            </SignUpButton>
           </div>
         </section>
 

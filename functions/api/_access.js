@@ -263,7 +263,8 @@ export const isDateAllowedForAccess = (dateStr, access) => {
   const today = getUtcStartOfToday();
   const minDate = new Date(today);
   minDate.setUTCDate(minDate.getUTCDate() - FREE_LOOKBACK_DAYS);
-  return parsed >= minDate && parsed <= today;
+  // Free/preview access excludes today's date.
+  return parsed >= minDate && parsed < today;
 };
 
 export const getDefaultCorsHeaders = () => ({
@@ -308,7 +309,7 @@ export const resolveAccessContext = async (request, env) => {
 export const buildDateForbiddenResponse = (dateStr, headers) => {
   return new Response(
     JSON.stringify({
-      error: `Access limited for ${dateStr}. Free access is limited to the last ${FREE_LOOKBACK_DAYS} days.`,
+      error: `Access limited for ${dateStr}. Free access is limited to the last ${FREE_LOOKBACK_DAYS} days excluding today.`,
       code: 'DATE_RESTRICTED',
     }),
     { status: 403, headers: { 'Content-Type': 'application/json', ...headers } },

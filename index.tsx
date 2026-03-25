@@ -45,6 +45,7 @@ const SAFE_DEFAULT_URL = (() => {
   return CANONICAL_APP_URL;
 })();
 
+
 // PUBLISHABLE KEY
 // First preference: Vite-injected public env.
 // Fallback: build-time define from either VITE_CLERK_PUBLISHABLE_KEY or CLERK_PUBLISHABLE_KEY.
@@ -235,11 +236,9 @@ if (CONFIG_ERROR) {
         // Use breakout handler for all Clerk navigations
         routerPush={(to) => handleNavigation(to)}
         routerReplace={(to) => handleNavigation(to)}
-        // CRITICAL: Point redirects to the full app URL including the pathname
-        afterSignInUrl={SAFE_DEFAULT_URL}
-        afterSignUpUrl={SAFE_DEFAULT_URL}
+        // Redirect behavior
         signInFallbackRedirectUrl={SAFE_DEFAULT_URL}
-        signUpFallbackRedirectUrl={SAFE_DEFAULT_URL}
+        signUpFallbackRedirectUrl={normalizeRedirect('/pricing')}
       >
         <App />
       </ClerkProvider>
