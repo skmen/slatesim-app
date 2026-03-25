@@ -79,6 +79,48 @@ const getUserEmails = (clerkUser: any): string[] => {
   return Array.from(out);
 };
 
+const normalizeEmailLoose = (value: string): string => {
+  const email = String(value || '').trim().toLowerCase();
+  const at = email.lastIndexOf('@');
+  if (at <= 0) return email;
+  const localRaw = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  if (!domain) return email;
+  const localNoPlus = localRaw.split('+')[0];
+  const gmailLike = domain === 'gmail.com' || domain === 'googlemail.com';
+  const local = gmailLike ? localNoPlus.replace(/\./g, '') : localNoPlus;
+  return `${local}@${domain}`;
+};
+
+const fetchSubscriptions = async (
+  headers: Record<string, string>,
+  filters: Record<string, string>,
+  maxPages = 1,
+): Promise<any[]> => {
+  const out: any[] = [];
+  for (let page = 1; page <= maxPages; page += 1) {
+    const query = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => {
+      const trimmed = String(value || '').trim();
+      if (trimmed) query.set(`filter[${key}]`, trimmed);
+    });
+    query.set('page[size]', '100');
+    query.set('page[number]', String(page));
+
+    const resp = await fetch(`https://api.lemonsqueezy.com/v1/subscriptions?${query.toString()}`, {
+      method: 'GET',
+      headers,
+    });
+    const body = await parseJsonSafe(resp);
+    if (!resp.ok) break;
+    const pageItems = Array.isArray(body?.data) ? body.data : [];
+    if (pageItems.length === 0) break;
+    out.push(...pageItems);
+    if (pageItems.length < 100) break;
+  }
+  return out;
+};
+
 const pickBestActiveSubscription = (subs: any[], preferredVariantId: string | null): any | null => {
   const active = subs.filter((sub) => {
     const status = String(sub?.attributes?.status || '').toLowerCase();
@@ -119,6 +161,20 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
     return json({ error: 'Unauthorized.' }, 401);
   }
 
+  let requestBody: any = {};
+  try {
+    requestBody = await request.clone().json();
+  } catch {
+    requestBody = {};
+  }
+  const requestUrl = new URL(request.url);
+  const explicitSubscriptionId = String(
+    requestBody?.subscriptionId ||
+    requestBody?.lemonSubscriptionId ||
+    requestUrl.searchParams.get('subscriptionId') ||
+    '',
+  ).trim();
+
   const storeId = resolveWithSource([
     ['LEMONSQUEEZY_STORE_ID', env.LEMONSQUEEZY_STORE_ID],
     ['LEMON_SQUEEZY_STORE_ID', env.LEMON_SQUEEZY_STORE_ID],
@@ -146,20 +202,69 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
     'Content-Type': 'application/vnd.api+json',
   };
 
-  const allSubs: any[] = [];
-  for (const email of emails) {
-    const query = new URLSearchParams();
-    query.set('filter[user_email]', email);
-    if (storeId) query.set('filter[store_id]', storeId);
-    query.set('page[size]', '100');
+  let explicitSub: any | null = null;
+  if (explicitSubscriptionId) {
+    const byIdResp = await fetch(
+      `https://api.lemonsqueezy.com/v1/subscriptions/${encodeURIComponent(explicitSubscriptionId)}`,
+      { method: 'GET', headers },
+    );
+    const byIdBody = await parseJsonSafe(byIdResp);
+    if (byIdResp.ok && byIdBody?.data) {
+      explicitSub = byIdBody.data;
+      const subStoreId = String(explicitSub?.attributes?.store_id || '').trim();
+      if (storeId && subStoreId && subStoreId !== storeId) {
+        explicitSub = null;
+      }
+    }
+  }
 
-    const resp = await fetch(`https://api.lemonsqueezy.com/v1/subscriptions?${query.toString()}`, {
-      method: 'GET',
-      headers,
+  const allSubs: any[] = [];
+  const uniqueSubs = new Map<string, any>();
+  const addSubs = (subs: any[]) => {
+    subs.forEach((sub) => {
+      const id = String(sub?.id || '').trim();
+      if (!id) return;
+      if (!uniqueSubs.has(id)) uniqueSubs.set(id, sub);
     });
-    const body = await parseJsonSafe(resp);
-    if (!resp.ok) continue;
-    if (Array.isArray(body?.data)) allSubs.push(...body.data);
+  };
+
+  if (explicitSub) addSubs([explicitSub]);
+
+  for (const email of emails) {
+    const scoped = await fetchSubscriptions(headers, {
+      user_email: email,
+      ...(storeId ? { store_id: storeId } : {}),
+    }, 2);
+    addSubs(scoped);
+
+    // Fallback: if store scoping filtered too aggressively, retry by email only.
+    if (scoped.length === 0 && storeId) {
+      const emailOnly = await fetchSubscriptions(headers, { user_email: email }, 2);
+      addSubs(emailOnly);
+    }
+  }
+
+  allSubs.push(...Array.from(uniqueSubs.values()));
+
+  // Fallback: variant-scoped search with loose email normalization.
+  if (allSubs.length === 0 && preferredVariantId) {
+    const variantScoped = await fetchSubscriptions(
+      headers,
+      {
+        variant_id: preferredVariantId,
+        ...(storeId ? { store_id: storeId } : {}),
+      },
+      5,
+    );
+    const targetLoose = new Set(emails.map((email) => normalizeEmailLoose(email)));
+    const matched = variantScoped.filter((sub) => {
+      const subEmail = String(sub?.attributes?.user_email || '').trim().toLowerCase();
+      if (!subEmail) return false;
+      if (emails.includes(subEmail)) return true;
+      return targetLoose.has(normalizeEmailLoose(subEmail));
+    });
+    addSubs(matched);
+    allSubs.push(...Array.from(uniqueSubs.values()));
   }
 
   const best = pickBestActiveSubscription(allSubs, preferredVariantId);
@@ -170,6 +275,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
       reason: 'No active subscription found in Lemon Squeezy for this user email.',
       checkedEmails: emails,
       apiKeySource: apiKey.source,
+      explicitSubscriptionId: explicitSubscriptionId || null,
     });
   }
 
