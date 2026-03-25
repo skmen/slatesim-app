@@ -17,7 +17,7 @@ interface Env {
   CLERK_SECRET_KEY?: string;
 }
 
-const ACTIVE_SUBSCRIPTION_STATUSES = new Set(['active', 'on_trial', 'trialing', 'past_due']);
+const LEMON_ORDERS_LOGIN_URL = 'https://app.lemonsqueezy.com/my-orders/login';
 
 const json = (payload: Record<string, any>, status = 200): Response =>
   new Response(JSON.stringify(payload), {
@@ -90,12 +90,12 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
     ['LEMONSQUEEZY_API_KEY', env.LEMONSQUEEZY_API_KEY],
   ]);
   const lemonApiKey = apiKey.value;
-  if (!lemonApiKey || !env.CLERK_SECRET_KEY) {
+
+  if (!env.CLERK_SECRET_KEY) {
     return json(
       {
         error: 'Missing Lemon portal server configuration.',
         expected: {
-          apiKey: ['LEMON_SQUEEZY_API_STAGING', 'LEMONSQUEEZY_API_STAGING', 'LEMONSQUEEZY_API_KEY'],
           clerkSecret: ['CLERK_SECRET_KEY'],
         },
       },
@@ -108,59 +108,70 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
     return json({ error: 'Unauthorized.' }, 401);
   }
 
-  const userResp = await clerkFetch(env, `/v1/users/${encodeURIComponent(access.userId)}`, { method: 'GET' });
-  if (!userResp.ok) {
-    const detail = await parseErrorDetail(userResp);
-    return json({ error: `Unable to load user profile: ${detail || userResp.status}` }, 500);
-  }
-
-  const clerkUser = await userResp.json().catch(() => null);
-  const metadata = clerkUser?.public_metadata && typeof clerkUser.public_metadata === 'object'
-    ? clerkUser.public_metadata
-    : {};
-
-  const role = String(metadata.role || 'user').toLowerCase();
-  const subscriptionStatus = String(
-    metadata.subscriptionStatus ??
-    metadata.lemonSubscriptionStatus ??
-    metadata.billingStatus ??
-    '',
-  ).toLowerCase();
-  const isSubscriber = Boolean(
-    role === 'soft-launch' ||
-    metadata.softLaunchActive === true ||
-    ACTIVE_SUBSCRIPTION_STATUSES.has(subscriptionStatus),
-  );
+  const role = String(access.role || 'user').toLowerCase();
+  const isSubscriber = Boolean(access.paid || role === 'soft-launch' || role === 'beta-user');
   const isAdmin = role === 'admin';
   if (!isAdmin && !isSubscriber) {
     return json({ error: 'Membership management is only available to subscribed members and admins.' }, 403);
   }
 
-  const subscriptionId = String(metadata.lemonSubscriptionId || '').trim();
-  if (!subscriptionId) {
-    return json({ error: 'No active Lemon Squeezy subscription found for this account.' }, 400);
+  // If we cannot call Lemon API, use the generic login portal.
+  if (!lemonApiKey) {
+    return json({
+      ok: true,
+      url: LEMON_ORDERS_LOGIN_URL,
+      signed: false,
+      fallback: true,
+      note: 'Lemon API key is unavailable, falling back to Lemon Orders login.',
+      apiKeySource: null,
+    });
   }
+
+  const userResp = await clerkFetch(env, `/v1/users/${encodeURIComponent(access.userId)}`, { method: 'GET' });
+  if (!userResp.ok) {
+    const detail = await parseErrorDetail(userResp);
+    return json({ error: `Unable to load user profile: ${detail || userResp.status}` }, 500);
+  }
+  const clerkUser = await userResp.json().catch(() => null);
+  const metadata = clerkUser?.public_metadata && typeof clerkUser.public_metadata === 'object'
+    ? clerkUser.public_metadata
+    : {};
+  const subscriptionId = String(metadata.lemonSubscriptionId || '').trim();
+
+  if (!subscriptionId) {
+    return json({
+      ok: true,
+      url: LEMON_ORDERS_LOGIN_URL,
+      signed: false,
+      fallback: true,
+      note: 'No Lemon subscription id found on user metadata, using Lemon Orders login.',
+      apiKeySource: apiKey.source,
+    });
+  }
+
+  const lemonHeaders = {
+    Authorization: `Bearer ${lemonApiKey}`,
+    Accept: 'application/vnd.api+json',
+    'Content-Type': 'application/vnd.api+json',
+  };
 
   const lemonResp = await fetch(`https://api.lemonsqueezy.com/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, {
     method: 'GET',
-    headers: {
-      Authorization: `Bearer ${lemonApiKey}`,
-      Accept: 'application/vnd.api+json',
-      'Content-Type': 'application/vnd.api+json',
-    },
+    headers: lemonHeaders,
   });
   const lemonBody = await lemonResp.json().catch(() => ({}));
   if (!lemonResp.ok) {
     const first = Array.isArray(lemonBody?.errors) ? lemonBody.errors[0] : null;
     const detail = String(first?.detail || first?.title || lemonBody?.error || '').trim();
-    return json(
-      {
-        error: `Unable to load membership portal: ${detail || `Lemon API ${lemonResp.status}`}`,
-        upstreamStatus: lemonResp.status,
-        apiKeySource: apiKey.source,
-      },
-      500,
-    );
+    return json({
+      ok: true,
+      url: LEMON_ORDERS_LOGIN_URL,
+      signed: false,
+      fallback: true,
+      note: `Unable to load subscription portal link; using Lemon Orders login. ${detail || `Lemon API ${lemonResp.status}`}`,
+      upstreamStatus: lemonResp.status,
+      apiKeySource: apiKey.source,
+    });
   }
 
   const attrs = lemonBody?.data?.attributes || {};
@@ -177,15 +188,11 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
     getSignedCandidate(subUrls?.update_payment_method || null) ||
     null;
 
-  // Fallback: customer object also exposes a pre-signed portal URL.
+  // Fallback: customer object can also expose a portal URL.
   if (!portalUrl && customerId) {
     const customerResp = await fetch(`https://api.lemonsqueezy.com/v1/customers/${encodeURIComponent(customerId)}`, {
       method: 'GET',
-      headers: {
-        Authorization: `Bearer ${lemonApiKey}`,
-        Accept: 'application/vnd.api+json',
-        'Content-Type': 'application/vnd.api+json',
-      },
+      headers: lemonHeaders,
     });
     const customerBody = await customerResp.json().catch(() => ({}));
     if (customerResp.ok) {
@@ -203,25 +210,21 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
     }
   }
 
-  // Last resort to keep UX functional even when only unsigned URL is provided.
   if (!portalUrl) {
     portalUrl =
       subCustomerPortal ||
       subUpdateCustomerPortal ||
       subUpdatePayment ||
-      null;
+      LEMON_ORDERS_LOGIN_URL;
   }
 
-  if (!portalUrl) {
-    return json({ error: 'Membership portal URL missing from Lemon Squeezy response.', apiKeySource: apiKey.source }, 500);
-  }
-
-  const isSigned = Boolean(getSignedCandidate(portalUrl));
+  const signed = Boolean(getSignedCandidate(portalUrl));
   return json({
     ok: true,
     url: portalUrl,
-    signed: isSigned,
-    note: isSigned ? null : 'Portal URL is unsigned; Lemon may require magic-link login.',
+    signed,
+    fallback: portalUrl === LEMON_ORDERS_LOGIN_URL,
+    note: signed ? null : 'Portal URL is unsigned; Lemon may require login/magic link.',
     apiKeySource: apiKey.source,
   });
 };
