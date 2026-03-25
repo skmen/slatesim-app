@@ -111,8 +111,8 @@ const NBA_TEAM_ALIASES: Record<string, string[]> = {
   SAC: ['SACRAMENTO'],
   SAS: ['SANANTONIO'],
   TOR: ['TORONTO'],
-  UTA: ['UTAH'],
-  WAS: ['WASHINGTON'],
+  UTA: ['UTA', 'UTAH', 'UTAHJAZZ'],
+  WAS: ['WAS', 'WASHINGTON', 'WASHINGTONWIZARDS'],
 };
 
 const NBA_TEAM_ALIAS_REVERSE: Record<string, string> = Object.entries(NBA_TEAM_ALIASES)
