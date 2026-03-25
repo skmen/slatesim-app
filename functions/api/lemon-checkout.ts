@@ -12,8 +12,12 @@ interface Env {
   LEMONSQUEEZY_API_KEY?: string;
   LEMON_SQUEEZY_API_STAGING?: string;
   LEMONSQUEEZY_API_STAGING?: string;
-  LEMONSQUEEZY_STORE_ID: string;
-  LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID: string;
+  LEMONSQUEEZY_STORE_ID?: string;
+  LEMON_SQUEEZY_STORE_ID?: string;
+  LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID?: string;
+  LEMON_SQUEEZY_SOFT_LAUNCH_VARIANT_ID?: string;
+  LEMONSQUEEZY_VARIANT_ID?: string;
+  LEMON_SQUEEZY_VARIANT_ID?: string;
   APP_BASE_URL?: string;
 }
 
@@ -38,15 +42,45 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
   if (request.method === 'OPTIONS') return json({}, 204);
   if (request.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405);
 
+  const resolve = (...values: Array<string | undefined>): string =>
+    String(values.find((v) => String(v || '').trim().length > 0) || '').trim();
+
   const lemonApiKey = String(
     env.LEMONSQUEEZY_API_KEY ||
     env.LEMON_SQUEEZY_API_STAGING ||
     env.LEMONSQUEEZY_API_STAGING ||
     '',
   ).trim();
+  const storeId = resolve(env.LEMONSQUEEZY_STORE_ID, env.LEMON_SQUEEZY_STORE_ID);
+  const variantId = resolve(
+    env.LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID,
+    env.LEMON_SQUEEZY_SOFT_LAUNCH_VARIANT_ID,
+    env.LEMONSQUEEZY_VARIANT_ID,
+    env.LEMON_SQUEEZY_VARIANT_ID,
+  );
 
-  if (!lemonApiKey || !env.LEMONSQUEEZY_STORE_ID || !env.LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID) {
-    return json({ error: 'Missing Lemon Squeezy server configuration.' }, 500);
+  const missing: string[] = [];
+  if (!lemonApiKey) missing.push('apiKey');
+  if (!storeId) missing.push('storeId');
+  if (!variantId) missing.push('variantId');
+  if (missing.length > 0) {
+    return json(
+      {
+        error: 'Missing Lemon Squeezy server configuration.',
+        missing,
+        expected: {
+          apiKey: ['LEMONSQUEEZY_API_KEY', 'LEMON_SQUEEZY_API_STAGING', 'LEMONSQUEEZY_API_STAGING'],
+          storeId: ['LEMONSQUEEZY_STORE_ID', 'LEMON_SQUEEZY_STORE_ID'],
+          variantId: [
+            'LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID',
+            'LEMON_SQUEEZY_SOFT_LAUNCH_VARIANT_ID',
+            'LEMONSQUEEZY_VARIANT_ID',
+            'LEMON_SQUEEZY_VARIANT_ID',
+          ],
+        },
+      },
+      500,
+    );
   }
 
   let body: CheckoutRequestBody = {};
@@ -91,13 +125,13 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
         store: {
           data: {
             type: 'stores',
-            id: String(env.LEMONSQUEEZY_STORE_ID),
+            id: storeId,
           },
         },
         variant: {
           data: {
             type: 'variants',
-            id: String(env.LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID),
+            id: variantId,
           },
         },
       },
