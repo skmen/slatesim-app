@@ -687,6 +687,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
   const [adminViewMode, setAdminViewMode] = useState<AdminViewMode>('admin');
   const [loading, setLoading] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState(0);
+  const [openingPortal, setOpeningPortal] = useState(false);
   const [isHistorical, setIsHistorical] = useState(false);
   const [selectedDate, setSelectedDate] = useState(() => (
     previewMode ? getPreviewMaxDateStr() : getLocalDateStr(new Date())
@@ -729,6 +730,10 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
   const previewMaxDate = useMemo(() => getPreviewMaxDateStr(), []);
   const previewMinDate = useMemo(() => getPreviewMinDateStr(), []);
   const canUseResearchTools = effectiveHasEntitlement('full_research_tools');
+  const canManageMembership = useMemo(() => {
+    if (!user) return false;
+    return user.role === 'admin' || user.role === 'soft-launch' || user.role === 'beta-user' || hasEntitlement('full_research_tools');
+  }, [hasEntitlement, user]);
   const freeUserMinDate = useMemo(() => {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
@@ -1071,6 +1076,31 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
     setLoading(false);
   }, [state.slate.players]);
 
+  const openMembershipPortal = useCallback(async () => {
+    setOpeningPortal(true);
+    try {
+      const resp = await authedFetch('/api/lemon-portal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const raw = await resp.text();
+      let payload: any = {};
+      try {
+        payload = raw ? JSON.parse(raw) : {};
+      } catch {
+        payload = {};
+      }
+      if (!resp.ok || !payload?.url) {
+        throw new Error(String(payload?.error || raw || `Unable to open membership portal (HTTP ${resp.status}).`).trim());
+      }
+      window.location.assign(payload.url);
+      return;
+    } catch (err: any) {
+      alert(err?.message || 'Unable to open membership portal.');
+    }
+    setOpeningPortal(false);
+  }, [authedFetch]);
+
   return (
     <div className="min-h-screen font-sans bg-vellum text-ink flex flex-col selection:bg-drafting-orange selection:text-white">
       <header className="bg-vellum/80 border-b border-ink/10 sticky top-0 z-50 backdrop-blur-md">
@@ -1139,6 +1169,15 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                   UPGRADE PLAN
                 </a>
               )}
+              {!previewMode && canManageMembership && (
+                <button
+                  onClick={openMembershipPortal}
+                  disabled={openingPortal}
+                  className="hidden sm:inline-flex text-[9px] font-black text-ink border border-ink/20 bg-white px-2 py-1 rounded uppercase tracking-widest hover:border-drafting-orange hover:text-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {openingPortal ? 'OPENING...' : 'MANAGE MEMBERSHIP'}
+                </button>
+              )}
               {previewMode && (
                 <div className="hidden sm:block text-[9px] font-black uppercase tracking-widest text-ink/50">
                   Preview • Last 7 Days
@@ -1204,6 +1243,15 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                     >
                       Upgrade Plan
                     </a>
+                  )}
+                  {canManageMembership && (
+                    <button
+                      onClick={openMembershipPortal}
+                      disabled={openingPortal}
+                      className="text-[8px] font-black text-ink border border-ink/20 bg-white px-2 py-1 rounded uppercase tracking-widest hover:border-drafting-orange hover:text-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {openingPortal ? 'Opening...' : 'Manage'}
+                    </button>
                   )}
                   <div className="flex flex-col items-end">
                     <span className="text-[9px] font-bold text-ink uppercase tracking-tighter">{user?.username}</span>
