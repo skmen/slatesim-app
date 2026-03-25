@@ -126,7 +126,7 @@ export const PricingPage: React.FC = () => {
           </div>
 
           <div className="mt-4 flex items-baseline gap-2">
-            <span className="text-5xl font-black text-ink">$10</span>
+            <span className="text-5xl font-black text-ink">$12.99</span>
             <span className="text-sm uppercase tracking-widest text-ink/50">per week</span>
           </div>
           <p className="mt-2 text-sm text-ink/70">

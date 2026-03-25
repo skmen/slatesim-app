@@ -674,7 +674,7 @@ const MembershipGateCard: React.FC<{ title: string; body: string }> = ({ title, 
       href="/pricing"
       className="mt-4 inline-flex rounded-sm border border-drafting-orange bg-drafting-orange px-4 py-2 text-xs font-black uppercase tracking-widest text-white hover:brightness-110 transition-all"
     >
-      Upgrade to Soft Launch - $10/week
+      Upgrade to Soft Launch - $12.99/week
     </a>
   </div>
 );
