@@ -200,7 +200,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
             : `Lemon API network error: ${reason}`,
           stage,
         },
-        502,
+        500,
       );
     } finally {
       clearTimeout(timer);
@@ -228,13 +228,13 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
       ).trim();
       const details = detailText || `Lemon Squeezy request failed (${resp.status})`;
       console.error('[lemon-checkout] failed:', details);
-      return json({ error: `Unable to create checkout session: ${details}` }, 502);
+      return json({ error: `Unable to create checkout session: ${details}`, stage, upstreamStatus: resp.status }, 500);
     }
 
     stage = 'extract_checkout_url';
     const checkoutUrl = result?.data?.attributes?.url;
     if (!checkoutUrl) {
-      return json({ error: 'Checkout URL missing in Lemon Squeezy response.' }, 502);
+      return json({ error: 'Checkout URL missing in Lemon Squeezy response.', stage }, 500);
     }
 
     return json({ ok: true, url: checkoutUrl });
