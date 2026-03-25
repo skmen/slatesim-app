@@ -61,6 +61,25 @@ const parseErrorDetail = async (resp: Response): Promise<string> => {
   }
 };
 
+const getSignedCandidate = (url: string | null): string | null => {
+  const raw = String(url || '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    const hasSignature = parsed.searchParams.has('signature');
+    const hasExpiry = parsed.searchParams.has('expires');
+    if (hasSignature && hasExpiry) return parsed.toString();
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+const getAnyCandidate = (url: string | null): string | null => {
+  const raw = String(url || '').trim();
+  return raw.length > 0 ? raw : null;
+};
+
 export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
   if (request.method === 'OPTIONS') return json({}, 204);
   if (request.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405);
@@ -144,13 +163,65 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
     );
   }
 
-  const portalUrl =
-    lemonBody?.data?.attributes?.urls?.customer_portal ||
-    lemonBody?.data?.attributes?.urls?.update_payment_method ||
+  const attrs = lemonBody?.data?.attributes || {};
+  const subUrls = attrs?.urls || {};
+  const customerId = String(attrs?.customer_id || '').trim();
+
+  const subCustomerPortal = getAnyCandidate(subUrls?.customer_portal || null);
+  const subUpdateCustomerPortal = getAnyCandidate(subUrls?.update_customer_portal || null);
+  const subUpdatePayment = getAnyCandidate(subUrls?.update_payment_method || null);
+
+  let portalUrl =
+    getSignedCandidate(subUrls?.customer_portal || null) ||
+    getSignedCandidate(subUrls?.update_customer_portal || null) ||
+    getSignedCandidate(subUrls?.update_payment_method || null) ||
     null;
+
+  // Fallback: customer object also exposes a pre-signed portal URL.
+  if (!portalUrl && customerId) {
+    const customerResp = await fetch(`https://api.lemonsqueezy.com/v1/customers/${encodeURIComponent(customerId)}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${lemonApiKey}`,
+        Accept: 'application/vnd.api+json',
+        'Content-Type': 'application/vnd.api+json',
+      },
+    });
+    const customerBody = await customerResp.json().catch(() => ({}));
+    if (customerResp.ok) {
+      const customerUrls = customerBody?.data?.attributes?.urls || {};
+      portalUrl =
+        getSignedCandidate(customerUrls?.customer_portal || null) ||
+        getSignedCandidate(customerUrls?.update_payment_method || null) ||
+        null;
+      if (!portalUrl) {
+        portalUrl =
+          getAnyCandidate(customerUrls?.customer_portal || null) ||
+          getAnyCandidate(customerUrls?.update_payment_method || null) ||
+          null;
+      }
+    }
+  }
+
+  // Last resort to keep UX functional even when only unsigned URL is provided.
+  if (!portalUrl) {
+    portalUrl =
+      subCustomerPortal ||
+      subUpdateCustomerPortal ||
+      subUpdatePayment ||
+      null;
+  }
+
   if (!portalUrl) {
     return json({ error: 'Membership portal URL missing from Lemon Squeezy response.', apiKeySource: apiKey.source }, 500);
   }
 
-  return json({ ok: true, url: portalUrl, apiKeySource: apiKey.source });
+  const isSigned = Boolean(getSignedCandidate(portalUrl));
+  return json({
+    ok: true,
+    url: portalUrl,
+    signed: isSigned,
+    note: isSigned ? null : 'Portal URL is unsigned; Lemon may require magic-link login.',
+    apiKeySource: apiKey.source,
+  });
 };
