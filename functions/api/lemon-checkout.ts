@@ -143,6 +143,24 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
       },
     };
 
+    stage = 'dry_run_check';
+    const requestUrl = new URL(request.url);
+    const dryRun = requestUrl.searchParams.get('dry') === '1' || request.headers.get('x-lemon-dry-run') === '1';
+    if (dryRun) {
+      return json({
+        ok: true,
+        dryRun: true,
+        stage,
+        config: {
+          hasApiKey: lemonApiKey.length > 0,
+          storeId,
+          variantId,
+          baseUrl,
+          redirectUrl,
+        },
+      });
+    }
+
     stage = 'create_checkout';
     const resp = await fetch('https://api.lemonsqueezy.com/v1/checkouts', {
       method: 'POST',
