@@ -735,7 +735,8 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
     d.setDate(d.getDate() - 7);
     return getLocalDateStr(d);
   }, []);
-  const freeUserMaxDate = todayStr;
+  // Free users can access the last 7 days excluding today.
+  const freeUserMaxDate = previewMaxDate;
   const clampSelectableDate = useCallback((dateStr: string): string => {
     if (!previewMode && canUseResearchTools) return dateStr;
     const parsed = parseLocalDate(dateStr);
@@ -1387,20 +1388,11 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
 // Handles the case where Clerk hangs indefinitely due to blocked workers.
 const AuthShell: React.FC = () => {
   const { isLoaded, isSignedIn, user } = useUser();
-  const { user: appUser, hasEntitlement } = useAuth();
   const isPricingRoute = typeof window !== 'undefined' && window.location.pathname === '/pricing';
   const isPreviewRoute = typeof window !== 'undefined' && window.location.pathname === '/preview';
   const isTermsRoute = typeof window !== 'undefined' && window.location.pathname === '/terms';
   const isPrivacyRoute = typeof window !== 'undefined' && window.location.pathname === '/privacy';
   const [authLoadTimedOut, setAuthLoadTimedOut] = useState(false);
-  const isPaidSubscriber = Boolean(
-    appUser && (
-      appUser.role === 'admin' ||
-      appUser.role === 'beta-user' ||
-      appUser.role === 'soft-launch' ||
-      hasEntitlement('full_research_tools')
-    )
-  );
 
   useEffect(() => {
     if (isLoaded) {
@@ -1478,7 +1470,7 @@ const AuthShell: React.FC = () => {
   }
 
   if (isSignedIn) {
-    return isPaidSubscriber ? <AppContent /> : <AppContent previewMode />;
+    return <AppContent />;
   }
 
   return <SplashLogin />;
