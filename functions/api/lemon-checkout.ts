@@ -38,6 +38,18 @@ const json = (payload: Record<string, any>, status = 200): Response =>
     },
   });
 
+const normalizeBaseUrl = (input: string, fallbackOrigin: string): string => {
+  const raw = String(input || '').trim();
+  if (!raw) return fallbackOrigin.replace(/\/$/, '');
+
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    return new URL(withScheme).origin.replace(/\/$/, '');
+  } catch {
+    return fallbackOrigin.replace(/\/$/, '');
+  }
+};
+
 export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
   let stage = 'start';
   try {
@@ -102,7 +114,8 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
     }
 
     stage = 'build_payload';
-    const baseUrl = (env.APP_BASE_URL || new URL(request.url).origin).replace(/\/$/, '');
+    const requestOrigin = new URL(request.url).origin;
+    const baseUrl = normalizeBaseUrl(env.APP_BASE_URL || requestOrigin, requestOrigin);
     const redirectUrl = `${baseUrl}/?checkout=success`;
 
     const payload = {
