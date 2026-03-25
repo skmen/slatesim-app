@@ -94,7 +94,7 @@ let highsModulePromise: Promise<any> | null = null;
 const SCRIPT_PASS_WINDOWS = {
   RMSE: { min: 7.0, max: 12.0 },
   MAE: { min: 6.0, max: 10.0 },
-  R2: { min: 0.3, max: 0.5 },
+  R2: { min: 0.5, max: 1.0 },
   TOP_K_HIT_RATE: { min: 0.20, max: 1.0 },
   TOP_PERCENTILE_PRECISION: { min: 0.18, max: 1.0 },
   TOP_PERCENTILE_RECALL: { min: 0.18, max: 1.0 },
@@ -973,7 +973,7 @@ const ReportView: React.FC<Props> = ({ players, games, slateDate, hideBestPossib
         value: accuracy.r2,
         formatted: isFiniteNumber(accuracy.r2) ? accuracy.r2.toFixed(4) : 'NaN',
         pass: isMetricPass('R2', accuracy.r2),
-        tooltip: `How well projections move in the same direction as actual scores. An R² of 0.4 means we explain 40% of the variation in results. Closer to 1 is better; 0 means no better than guessing the average. Sweet spot: ${SCRIPT_PASS_WINDOWS.R2.min.toFixed(2)}–${SCRIPT_PASS_WINDOWS.R2.max.toFixed(2)}.`,
+        tooltip: `How well projections move in the same direction as actual scores. An R² of 0.4 means we explain 40% of the variation in results. Closer to 1 is better; 0 means no better than guessing the average. Pass threshold: ${SCRIPT_PASS_WINDOWS.R2.min.toFixed(2)} or higher.`,
       },
       {
         key: 'TOP_K_HIT_RATE',
