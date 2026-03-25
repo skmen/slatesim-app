@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useMemo } from 'react';
+import React, { createContext, useContext } from 'react';
 import { useUser, useAuth as useClerkAuth } from "@clerk/clerk-react";
 import { User, Role, Entitlement } from '../types';
 
@@ -57,7 +57,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const { signOut } = useClerkAuth();
 
   // Derive internal User object from Clerk metadata
-  const internalUser = useMemo((): User | null => {
+  const internalUser = (() => {
     if (!isLoaded || !isSignedIn || !clerkUser) return null;
 
     const metadata = (clerkUser.publicMetadata || {}) as Record<string, any>;
@@ -83,13 +83,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         role = 'user';
       }
     }
-    
+
     return {
       username: clerkUser.username || clerkUser.primaryEmailAddress?.emailAddress || 'Sim_User',
       role,
       entitlements: ROLE_PERMISSIONS[role] || ROLE_PERMISSIONS['user']
     };
-  }, [isLoaded, isSignedIn, clerkUser]);
+  })();
 
   const hasEntitlement = (capability: Entitlement): boolean => {
     return internalUser?.entitlements.includes(capability) || false;

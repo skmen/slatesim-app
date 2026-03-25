@@ -1436,11 +1436,54 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
 // Handles the case where Clerk hangs indefinitely due to blocked workers.
 const AuthShell: React.FC = () => {
   const { isLoaded, isSignedIn, user } = useUser();
+  const { getToken } = useClerkAuth();
   const isPricingRoute = typeof window !== 'undefined' && window.location.pathname === '/pricing';
   const isPreviewRoute = typeof window !== 'undefined' && window.location.pathname === '/preview';
   const isTermsRoute = typeof window !== 'undefined' && window.location.pathname === '/terms';
   const isPrivacyRoute = typeof window !== 'undefined' && window.location.pathname === '/privacy';
   const [authLoadTimedOut, setAuthLoadTimedOut] = useState(false);
+  const lastBackgroundSyncUserIdRef = useRef<string | null>(null);
+
+  const isSubscriberMetadata = useCallback((metadata: Record<string, any>): boolean => {
+    const role = String(metadata.role || '').toLowerCase();
+    const status = String(
+      metadata.subscriptionStatus ??
+      metadata.lemonSubscriptionStatus ??
+      metadata.billingStatus ??
+      '',
+    ).toLowerCase();
+    return (
+      role === 'admin' ||
+      role === 'beta-user' ||
+      role === 'soft-launch' ||
+      metadata.softLaunchActive === true ||
+      ['active', 'on_trial', 'trialing', 'past_due'].includes(status)
+    );
+  }, []);
+
+  const syncLemonEntitlements = useCallback(async (): Promise<{ ok: boolean; synced: boolean }> => {
+    try {
+      const headers = new Headers({ 'Content-Type': 'application/json' });
+      const token = await getToken();
+      if (token) headers.set('Authorization', `Bearer ${token}`);
+      const resp = await fetch('/api/lemon-sync', { method: 'POST', headers });
+      const raw = await resp.text().catch(() => '');
+      let payload: any = {};
+      try {
+        payload = raw ? JSON.parse(raw) : {};
+      } catch {
+        payload = {};
+      }
+      if (!resp.ok) {
+        console.warn('[lemon-sync] request failed', { status: resp.status, payload });
+        return { ok: false, synced: false };
+      }
+      return { ok: true, synced: Boolean(payload?.synced) };
+    } catch (error) {
+      console.warn('[lemon-sync] request error', error);
+      return { ok: false, synced: false };
+    }
+  }, [getToken]);
 
   useEffect(() => {
     if (isLoaded) {
@@ -1463,32 +1506,19 @@ const AuthShell: React.FC = () => {
 
     let cancelled = false;
 
-    const isSubscriberMetadata = (metadata: Record<string, any>): boolean => {
-      const role = String(metadata.role || '').toLowerCase();
-      const status = String(
-        metadata.subscriptionStatus ??
-        metadata.lemonSubscriptionStatus ??
-        metadata.billingStatus ??
-        '',
-      ).toLowerCase();
-      return (
-        role === 'admin' ||
-        role === 'beta-user' ||
-        role === 'soft-launch' ||
-        metadata.softLaunchActive === true ||
-        ['active', 'on_trial', 'trialing', 'past_due'].includes(status)
-      );
-    };
-
     const syncPostCheckoutEntitlements = async () => {
       try {
-        // Webhook processing can lag a few seconds after checkout. Poll for updated metadata.
+        // Try immediate server-side reconciliation by email, then poll Clerk metadata.
+        await syncLemonEntitlements();
         const maxAttempts = 15;
         for (let i = 0; i < maxAttempts; i += 1) {
           if (cancelled) return;
           await user.reload();
           const metadata = (user.publicMetadata || {}) as Record<string, any>;
           if (isSubscriberMetadata(metadata)) break;
+          if (i === 4 || i === 9) {
+            await syncLemonEntitlements();
+          }
           await new Promise((resolve) => setTimeout(resolve, 3000));
         }
       } catch (error) {
@@ -1505,7 +1535,37 @@ const AuthShell: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [isLoaded, isSignedIn, user]);
+  }, [isLoaded, isSignedIn, isSubscriberMetadata, syncLemonEntitlements, user]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!isLoaded || !isSignedIn || !user) return;
+
+    const metadata = (user.publicMetadata || {}) as Record<string, any>;
+    if (isSubscriberMetadata(metadata)) {
+      lastBackgroundSyncUserIdRef.current = user.id;
+      return;
+    }
+
+    // Post-checkout sync flow handles this case separately.
+    const currentUrl = new URL(window.location.href);
+    if (currentUrl.searchParams.get('checkout') === 'success') return;
+
+    if (lastBackgroundSyncUserIdRef.current === user.id) return;
+    lastBackgroundSyncUserIdRef.current = user.id;
+
+    let cancelled = false;
+    const runBackgroundSync = async () => {
+      await syncLemonEntitlements();
+      if (cancelled) return;
+      await user.reload();
+    };
+
+    void runBackgroundSync();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoaded, isSignedIn, isSubscriberMetadata, syncLemonEntitlements, user]);
 
   // Public pricing page (no auth required)
   if (isPricingRoute) {
