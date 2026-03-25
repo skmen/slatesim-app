@@ -27,14 +27,17 @@ const FEATURES = [
 export const PricingPage: React.FC = () => {
   const { isLoaded, isSignedIn, user } = useUser();
   const [startingCheckout, setStartingCheckout] = useState(false);
+  const [openingPortal, setOpeningPortal] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const metadata = (user?.publicMetadata || {}) as Record<string, any>;
 
   const alreadyActive = useMemo(() => {
-    const metadata = (user?.publicMetadata || {}) as Record<string, any>;
     const role = String(metadata.role || '').toLowerCase();
-    const status = String(metadata.subscriptionStatus || '').toLowerCase();
+    const status = String(metadata.subscriptionStatus ?? metadata.lemonSubscriptionStatus ?? '').toLowerCase();
     return role === 'soft-launch' || metadata.softLaunchActive === true || ['active', 'on_trial', 'trialing', 'past_due'].includes(status);
-  }, [user]);
+  }, [metadata]);
+  const isAdmin = useMemo(() => String(metadata.role || '').toLowerCase() === 'admin', [metadata]);
+  const canManageMembership = Boolean(isSignedIn && (alreadyActive || isAdmin));
 
   const beginCheckout = async () => {
     if (!isSignedIn || !user) return;
@@ -99,6 +102,33 @@ export const PricingPage: React.FC = () => {
     }
   };
 
+  const openMembershipPortal = async () => {
+    if (!isSignedIn || !user) return;
+    setOpeningPortal(true);
+    setError(null);
+    try {
+      const resp = await fetch('/api/lemon-portal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const raw = await resp.text();
+      let payload: any = {};
+      try {
+        payload = raw ? JSON.parse(raw) : {};
+      } catch {
+        payload = {};
+      }
+      if (!resp.ok || !payload?.url) {
+        throw new Error(String(payload?.error || raw || `Unable to open membership portal (HTTP ${resp.status}).`).trim());
+      }
+      window.location.assign(payload.url);
+      return;
+    } catch (err: any) {
+      setError(err?.message || 'Unable to open membership portal.');
+    }
+    setOpeningPortal(false);
+  };
+
   return (
     <div className="min-h-screen bg-vellum text-ink font-sans flex flex-col">
       <div className="mx-auto w-full max-w-4xl px-4 py-16 flex-1">
@@ -157,8 +187,19 @@ export const PricingPage: React.FC = () => {
                 </button>
               </SignInButton>
             ) : alreadyActive ? (
-              <div className="w-full rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-center text-sm font-black uppercase tracking-widest text-emerald-700">
-                Soft Launch Active
+              <div className="space-y-2">
+                <div className="w-full rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-center text-sm font-black uppercase tracking-widest text-emerald-700">
+                  Soft Launch Active
+                </div>
+                {canManageMembership && (
+                  <button
+                    onClick={openMembershipPortal}
+                    disabled={openingPortal}
+                    className="w-full rounded-lg border border-ink/20 bg-white px-4 py-3 text-sm font-black uppercase tracking-widest text-ink hover:border-drafting-orange hover:text-drafting-orange transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {openingPortal ? 'Opening Portal...' : 'Manage Membership'}
+                  </button>
+                )}
               </div>
             ) : (
               <button
@@ -167,6 +208,15 @@ export const PricingPage: React.FC = () => {
                 className="w-full rounded-lg border border-drafting-orange bg-drafting-orange px-4 py-3 text-sm font-black uppercase tracking-widest text-white hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {startingCheckout ? 'Starting Checkout...' : 'Subscribe with Lemon Squeezy'}
+              </button>
+            )}
+            {!alreadyActive && canManageMembership && (
+              <button
+                onClick={openMembershipPortal}
+                disabled={openingPortal}
+                className="w-full rounded-lg border border-ink/20 bg-white px-4 py-3 text-sm font-black uppercase tracking-widest text-ink hover:border-drafting-orange hover:text-drafting-orange transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {openingPortal ? 'Opening Portal...' : 'Manage Membership'}
               </button>
             )}
             <p className="text-[11px] uppercase tracking-widest text-ink/50 text-center">
