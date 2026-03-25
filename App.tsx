@@ -1158,7 +1158,18 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                   <span className="text-[9px] font-bold text-ink/70 uppercase tracking-widest">
                     Updated: {displayedUpdated}
                   </span>
-                  <span className="text-[8px] font-black text-drafting-orange uppercase opacity-80">{roleLabel}</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[8px] font-black text-drafting-orange uppercase opacity-80">{roleLabel}</span>
+                    {canManageMembership && (
+                      <button
+                        onClick={openMembershipPortal}
+                        disabled={openingPortal}
+                        className="text-[8px] font-black text-ink/75 uppercase tracking-widest hover:text-drafting-orange transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        [{openingPortal ? 'OPENING...' : 'MANAGE MEMBERSHIP'}]
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
               {!previewMode && !canUseResearchTools && (
@@ -1168,15 +1179,6 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                 >
                   UPGRADE PLAN
                 </a>
-              )}
-              {!previewMode && canManageMembership && (
-                <button
-                  onClick={openMembershipPortal}
-                  disabled={openingPortal}
-                  className="hidden sm:inline-flex text-[9px] font-black text-ink border border-ink/20 bg-white px-2 py-1 rounded uppercase tracking-widest hover:border-drafting-orange hover:text-drafting-orange transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  {openingPortal ? 'OPENING...' : 'MANAGE MEMBERSHIP'}
-                </button>
               )}
               {previewMode && (
                 <div className="hidden sm:block text-[9px] font-black uppercase tracking-widest text-ink/50">
