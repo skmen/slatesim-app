@@ -9,7 +9,9 @@ type PagesFunction<Env = any> = (context: {
 }) => Response | Promise<Response>;
 
 interface Env {
-  LEMONSQUEEZY_API_KEY: string;
+  LEMONSQUEEZY_API_KEY?: string;
+  LEMON_SQUEEZY_API_STAGING?: string;
+  LEMONSQUEEZY_API_STAGING?: string;
   LEMONSQUEEZY_STORE_ID: string;
   LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID: string;
   APP_BASE_URL?: string;
@@ -36,7 +38,14 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
   if (request.method === 'OPTIONS') return json({}, 204);
   if (request.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405);
 
-  if (!env.LEMONSQUEEZY_API_KEY || !env.LEMONSQUEEZY_STORE_ID || !env.LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID) {
+  const lemonApiKey = String(
+    env.LEMONSQUEEZY_API_KEY ||
+    env.LEMON_SQUEEZY_API_STAGING ||
+    env.LEMONSQUEEZY_API_STAGING ||
+    '',
+  ).trim();
+
+  if (!lemonApiKey || !env.LEMONSQUEEZY_STORE_ID || !env.LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID) {
     return json({ error: 'Missing Lemon Squeezy server configuration.' }, 500);
   }
 
@@ -99,7 +108,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
     const resp = await fetch('https://api.lemonsqueezy.com/v1/checkouts', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${env.LEMONSQUEEZY_API_KEY}`,
+        Authorization: `Bearer ${lemonApiKey}`,
         Accept: 'application/vnd.api+json',
         'Content-Type': 'application/vnd.api+json',
       },
