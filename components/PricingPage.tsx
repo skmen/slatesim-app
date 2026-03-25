@@ -41,27 +41,58 @@ export const PricingPage: React.FC = () => {
     setStartingCheckout(true);
     setError(null);
     try {
-      const resp = await fetch('/api/lemon-checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          clerkUserId: user.id,
-          email: user.primaryEmailAddress?.emailAddress || '',
-          name: user.fullName || user.username || user.primaryEmailAddress?.emailAddress || 'SlateSim Member',
-        }),
+      const requestBody = JSON.stringify({
+        clerkUserId: user.id,
+        email: user.primaryEmailAddress?.emailAddress || '',
+        name: user.fullName || user.username || user.primaryEmailAddress?.emailAddress || 'SlateSim Member',
       });
-      const raw = await resp.text();
-      let payload: any = {};
-      try {
-        payload = raw ? JSON.parse(raw) : {};
-      } catch {
-        payload = {};
+
+      const endpoints = ['/api/lemon-checkout'];
+      const host = window.location.hostname.toLowerCase();
+      if (host.startsWith('www.')) {
+        endpoints.push(`https://${host.slice(4)}/api/lemon-checkout`);
       }
-      if (!resp.ok || !payload?.url) {
-        const detail = String(payload?.error || raw || '').trim();
-        throw new Error(detail || `Failed to start checkout (HTTP ${resp.status}).`);
+
+      let lastErr = 'Failed to start checkout.';
+      for (const endpoint of endpoints) {
+        try {
+          const resp = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: requestBody,
+          });
+          const raw = await resp.text();
+          let payload: any = {};
+          try {
+            payload = raw ? JSON.parse(raw) : {};
+          } catch {
+            payload = {};
+          }
+
+          if (resp.ok && payload?.url) {
+            window.location.assign(payload.url);
+            return;
+          }
+
+          const detail = String(payload?.error || raw || '').trim();
+          const isGatewayHtml = /bad gateway|error code 502/i.test(detail);
+          if (resp.status >= 500 && isGatewayHtml && endpoint !== endpoints[endpoints.length - 1]) {
+            lastErr = `Gateway error via ${endpoint}, retrying alternate host...`;
+            continue;
+          }
+
+          throw new Error(detail || `Failed to start checkout (HTTP ${resp.status}).`);
+        } catch (err: any) {
+          const message = String(err?.message || err || '').trim();
+          lastErr = message || `Network error contacting ${endpoint}`;
+          if (endpoint !== endpoints[endpoints.length - 1]) {
+            continue;
+          }
+          throw new Error(lastErr);
+        }
       }
-      window.location.assign(payload.url);
+
+      throw new Error(lastErr);
     } catch (err: any) {
       setError(err?.message || 'Failed to start checkout.');
       setStartingCheckout(false);
