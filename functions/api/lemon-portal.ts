@@ -75,11 +75,6 @@ const getSignedCandidate = (url: string | null): string | null => {
   }
 };
 
-const getAnyCandidate = (url: string | null): string | null => {
-  const raw = String(url || '').trim();
-  return raw.length > 0 ? raw : null;
-};
-
 export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
   if (request.method === 'OPTIONS') return json({}, 204);
   if (request.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405);
@@ -178,10 +173,6 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
   const subUrls = attrs?.urls || {};
   const customerId = String(attrs?.customer_id || '').trim();
 
-  const subCustomerPortal = getAnyCandidate(subUrls?.customer_portal || null);
-  const subUpdateCustomerPortal = getAnyCandidate(subUrls?.update_customer_portal || null);
-  const subUpdatePayment = getAnyCandidate(subUrls?.update_payment_method || null);
-
   let portalUrl =
     getSignedCandidate(subUrls?.customer_portal || null) ||
     getSignedCandidate(subUrls?.update_customer_portal || null) ||
@@ -201,21 +192,12 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
         getSignedCandidate(customerUrls?.customer_portal || null) ||
         getSignedCandidate(customerUrls?.update_payment_method || null) ||
         null;
-      if (!portalUrl) {
-        portalUrl =
-          getAnyCandidate(customerUrls?.customer_portal || null) ||
-          getAnyCandidate(customerUrls?.update_payment_method || null) ||
-          null;
-      }
     }
   }
 
+  // Signed URL flow only. If Lemon doesn't provide one, use explicit login fallback.
   if (!portalUrl) {
-    portalUrl =
-      subCustomerPortal ||
-      subUpdateCustomerPortal ||
-      subUpdatePayment ||
-      LEMON_ORDERS_LOGIN_URL;
+    portalUrl = LEMON_ORDERS_LOGIN_URL;
   }
 
   const signed = Boolean(getSignedCandidate(portalUrl));
