@@ -175,15 +175,36 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
     }
 
     stage = 'create_checkout';
-    const resp = await fetch('https://api.lemonsqueezy.com/v1/checkouts', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${lemonApiKey}`,
-        Accept: 'application/vnd.api+json',
-        'Content-Type': 'application/vnd.api+json',
-      },
-      body: JSON.stringify(payload),
-    });
+    const controller = new AbortController();
+    const timeoutMs = 12000;
+    const timer = setTimeout(() => controller.abort('lemon-timeout'), timeoutMs);
+    let resp: Response;
+    try {
+      resp = await fetch('https://api.lemonsqueezy.com/v1/checkouts', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${lemonApiKey}`,
+          Accept: 'application/vnd.api+json',
+          'Content-Type': 'application/vnd.api+json',
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } catch (fetchError: any) {
+      const reason = String(fetchError?.message || fetchError || 'unknown');
+      const isAbort = fetchError?.name === 'AbortError';
+      return json(
+        {
+          error: isAbort
+            ? `Lemon API timeout after ${timeoutMs}ms`
+            : `Lemon API network error: ${reason}`,
+          stage,
+        },
+        502,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
 
     stage = 'parse_checkout_response';
     const rawResult = await resp.text().catch(() => '');
