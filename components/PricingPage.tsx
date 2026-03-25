@@ -50,9 +50,16 @@ export const PricingPage: React.FC = () => {
           name: user.fullName || user.username || user.primaryEmailAddress?.emailAddress || 'SlateSim Member',
         }),
       });
-      const payload = await resp.json().catch(() => ({}));
+      const raw = await resp.text();
+      let payload: any = {};
+      try {
+        payload = raw ? JSON.parse(raw) : {};
+      } catch {
+        payload = {};
+      }
       if (!resp.ok || !payload?.url) {
-        throw new Error(payload?.error || 'Failed to start checkout.');
+        const detail = String(payload?.error || raw || '').trim();
+        throw new Error(detail || `Failed to start checkout (HTTP ${resp.status}).`);
       }
       window.location.assign(payload.url);
     } catch (err: any) {

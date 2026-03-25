@@ -151,9 +151,19 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
 
     const result = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      const details = result?.errors || result?.error || `Lemon Squeezy request failed (${resp.status})`;
+      const firstError = Array.isArray(result?.errors) ? result.errors[0] : null;
+      const detailText = String(
+        [
+          firstError?.title,
+          firstError?.detail,
+          typeof result?.error === 'string' ? result.error : '',
+        ]
+          .filter(Boolean)
+          .join(' - '),
+      ).trim();
+      const details = detailText || `Lemon Squeezy request failed (${resp.status})`;
       console.error('[lemon-checkout] failed:', details);
-      return json({ error: 'Unable to create checkout session.' }, 502);
+      return json({ error: `Unable to create checkout session: ${details}` }, 502);
     }
 
     const checkoutUrl = result?.data?.attributes?.url;
@@ -164,6 +174,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
     return json({ ok: true, url: checkoutUrl });
   } catch (error: any) {
     console.error('[lemon-checkout] unexpected error:', error?.message || error);
-    return json({ error: 'Unexpected checkout error.' }, 500);
+    const message = String(error?.message || 'unknown');
+    return json({ error: `Unexpected checkout error: ${message}` }, 500);
   }
 };
