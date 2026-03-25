@@ -49,9 +49,9 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
   if (request.method !== 'GET') return json({ error: 'Method Not Allowed' }, 405);
 
   const apiKey = resolveWithSource([
-    ['LEMONSQUEEZY_API_KEY', env.LEMONSQUEEZY_API_KEY],
     ['LEMON_SQUEEZY_API_STAGING', env.LEMON_SQUEEZY_API_STAGING],
     ['LEMONSQUEEZY_API_STAGING', env.LEMONSQUEEZY_API_STAGING],
+    ['LEMONSQUEEZY_API_KEY', env.LEMONSQUEEZY_API_KEY],
   ]);
   const storeId = resolveWithSource([
     ['LEMONSQUEEZY_STORE_ID', env.LEMONSQUEEZY_STORE_ID],
@@ -88,7 +88,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
     missing,
     checks,
     expected: {
-      apiKey: ['LEMONSQUEEZY_API_KEY', 'LEMON_SQUEEZY_API_STAGING', 'LEMONSQUEEZY_API_STAGING'],
+      apiKey: ['LEMON_SQUEEZY_API_STAGING', 'LEMONSQUEEZY_API_STAGING', 'LEMONSQUEEZY_API_KEY'],
       storeId: ['LEMONSQUEEZY_STORE_ID', 'LEMON_SQUEEZY_STORE_ID'],
       variantId: [
         'LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID',

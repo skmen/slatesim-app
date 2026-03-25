@@ -87,6 +87,14 @@ const parseLemonBody = async (resp: Response): Promise<any> => {
   }
 };
 
+const resolveWithSource = (pairs: Array<[string, string | undefined]>): { value: string; source: string | null } => {
+  for (const [name, value] of pairs) {
+    const trimmed = String(value || '').trim();
+    if (trimmed.length > 0) return { value: trimmed, source: name };
+  }
+  return { value: '', source: null };
+};
+
 export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
   let stage = 'start';
   try {
@@ -97,12 +105,13 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
     const resolve = (...values: Array<string | undefined>): string =>
       String(values.find((v) => String(v || '').trim().length > 0) || '').trim();
 
-    const lemonApiKey = String(
-      env.LEMONSQUEEZY_API_KEY ||
-      env.LEMON_SQUEEZY_API_STAGING ||
-      env.LEMONSQUEEZY_API_STAGING ||
-      '',
-    ).trim();
+    const apiKey = resolveWithSource([
+      ['LEMON_SQUEEZY_API_STAGING', env.LEMON_SQUEEZY_API_STAGING],
+      ['LEMONSQUEEZY_API_STAGING', env.LEMONSQUEEZY_API_STAGING],
+      ['LEMONSQUEEZY_API_KEY', env.LEMONSQUEEZY_API_KEY],
+    ]);
+    const lemonApiKey = apiKey.value;
+    const apiKeySource = apiKey.source;
     const storeId = resolve(env.LEMONSQUEEZY_STORE_ID, env.LEMON_SQUEEZY_STORE_ID);
     const variantId = resolve(
       env.LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID,
@@ -120,8 +129,9 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
         {
           error: 'Missing Lemon Squeezy server configuration.',
           missing,
+          apiKeySource,
           expected: {
-            apiKey: ['LEMONSQUEEZY_API_KEY', 'LEMON_SQUEEZY_API_STAGING', 'LEMONSQUEEZY_API_STAGING'],
+            apiKey: ['LEMON_SQUEEZY_API_STAGING', 'LEMONSQUEEZY_API_STAGING', 'LEMONSQUEEZY_API_KEY'],
             storeId: ['LEMONSQUEEZY_STORE_ID', 'LEMON_SQUEEZY_STORE_ID'],
             variantId: [
               'LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID',
@@ -160,6 +170,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
       data: {
         type: 'checkouts',
         attributes: {
+          test_mode: apiKeySource !== 'LEMONSQUEEZY_API_KEY',
           checkout_options: {
             embed: false,
             media: true,
@@ -203,6 +214,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
         stage,
         config: {
           hasApiKey: lemonApiKey.length > 0,
+          apiKeySource,
           storeId,
           variantId,
           baseUrl,
@@ -247,6 +259,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
       return json({
         ok: store.ok && variant.ok,
         probe: true,
+        apiKeySource,
         storeId,
         variantId,
         store,
@@ -286,6 +299,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
             ? `Lemon API timeout after ${timeoutMs}ms`
             : `Lemon API network error: ${reason}`,
           stage,
+          apiKeySource,
         },
         500,
       );
@@ -315,13 +329,13 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
       ).trim();
       const details = detailText || `Lemon Squeezy request failed (${resp.status})`;
       console.error('[lemon-checkout] failed:', details);
-      return json({ error: `Unable to create checkout session: ${details}`, stage, upstreamStatus: resp.status }, 500);
+      return json({ error: `Unable to create checkout session: ${details}`, stage, upstreamStatus: resp.status, apiKeySource }, 500);
     }
 
     stage = 'extract_checkout_url';
     const checkoutUrl = result?.data?.attributes?.url;
     if (!checkoutUrl) {
-      return json({ error: 'Checkout URL missing in Lemon Squeezy response.', stage }, 500);
+      return json({ error: 'Checkout URL missing in Lemon Squeezy response.', stage, apiKeySource }, 500);
     }
 
     return json({ ok: true, url: checkoutUrl });
