@@ -39,106 +39,111 @@ const json = (payload: Record<string, any>, status = 200): Response =>
   });
 
 export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
-  if (request.method === 'OPTIONS') return json({}, 204);
-  if (request.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405);
+  let stage = 'start';
+  try {
+    if (request.method === 'OPTIONS') return json({}, 204);
+    if (request.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405);
 
-  const resolve = (...values: Array<string | undefined>): string =>
-    String(values.find((v) => String(v || '').trim().length > 0) || '').trim();
+    stage = 'resolve_config';
+    const resolve = (...values: Array<string | undefined>): string =>
+      String(values.find((v) => String(v || '').trim().length > 0) || '').trim();
 
-  const lemonApiKey = String(
-    env.LEMONSQUEEZY_API_KEY ||
-    env.LEMON_SQUEEZY_API_STAGING ||
-    env.LEMONSQUEEZY_API_STAGING ||
-    '',
-  ).trim();
-  const storeId = resolve(env.LEMONSQUEEZY_STORE_ID, env.LEMON_SQUEEZY_STORE_ID);
-  const variantId = resolve(
-    env.LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID,
-    env.LEMON_SQUEEZY_SOFT_LAUNCH_VARIANT_ID,
-    env.LEMONSQUEEZY_VARIANT_ID,
-    env.LEMON_SQUEEZY_VARIANT_ID,
-  );
-
-  const missing: string[] = [];
-  if (!lemonApiKey) missing.push('apiKey');
-  if (!storeId) missing.push('storeId');
-  if (!variantId) missing.push('variantId');
-  if (missing.length > 0) {
-    return json(
-      {
-        error: 'Missing Lemon Squeezy server configuration.',
-        missing,
-        expected: {
-          apiKey: ['LEMONSQUEEZY_API_KEY', 'LEMON_SQUEEZY_API_STAGING', 'LEMONSQUEEZY_API_STAGING'],
-          storeId: ['LEMONSQUEEZY_STORE_ID', 'LEMON_SQUEEZY_STORE_ID'],
-          variantId: [
-            'LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID',
-            'LEMON_SQUEEZY_SOFT_LAUNCH_VARIANT_ID',
-            'LEMONSQUEEZY_VARIANT_ID',
-            'LEMON_SQUEEZY_VARIANT_ID',
-          ],
-        },
-      },
-      500,
+    const lemonApiKey = String(
+      env.LEMONSQUEEZY_API_KEY ||
+      env.LEMON_SQUEEZY_API_STAGING ||
+      env.LEMONSQUEEZY_API_STAGING ||
+      '',
+    ).trim();
+    const storeId = resolve(env.LEMONSQUEEZY_STORE_ID, env.LEMON_SQUEEZY_STORE_ID);
+    const variantId = resolve(
+      env.LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID,
+      env.LEMON_SQUEEZY_SOFT_LAUNCH_VARIANT_ID,
+      env.LEMONSQUEEZY_VARIANT_ID,
+      env.LEMON_SQUEEZY_VARIANT_ID,
     );
-  }
 
-  let body: CheckoutRequestBody = {};
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: 'Invalid JSON body.' }, 400);
-  }
-
-  const clerkUserId = String(body.clerkUserId || '').trim();
-  const email = String(body.email || '').trim();
-  const name = String(body.name || '').trim();
-  if (!clerkUserId || !email) {
-    return json({ error: 'Missing required user fields.' }, 400);
-  }
-
-  const baseUrl = (env.APP_BASE_URL || new URL(request.url).origin).replace(/\/$/, '');
-  const redirectUrl = `${baseUrl}/?checkout=success`;
-
-  const payload = {
-    data: {
-      type: 'checkouts',
-      attributes: {
-        checkout_options: {
-          embed: false,
-          media: true,
-          logo: true,
-        },
-        checkout_data: {
-          email,
-          name: name || email,
-          custom: {
-            clerk_user_id: clerkUserId,
-            plan: 'soft-launch',
+    const missing: string[] = [];
+    if (!lemonApiKey) missing.push('apiKey');
+    if (!storeId) missing.push('storeId');
+    if (!variantId) missing.push('variantId');
+    if (missing.length > 0) {
+      return json(
+        {
+          error: 'Missing Lemon Squeezy server configuration.',
+          missing,
+          expected: {
+            apiKey: ['LEMONSQUEEZY_API_KEY', 'LEMON_SQUEEZY_API_STAGING', 'LEMONSQUEEZY_API_STAGING'],
+            storeId: ['LEMONSQUEEZY_STORE_ID', 'LEMON_SQUEEZY_STORE_ID'],
+            variantId: [
+              'LEMONSQUEEZY_SOFT_LAUNCH_VARIANT_ID',
+              'LEMON_SQUEEZY_SOFT_LAUNCH_VARIANT_ID',
+              'LEMONSQUEEZY_VARIANT_ID',
+              'LEMON_SQUEEZY_VARIANT_ID',
+            ],
           },
         },
-        product_options: {
-          redirect_url: redirectUrl,
+        500,
+      );
+    }
+
+    stage = 'parse_body';
+    let body: CheckoutRequestBody = {};
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: 'Invalid JSON body.' }, 400);
+    }
+
+    const clerkUserId = String(body.clerkUserId || '').trim();
+    const email = String(body.email || '').trim();
+    const name = String(body.name || '').trim();
+    if (!clerkUserId || !email) {
+      return json({ error: 'Missing required user fields.' }, 400);
+    }
+
+    stage = 'build_payload';
+    const baseUrl = (env.APP_BASE_URL || new URL(request.url).origin).replace(/\/$/, '');
+    const redirectUrl = `${baseUrl}/?checkout=success`;
+
+    const payload = {
+      data: {
+        type: 'checkouts',
+        attributes: {
+          checkout_options: {
+            embed: false,
+            media: true,
+            logo: true,
+          },
+          checkout_data: {
+            email,
+            name: name || email,
+            custom: {
+              clerk_user_id: clerkUserId,
+              plan: 'soft-launch',
+            },
+          },
+          product_options: {
+            redirect_url: redirectUrl,
+          },
+        },
+        relationships: {
+          store: {
+            data: {
+              type: 'stores',
+              id: storeId,
+            },
+          },
+          variant: {
+            data: {
+              type: 'variants',
+              id: variantId,
+            },
+          },
         },
       },
-      relationships: {
-        store: {
-          data: {
-            type: 'stores',
-            id: storeId,
-          },
-        },
-        variant: {
-          data: {
-            type: 'variants',
-            id: variantId,
-          },
-        },
-      },
-    },
-  };
+    };
 
-  try {
+    stage = 'create_checkout';
     const resp = await fetch('https://api.lemonsqueezy.com/v1/checkouts', {
       method: 'POST',
       headers: {
@@ -149,7 +154,15 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
       body: JSON.stringify(payload),
     });
 
-    const result = await resp.json().catch(() => ({}));
+    stage = 'parse_checkout_response';
+    const rawResult = await resp.text().catch(() => '');
+    let result: any = {};
+    try {
+      result = rawResult ? JSON.parse(rawResult) : {};
+    } catch {
+      result = {};
+    }
+
     if (!resp.ok) {
       const firstError = Array.isArray(result?.errors) ? result.errors[0] : null;
       const detailText = String(
@@ -166,6 +179,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
       return json({ error: `Unable to create checkout session: ${details}` }, 502);
     }
 
+    stage = 'extract_checkout_url';
     const checkoutUrl = result?.data?.attributes?.url;
     if (!checkoutUrl) {
       return json({ error: 'Checkout URL missing in Lemon Squeezy response.' }, 502);
@@ -173,8 +187,12 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
 
     return json({ ok: true, url: checkoutUrl });
   } catch (error: any) {
-    console.error('[lemon-checkout] unexpected error:', error?.message || error);
+    console.error('[lemon-checkout] unexpected error', {
+      stage,
+      message: error?.message || String(error),
+      stack: error?.stack || null,
+    });
     const message = String(error?.message || 'unknown');
-    return json({ error: `Unexpected checkout error: ${message}` }, 500);
+    return json({ error: `Unexpected checkout error at ${stage}: ${message}` }, 500);
   }
 };
