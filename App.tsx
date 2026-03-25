@@ -1462,10 +1462,35 @@ const AuthShell: React.FC = () => {
     if (checkoutStatus !== 'success') return;
 
     let cancelled = false;
+
+    const isSubscriberMetadata = (metadata: Record<string, any>): boolean => {
+      const role = String(metadata.role || '').toLowerCase();
+      const status = String(
+        metadata.subscriptionStatus ??
+        metadata.lemonSubscriptionStatus ??
+        metadata.billingStatus ??
+        '',
+      ).toLowerCase();
+      return (
+        role === 'admin' ||
+        role === 'beta-user' ||
+        role === 'soft-launch' ||
+        metadata.softLaunchActive === true ||
+        ['active', 'on_trial', 'trialing', 'past_due'].includes(status)
+      );
+    };
+
     const syncPostCheckoutEntitlements = async () => {
       try {
-        // Pull latest Clerk metadata after webhook sync so access updates immediately.
-        await user.reload();
+        // Webhook processing can lag a few seconds after checkout. Poll for updated metadata.
+        const maxAttempts = 15;
+        for (let i = 0; i < maxAttempts; i += 1) {
+          if (cancelled) return;
+          await user.reload();
+          const metadata = (user.publicMetadata || {}) as Record<string, any>;
+          if (isSubscriberMetadata(metadata)) break;
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+        }
       } catch (error) {
         console.warn('[checkout] failed to reload Clerk user after success redirect', error);
       } finally {
