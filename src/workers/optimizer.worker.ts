@@ -880,24 +880,27 @@ const fillLineup = (
   return null;
 };
 
-const finalizeLineups = (lineups: PlayerWithMetrics[][]): Lineup[] => {
-  return lineups.map((lineup, idx) => {
-    const totalSalary = lineup.reduce((sum, p) => sum + safeNumber(p.salary, 0), 0);
-    const totalProjection = lineup.reduce((sum, p) => sum + safeNumber(p.projection, 0), 0);
-    const totalCeiling = lineup.reduce((sum, p) => sum + safeNumber(p.ceiling_final, p.ceiling), 0);
-    const totalOwnership = lineup.reduce((sum, p) => sum + safeNumber(p.own_mean, 0), 0);
+const toSerializableLineup = (lineup: PlayerWithMetrics[], id: string): Lineup => {
+  const totalSalary = lineup.reduce((sum, p) => sum + safeNumber(p.salary, 0), 0);
+  const totalProjection = lineup.reduce((sum, p) => sum + safeNumber(p.projection, 0), 0);
+  const totalCeiling = lineup.reduce((sum, p) => sum + safeNumber(p.ceiling_final, p.ceiling), 0);
+  const totalOwnership = lineup.reduce((sum, p) => sum + safeNumber(p.own_mean, 0), 0);
 
-    return {
-      id: `gpp_${Date.now()}_${idx + 1}`,
-      playerIds: lineup.map((p) => p.id),
-      players: lineup,
-      totalSalary,
-      totalProjection,
-      totalCeiling,
-      totalOwnership,
-      lineupSource: 'optimizer',
-    };
-  });
+  return {
+    id,
+    playerIds: lineup.map((p) => p.id),
+    totalSalary,
+    totalProjection,
+    totalCeiling,
+    totalOwnership,
+    lineupSource: 'optimizer',
+  };
+};
+
+const finalizeLineups = (lineups: PlayerWithMetrics[][]): Lineup[] => {
+  return lineups.map((lineup, idx) =>
+    toSerializableLineup(lineup, `gpp_${Date.now()}_${idx + 1}_${Math.random().toString(36).slice(2, 7)}`),
+  );
 };
 
 const recordLineupAppearances = (
@@ -1031,7 +1034,11 @@ const generateLineups = (
       }
 
       const progress = Math.min(99, Math.round((accepted.length / config.n_lineups) * 100));
-      onProgress(progress, finalizeLineups([lineup])[0], accepted.length);
+      onProgress(
+        progress,
+        toSerializableLineup(lineup, `gpp_progress_${accepted.length}_${Math.random().toString(36).slice(2, 7)}`),
+        accepted.length,
+      );
     }
   };
 

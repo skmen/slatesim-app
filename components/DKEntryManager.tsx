@@ -5,7 +5,7 @@ import { Player, GameInfo, Lineup } from '../types';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
 import { parseOptimizerLineups } from '../utils/csvParser';
-import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260302-priorityreset2';
+import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260326-gpp-fix1';
 
 type Slot = 'PG' | 'SG' | 'SF' | 'PF' | 'C' | 'G' | 'F' | 'UTIL';
 

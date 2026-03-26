@@ -22,7 +22,7 @@ import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
-import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260320-smallslate-relax';
+import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260326-gpp-fix1';
 import { usePlayerEnrichment } from '../src/hooks/usePlayerEnrichment';
 import { useLineupScoring } from '../src/hooks/useLineupScoring';
 
@@ -84,11 +84,6 @@ interface OptimizerConfigState {
     wForm: number;
   };
   enforceUpsideStructureConstraints: boolean;
-  // QIEA algorithm tuning
-  minHamming: number;
-  patience: number;
-  generations: number;
-  popSize: number;
 }
 
 const DEFAULT_ADVANCED_MINIMUMS: AdvancedMinimumSettings = {
@@ -120,10 +115,6 @@ const createDefaultOptimizerConfig = (): OptimizerConfigState => ({
     wForm: 0.3,
   },
   enforceUpsideStructureConstraints: true,
-  minHamming: 3,
-  patience: 150,
-  generations: 500,
-  popSize: 128,
 });
 
 const getAdvancedSettingsStorageKey = (slateDate?: string): string =>
@@ -141,10 +132,6 @@ const sanitizeOptimizerConfig = (raw: any): OptimizerConfigState => {
   const maxExposure = Number(raw?.maxExposure);
   const upsideDelta = Number(raw?.upsideDelta);
   const deltaFromBestProjection = Number(raw?.deltaFromBestProjection);
-  const minHamming = Number(raw?.minHamming);
-  const patience = Number(raw?.patience);
-  const generations = Number(raw?.generations);
-  const popSize = Number(raw?.popSize);
 
   const nextSalaryCap = Number.isFinite(salaryCap) ? Math.max(1, Math.floor(salaryCap)) : defaults.salaryCap;
   const nextSalaryFloor = Number.isFinite(salaryFloor)
@@ -174,10 +161,6 @@ const sanitizeOptimizerConfig = (raw: any): OptimizerConfigState => {
     enforceUpsideStructureConstraints: raw?.enforceUpsideStructureConstraints !== undefined
       ? Boolean(raw.enforceUpsideStructureConstraints)
       : defaults.enforceUpsideStructureConstraints,
-    minHamming: Number.isFinite(minHamming) ? Math.min(7, Math.max(1, Math.floor(minHamming))) : defaults.minHamming,
-    patience: Number.isFinite(patience) ? Math.min(500, Math.max(10, Math.floor(patience))) : defaults.patience,
-    generations: Number.isFinite(generations) ? Math.min(2000, Math.max(50, Math.floor(generations))) : defaults.generations,
-    popSize: Number.isFinite(popSize) ? Math.min(512, Math.max(16, Math.floor(popSize))) : defaults.popSize,
   };
 };
 
@@ -1291,7 +1274,17 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       };
 
       worker.onerror = (err) => {
-        setError("Worker Error: Optimization failed to start.");
+        const detail = err?.message ? ` ${err.message}` : '';
+        setError(`Worker Error: Optimization failed to start.${detail}`);
+        console.error('[optimizer] worker onerror', err);
+        setOptimizerNotices([]);
+        setIsOptimizing(false);
+        worker.terminate();
+      };
+
+      worker.onmessageerror = (err) => {
+        setError('Worker Error: Message serialization failed between UI and optimizer worker.');
+        console.error('[optimizer] worker onmessageerror', err);
         setOptimizerNotices([]);
         setIsOptimizing(false);
         worker.terminate();
