@@ -43,10 +43,6 @@ interface OptimizerConfig {
   theta_bias_strength?: number;
   enableStackScoring?: boolean;
   enable_stack_scoring?: boolean;
-  teamStackWeights?: Record<string, number>;
-  team_stack_weights?: Record<string, number>;
-  teamStackPlayerTargets?: Record<string, number>;
-  team_stack_player_targets?: Record<string, number>;
   stackMinGameTotal?: number;
   stack_min_game_total?: number;
   deltaTheta?: number;
@@ -76,8 +72,6 @@ interface QIEAConfig {
 
   ceilingWeight:      number;   // default 0.25
   ownershipPenalty:   number;   // default 0.10
-  teamStackWeights:   Record<string, number>;
-  teamStackPlayerTargets: Record<string, number>;
   stackMinGameTotal:  number;   // default 215
   maxExposure:        number;   // global max exposure % for all non-locked players, default 100
 }
@@ -307,19 +301,6 @@ const resolveQIEAConfig = (config?: OptimizerConfig): QIEAConfig => {
     0,
     safeNumber((config as any)?.ownershipPenalty ?? (config as any)?.ownership_penalty, 0.10)
   );
-  const teamStackWeights: Record<string, number> =
-    (config as any)?.teamStackWeights ?? (config as any)?.team_stack_weights ?? {};
-  const rawTeamStackPlayerTargets =
-    (config as any)?.teamStackPlayerTargets ?? (config as any)?.team_stack_player_targets ?? {};
-  const teamStackPlayerTargets: Record<string, number> = Object.fromEntries(
-    Object.entries(
-      rawTeamStackPlayerTargets && typeof rawTeamStackPlayerTargets === 'object'
-        ? rawTeamStackPlayerTargets
-        : {}
-    )
-      .map(([teamId, count]): [string, number] => [String(teamId), clamp(Math.floor(safeNumber(count, 0)), 0, 6)])
-      .filter(([, count]) => count > 0)
-  ) as Record<string, number>;
   const stackMinGameTotal = Math.max(
     0,
     safeNumber((config as any)?.stackMinGameTotal ?? (config as any)?.stack_min_game_total, 215)
@@ -340,8 +321,6 @@ const resolveQIEAConfig = (config?: OptimizerConfig): QIEAConfig => {
     gameStackBonus,
     ceilingWeight,
     ownershipPenalty,
-    teamStackWeights,
-    teamStackPlayerTargets,
     stackMinGameTotal,
     maxExposure: clamp(safeNumber((config as any)?.maxExposure, 100), 0, 100),
   };
@@ -821,24 +800,6 @@ const repairLineup = (
 // Layer 2: Stack-aware fitness scoring
 // ---------------------------------------------------------------------------
 
-const meetsTeamStackPlayerTargets = (
-  playerIdxs: number[],
-  players: QIEAPlayer[],
-  targets: Record<string, number> | undefined,
-): boolean => {
-  if (!targets || Object.keys(targets).length === 0) return true;
-  const counts = new Map<string, number>();
-  for (const idx of playerIdxs) {
-    const team = players[idx]?.team;
-    if (!team) continue;
-    counts.set(team, (counts.get(team) ?? 0) + 1);
-  }
-  for (const [team, requiredCount] of Object.entries(targets)) {
-    if ((counts.get(team) ?? 0) < requiredCount) return false;
-  }
-  return true;
-};
-
 const scoreLineup = (
   playerIdxs: number[],
   players: QIEAPlayer[],
@@ -889,11 +850,6 @@ const scoreLineup = (
       });
     }
 
-    // teamStackWeights boost
-    for (const idx of playerIdxs) {
-      const w = config.teamStackWeights?.[players[idx].team] ?? 0;
-      if (w > 0) score += w * 0.6;
-    }
   }
 
   return score;
@@ -1263,15 +1219,12 @@ const runQIEA = async (
         lockedIndexes,
       );
       repaired.push(result.lineup);
-      const satisfiesTeamTargets =
-        result.valid &&
-        meetsTeamStackPlayerTargets(result.playerIdxs, players, config.teamStackPlayerTargets);
-      validMask.push(satisfiesTeamTargets);
-
-      if (satisfiesTeamTargets) {
+      if (result.valid) {
+        validMask.push(true);
         scores.push(scoreLineup(result.playerIdxs, players, config));
         lineupIdxs.push(result.playerIdxs);
       } else {
+        validMask.push(false);
         scores.push(0);
         lineupIdxs.push([]);
       }
@@ -1363,7 +1316,6 @@ const runQIEA = async (
         resolvedConfig.salaryCap, resolvedConfig.salaryFloor, lockedIndexes,
       );
       if (!result.valid) continue;
-      if (!meetsTeamStackPlayerTargets(result.playerIdxs, players, config.teamStackPlayerTargets)) continue;
       const score = scoreLineup(result.playerIdxs, players, config);
       attemptArchiveAdmission(
         archive, score, result.lineup, result.playerIdxs,
@@ -1446,19 +1398,6 @@ workerScope.onmessage = async (event: MessageEvent<RequestPayload>) => {
       const ok = players.some((_p, j) => eligibility[s][j]);
       if (!ok) throw new Error(`No eligible players for slot ${DK_SLOTS[s]}.`);
     }
-    if (Object.keys(qieaConfig.teamStackPlayerTargets).length > 0) {
-      const totalRequired = Object.values(qieaConfig.teamStackPlayerTargets).reduce((sum, count) => sum + count, 0);
-      if (totalRequired > DK_SLOTS.length) {
-        throw new Error(`Team Stack requires ${totalRequired} players, but a lineup only has ${DK_SLOTS.length} slots.`);
-      }
-      for (const [team, requiredCount] of Object.entries(qieaConfig.teamStackPlayerTargets)) {
-        const available = players.filter((p) => p.team === team).length;
-        if (available < requiredCount) {
-          throw new Error(`Team Stack requires ${requiredCount} players from ${team}, but only ${available} are available in the optimizer pool.`);
-        }
-      }
-    }
-
     // 4. Run QIEA optimizer
     const { archive, exposureRelaxed } = await runQIEA(
       players,

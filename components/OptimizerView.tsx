@@ -99,8 +99,87 @@ const DEFAULT_ADVANCED_MINIMUMS: AdvancedMinimumSettings = {
 };
 const HISTORY_WINDOW_GAMES = 20;
 
+const createDefaultOptimizerConfig = (): OptimizerConfigState => ({
+  numLineups: 20,
+  salaryCap: 50000,
+  salaryFloor: 49500,
+  minExposure: 0,
+  maxExposure: 50,
+  site: 'DraftKings',
+  optimizerMode: 'max_projection',
+  upsideDelta: 8,
+  enableStatConstraints: false,
+  statConstraintMode: 'gpp',
+  deltaFromBestProjection: 0,
+  upsideWeights: {
+    wLev: 1.0,
+    wOwn: 0.6,
+    wMin: 0.05,
+    wUsage: 0.08,
+    wMatch: 0.4,
+    wForm: 0.3,
+  },
+  enforceUpsideStructureConstraints: true,
+  minHamming: 3,
+  patience: 150,
+  generations: 500,
+  popSize: 128,
+});
+
 const getAdvancedSettingsStorageKey = (slateDate?: string): string =>
   `optimizerAdvancedSettings:${slateDate || 'unspecified'}`;
+
+const sanitizeOptimizerConfig = (raw: any): OptimizerConfigState => {
+  const defaults = createDefaultOptimizerConfig();
+  const upsideWeights = raw?.upsideWeights && typeof raw.upsideWeights === 'object' && !Array.isArray(raw.upsideWeights)
+    ? raw.upsideWeights
+    : {};
+  const numLineups = Number(raw?.numLineups);
+  const salaryCap = Number(raw?.salaryCap);
+  const salaryFloor = Number(raw?.salaryFloor);
+  const minExposure = Number(raw?.minExposure);
+  const maxExposure = Number(raw?.maxExposure);
+  const upsideDelta = Number(raw?.upsideDelta);
+  const deltaFromBestProjection = Number(raw?.deltaFromBestProjection);
+  const minHamming = Number(raw?.minHamming);
+  const patience = Number(raw?.patience);
+  const generations = Number(raw?.generations);
+  const popSize = Number(raw?.popSize);
+
+  const nextSalaryCap = Number.isFinite(salaryCap) ? Math.max(1, Math.floor(salaryCap)) : defaults.salaryCap;
+  const nextSalaryFloor = Number.isFinite(salaryFloor)
+    ? Math.max(0, Math.min(Math.floor(salaryFloor), nextSalaryCap))
+    : defaults.salaryFloor;
+
+  return {
+    numLineups: Number.isFinite(numLineups) ? Math.min(2000, Math.max(1, Math.floor(numLineups))) : defaults.numLineups,
+    salaryCap: nextSalaryCap,
+    salaryFloor: nextSalaryFloor,
+    minExposure: Number.isFinite(minExposure) ? Math.max(0, Math.min(100, minExposure)) : defaults.minExposure,
+    maxExposure: Number.isFinite(maxExposure) ? Math.max(0, Math.min(100, maxExposure)) : defaults.maxExposure,
+    site: 'DraftKings',
+    optimizerMode: raw?.optimizerMode === 'upside_max' ? 'upside_max' : 'max_projection',
+    upsideDelta: Number.isFinite(upsideDelta) ? Math.max(0, upsideDelta) : defaults.upsideDelta,
+    enableStatConstraints: Boolean(raw?.enableStatConstraints),
+    statConstraintMode: raw?.statConstraintMode === 'cash' ? 'cash' : 'gpp',
+    deltaFromBestProjection: Number.isFinite(deltaFromBestProjection) ? Math.max(0, deltaFromBestProjection) : defaults.deltaFromBestProjection,
+    upsideWeights: {
+      wLev: Number.isFinite(Number(upsideWeights.wLev)) ? Number(upsideWeights.wLev) : defaults.upsideWeights.wLev,
+      wOwn: Number.isFinite(Number(upsideWeights.wOwn)) ? Number(upsideWeights.wOwn) : defaults.upsideWeights.wOwn,
+      wMin: Number.isFinite(Number(upsideWeights.wMin)) ? Number(upsideWeights.wMin) : defaults.upsideWeights.wMin,
+      wUsage: Number.isFinite(Number(upsideWeights.wUsage)) ? Number(upsideWeights.wUsage) : defaults.upsideWeights.wUsage,
+      wMatch: Number.isFinite(Number(upsideWeights.wMatch)) ? Number(upsideWeights.wMatch) : defaults.upsideWeights.wMatch,
+      wForm: Number.isFinite(Number(upsideWeights.wForm)) ? Number(upsideWeights.wForm) : defaults.upsideWeights.wForm,
+    },
+    enforceUpsideStructureConstraints: raw?.enforceUpsideStructureConstraints !== undefined
+      ? Boolean(raw.enforceUpsideStructureConstraints)
+      : defaults.enforceUpsideStructureConstraints,
+    minHamming: Number.isFinite(minHamming) ? Math.min(7, Math.max(1, Math.floor(minHamming))) : defaults.minHamming,
+    patience: Number.isFinite(patience) ? Math.min(500, Math.max(10, Math.floor(patience))) : defaults.patience,
+    generations: Number.isFinite(generations) ? Math.min(2000, Math.max(50, Math.floor(generations))) : defaults.generations,
+    popSize: Number.isFinite(popSize) ? Math.min(512, Math.max(16, Math.floor(popSize))) : defaults.popSize,
+  };
+};
 
 const parseExposurePercentMaybe = (value: unknown): number | undefined => {
   if (value === '' || value === null || value === undefined) return undefined;
@@ -915,32 +994,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     return input < today;
   };
 
-  const [config, setConfig] = useState<OptimizerConfigState>({
-    numLineups: 20,
-    salaryCap: 50000,
-    salaryFloor: 49500,
-    minExposure: 0,
-    maxExposure: 50,
-    site: 'DraftKings',
-    optimizerMode: 'max_projection',
-    upsideDelta: 8,
-    enableStatConstraints: false,
-    statConstraintMode: 'gpp',
-    deltaFromBestProjection: 0,
-    upsideWeights: {
-      wLev: 1.0,
-      wOwn: 0.6,
-      wMin: 0.05,
-      wUsage: 0.08,
-      wMatch: 0.4,
-      wForm: 0.3,
-    },
-    enforceUpsideStructureConstraints: true,
-    minHamming: 3,
-    patience: 150,
-    generations: 500,
-    popSize: 128,
-  });
+  const [config, setConfig] = useState<OptimizerConfigState>(() => createDefaultOptimizerConfig());
 
   const [generatedLineups, setGeneratedLineups] = useState<Lineup[]>([]);
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
@@ -976,8 +1030,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
   const [lockedIds, setLockedIds] = useState<string[]>([]);
   const [settingsRevision, setSettingsRevision] = useState(0);
   const [selectedMatchups, setSelectedMatchups] = useState<string[]>([]);
-  const [teamStackWeights, setTeamStackWeights] = useState<Record<string, number>>({});
-  const [teamStackPlayerTargets, setTeamStackPlayerTargets] = useState<Record<string, number>>({});
   const [poolSort, setPoolSort] = useState<SortConfig | null>(null);
   const [playerOverrides, setPlayerOverrides] = useState<Record<string, { minutes?: number; projection?: number; minExposure?: number; maxExposure?: number; exclude?: boolean }>>({});
   const [poolSearch, setPoolSearch] = useState('');
@@ -1010,26 +1062,11 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     setExpandedLineupId(null);
   }, [slateDate, players]);
 
-  // Clear stale matchup selections and team stack weights when the game slate changes
+  // Clear stale matchup selections when the game slate changes
   useEffect(() => {
     if (games.length === 0) return;
     const validMatchupKeys = new Set(games.map((g) => g.matchupKey));
-    const validTeamIds = new Set(games.flatMap((g) => [g.teamA.teamId, g.teamB.teamId]));
     setSelectedMatchups((prev) => prev.filter((key) => validMatchupKeys.has(key)));
-    setTeamStackWeights((prev) => {
-      const pruned = Object.fromEntries(
-        Object.entries(prev).filter(([teamId]) => validTeamIds.has(teamId))
-      );
-      return Object.keys(pruned).length !== Object.keys(prev).length ? pruned : prev;
-    });
-    setTeamStackPlayerTargets((prev) => {
-      const pruned = Object.fromEntries(
-        Object.entries(prev)
-          .filter(([teamId, target]) => validTeamIds.has(teamId) && Number.isFinite(Number(target)) && Number(target) > 0)
-          .map(([teamId, target]) => [teamId, Math.min(6, Math.max(0, Math.floor(Number(target))))])
-      ) as Record<string, number>;
-      return Object.keys(pruned).length !== Object.keys(prev).length ? pruned : prev;
-    });
   }, [games]);
 
   useEffect(() => {
@@ -1042,21 +1079,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         setLockedIds(parsed.lockedIds.filter((id: string) => playerIdSet.has(id)));
       }
       if (Array.isArray(parsed.selectedMatchups)) setSelectedMatchups(parsed.selectedMatchups);
-      if (parsed.teamStackWeights && typeof parsed.teamStackWeights === 'object' && !Array.isArray(parsed.teamStackWeights)) {
-        setTeamStackWeights(parsed.teamStackWeights as Record<string, number>);
-      } else if (Array.isArray(parsed.selectedTeams)) {
-        // backward compat: convert old string[] to weight-1 entries
-        const weights: Record<string, number> = {};
-        (parsed.selectedTeams as string[]).forEach((t) => { weights[t] = 1; });
-        setTeamStackWeights(weights);
-      }
-      if (parsed.teamStackPlayerTargets && typeof parsed.teamStackPlayerTargets === 'object' && !Array.isArray(parsed.teamStackPlayerTargets)) {
-        const targets = Object.fromEntries(
-          Object.entries(parsed.teamStackPlayerTargets)
-            .filter(([, target]) => Number.isFinite(Number(target)) && Number(target) > 0)
-            .map(([teamId, target]) => [teamId, Math.min(6, Math.max(0, Math.floor(Number(target))))])
-        ) as Record<string, number>;
-        setTeamStackPlayerTargets(targets);
+      if (parsed.config && typeof parsed.config === 'object' && !Array.isArray(parsed.config)) {
+        setConfig(sanitizeOptimizerConfig(parsed.config));
       }
       if (parsed.playerOverrides && typeof parsed.playerOverrides === 'object') {
         const prunedEntries = Object.entries(parsed.playerOverrides)
@@ -1088,7 +1112,30 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
   // to the correct key without slateDate in its deps (prevents saving stale
   // state to the new key when the slate changes before loading finishes).
   const slateDateForSaveRef = useRef(slateDate);
-  useEffect(() => { slateDateForSaveRef.current = slateDate; });
+  useEffect(() => { slateDateForSaveRef.current = slateDate; }, [slateDate]);
+
+  const lockedIdsRef = useRef(lockedIds);
+  const selectedMatchupsRef = useRef(selectedMatchups);
+  const playerOverridesRef = useRef(playerOverrides);
+  const configRef = useRef(config);
+  useEffect(() => { lockedIdsRef.current = lockedIds; }, [lockedIds]);
+  useEffect(() => { selectedMatchupsRef.current = selectedMatchups; }, [selectedMatchups]);
+  useEffect(() => { playerOverridesRef.current = playerOverrides; }, [playerOverrides]);
+  useEffect(() => { configRef.current = config; }, [config]);
+
+  const persistAdvancedSettings = useCallback(() => {
+    try {
+      const payload = {
+        lockedIds: lockedIdsRef.current,
+        selectedMatchups: selectedMatchupsRef.current,
+        playerOverrides: playerOverridesRef.current,
+        config: configRef.current,
+      };
+      localStorage.setItem(getAdvancedSettingsStorageKey(slateDateForSaveRef.current), JSON.stringify(payload));
+    } catch (e) {
+      console.warn('Failed to save optimizer settings', e);
+    }
+  }, []);
 
   // Skip the very first run so we never overwrite localStorage with the empty
   // initial state before the settings-loading effect has populated state.
@@ -1098,10 +1145,14 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       isFirstAutoSaveRunRef.current = false;
       return;
     }
-    if (!slateDateForSaveRef.current) return;
-    const payload = { lockedIds, selectedMatchups, teamStackWeights, teamStackPlayerTargets, playerOverrides };
-    localStorage.setItem(getAdvancedSettingsStorageKey(slateDateForSaveRef.current), JSON.stringify(payload));
-  }, [lockedIds, selectedMatchups, teamStackWeights, teamStackPlayerTargets, playerOverrides]);
+    persistAdvancedSettings();
+  }, [lockedIds, selectedMatchups, playerOverrides, config, persistAdvancedSettings]);
+
+  useEffect(() => {
+    return () => {
+      persistAdvancedSettings();
+    };
+  }, [persistAdvancedSettings]);
 
   const startOptimization = () => {
     if (isOptimizing) return;
@@ -1133,18 +1184,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         const val = parseExposurePercentMaybe(overrides?.maxExposure);
         return val !== undefined && val < 100;
       }).length;
-      const activeTeamStackWeights = Object.fromEntries(
-        Object.entries(teamStackWeights)
-          .filter(([, weight]) => Number.isFinite(Number(weight)) && Number(weight) > 0)
-          .map(([teamId, weight]) => [teamId, Math.min(5, Math.max(1, Math.floor(Number(weight))))])
-      ) as Record<string, number>;
-      const activeTeamStackPlayerTargets = Object.fromEntries(
-        Object.entries(teamStackPlayerTargets)
-          .filter(([, target]) => Number.isFinite(Number(target)) && Number(target) > 0)
-          .map(([teamId, target]) => [teamId, Math.min(6, Math.max(0, Math.floor(Number(target))))])
-      ) as Record<string, number>;
-      const totalTeamStackPlayersRequested = Object.values(activeTeamStackPlayerTargets).reduce((sum, count) => sum + count, 0);
-
       // Scope pool to teams in the current slate's games (if games are known)
       const slateTeamIds = games.length > 0
         ? new Set(games.flatMap((g) => [g.teamA.teamId, g.teamB.teamId]))
@@ -1173,20 +1212,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           };
         })
         .filter((player) => !Boolean((player as any).optimizerExcluded));
-
-      if (totalTeamStackPlayersRequested > DK_SLOTS.length) {
-        setError(`Team Stack requires ${totalTeamStackPlayersRequested} players, but a lineup only has ${DK_SLOTS.length} slots.`);
-        setIsOptimizing(false);
-        return;
-      }
-      for (const [teamId, requiredCount] of Object.entries(activeTeamStackPlayerTargets)) {
-        const availableCount = pool.filter((player) => player.team === teamId).length;
-        if (availableCount < requiredCount) {
-          setError(`Team Stack requires ${requiredCount} players from ${teamId}, but only ${availableCount} are available after filters.`);
-          setIsOptimizing(false);
-          return;
-        }
-      }
 
       if (pool.length < DK_SLOTS.length) {
         setError(`Optimizer pool too small (${pool.length} players) after filters/exclusions.`);
@@ -1239,7 +1264,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
               if (config.deltaFromBestProjection > 0) diagnostics.push(`projection floor -${config.deltaFromBestProjection}`);
               if (poolFilters.length > 0) diagnostics.push(`${poolFilters.length} pool filters`);
               if (poolSearch.trim()) diagnostics.push('pool search active');
-              if (Object.keys(activeTeamStackPlayerTargets).length > 0) diagnostics.push('team stack player targets');
 
               const hasUserConstraints = diagnostics.length > 0;
               const detail = hasUserConstraints
@@ -1280,11 +1304,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
 
       const request = {
         players: enrichedPool,
-        config: {
-          ...config,
-          teamStackWeights: Object.keys(activeTeamStackWeights).length > 0 ? activeTeamStackWeights : undefined,
-          teamStackPlayerTargets: Object.keys(activeTeamStackPlayerTargets).length > 0 ? activeTeamStackPlayerTargets : undefined,
-        },
+        config,
       };
 
       worker.postMessage(request);
@@ -1593,28 +1613,12 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     return pool;
   }, [players, poolSearch, poolFilters, playerOverrides, lockedIds, poolSort, valueScoreMap]);
 
-  const toggleTeamWeight = useCallback((teamId: string) => {
-    setTeamStackWeights((prev) => {
-      const current = prev[teamId] ?? 0;
-      if (current >= 5) {
-        const { [teamId]: _removed, ...rest } = prev;
-        return rest;
-      }
-      return { ...prev, [teamId]: current + 1 };
-    });
-  }, []);
-
-  const saveAdvancedSettings = () => {
-    setShowAdvanced(false);
-  };
-
   const clearAdvancedSettings = () => {
     localStorage.removeItem(getAdvancedSettingsStorageKey(slateDate));
     setLockedIds([]);
     setSelectedMatchups([]);
-    setTeamStackWeights({});
-    setTeamStackPlayerTargets({});
     setPlayerOverrides({});
+    setConfig(createDefaultOptimizerConfig());
     setSettingsRevision((r) => r + 1);
   };
 
@@ -2685,135 +2689,57 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                   </table>
                 </div>
               </div>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 overflow-hidden">
-                <div className="border border-ink/10 rounded-sm p-3 bg-white/60">
-                  <h4 className="text-[10px] font-black uppercase tracking-widest text-ink/50 mb-2">Team Stack</h4>
-                  <div className="space-y-2">
-                    <div>
-                      <div className="text-[9px] font-black uppercase tracking-widest text-ink/40 mb-1">Matchups</div>
-                      <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
-                        {games.map((game) => {
-                          const teams = ([
-                            { teamId: game.teamA.teamId, abbr: game.teamA.abbreviation },
-                            { teamId: game.teamB.teamId, abbr: game.teamB.abbreviation },
-                          ] as { teamId: string; abbr: string }[]);
-                          return (
-                            <div
-                              key={game.matchupKey}
-                              className="bg-white/70 rounded-sm p-2 border border-ink/10"
-                            >
-                              <div className="text-[9px] font-black uppercase tracking-widest text-ink/35 mb-1.5">
-                                {game.teamB.abbreviation}@{game.teamA.abbreviation}
-                              </div>
-                              <div className="space-y-1.5">
-                                {teams.map(({ teamId, abbr }) => {
-                                  const w = teamStackWeights[teamId] ?? 0;
-                                  const targetPlayers = teamStackPlayerTargets[teamId] ?? 0;
-                                  return (
-                                    <div key={teamId} className="flex items-center justify-between gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={() => toggleTeamWeight(teamId)}
-                                        className={`relative min-w-[46px] text-center px-2 py-1 rounded-sm text-[10px] font-black uppercase tracking-widest border transition-colors ${
-                                          w > 0
-                                            ? 'bg-drafting-orange text-white border-drafting-orange'
-                                            : 'border-ink/20 text-ink/70 hover:border-drafting-orange/40 hover:text-ink'
-                                        }`}
-                                        title="Click to set team priority (1-5)"
-                                      >
-                                        {abbr}
-                                        {w > 0 && (
-                                          <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-3.5 h-3.5 rounded-full bg-ink text-white text-[8px] font-black leading-none">{w}</span>
-                                        )}
-                                      </button>
-                                      <div className="flex items-center gap-1.5">
-                                        <select
-                                          value={targetPlayers}
-                                          onChange={(e) => {
-                                            const next = Math.min(6, Math.max(0, Math.floor(Number(e.target.value) || 0)));
-                                            setTeamStackPlayerTargets((prev) => {
-                                              if (next <= 0) {
-                                                const { [teamId]: _removed, ...rest } = prev;
-                                                return rest;
-                                              }
-                                              return { ...prev, [teamId]: next };
-                                            });
-                                          }}
-                                          className="w-14 bg-white border border-ink/20 rounded-sm px-1.5 py-0.5 text-[11px] font-mono text-ink text-right focus:border-drafting-orange outline-none"
-                                        >
-                                          {Array.from({ length: 7 }, (_, idx) => idx).map((num) => (
-                                            <option key={num} value={num}>
-                                              {num}
-                                            </option>
-                                          ))}
-                                        </select>
-                                        <span className="text-[9px] font-black uppercase tracking-widest text-ink/45 whitespace-nowrap">players</span>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                    <div className="text-[9px] text-ink/45">
-                      Click a team badge to set priority (1-5). Set players to require at least that many from each team.
-                    </div>
-                  </div>
-                </div>
-
-                <div className="border border-ink/10 rounded-sm p-3 bg-white/60">
-                  <h4 className="text-[10px] font-black uppercase tracking-widest text-ink/50 mb-3">Optimizer Tuning</h4>
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-4">
-                    {(
-                      [
-                        { key: 'minHamming', label: 'Min Uniquie Players', min: 1, max: 7, step: 1, title: 'Minimum number of unique players between generated lineups.' },
-                        { key: 'patience', label: 'Auto-Stop Limit', min: 10, max: 500, step: 10, title: 'Max cycles to stop at if no improvements.' },
-                        { key: 'generations', label: 'Optimization Cycles', min: 50, max: 2000, step: 50, title: 'How many times the optimizer is run.' },
-                        { key: 'popSize', label: 'Lineup Pool Size', min: 16, max: 512, step: 16, title: 'Number of lineups being evaluated per optimization cylce.' },
-                      ] as { key: 'minHamming' | 'patience' | 'generations' | 'popSize'; label: string; min: number; max: number; step: number; title: string }[]
-                    ).map(({ key, label, min, max, step, title }) => (
-                      <div key={key}>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <label className="text-[9px] font-black uppercase tracking-widest text-ink/40" title={title}>
-                            {label}
-                          </label>
-                          <input
-                            type="number"
-                            min={min}
-                            max={max}
-                            step={step}
-                            value={config[key] as number}
-                            onChange={(e) => {
-                              const val = parseInt(e.target.value, 10);
-                              if (!isNaN(val)) {
-                                setConfig((prev) => ({ ...prev, [key]: Math.min(max, Math.max(min, val)) }));
-                              }
-                            }}
-                            onBlur={(e) => {
-                              const val = parseInt(e.target.value, 10);
-                              setConfig((prev) => ({ ...prev, [key]: isNaN(val) ? min : Math.min(max, Math.max(min, val)) }));
-                            }}
-                            className="w-14 bg-white border border-ink/20 rounded-sm px-1.5 py-0.5 text-[11px] font-mono text-ink text-right focus:border-drafting-orange outline-none"
-                          />
-                        </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 overflow-hidden">
+              <div className="border border-ink/10 rounded-sm p-3 bg-white/60">
+                <h4 className="text-[10px] font-black uppercase tracking-widest text-ink/50 mb-3">Optimizer Tuning</h4>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-4">
+                  {(
+                    [
+                      { key: 'minHamming', label: 'Min Uniquie Players', min: 1, max: 7, step: 1, title: 'Minimum number of unique players between generated lineups.' },
+                      { key: 'patience', label: 'Auto-Stop Limit', min: 10, max: 500, step: 10, title: 'Max cycles to stop at if no improvements.' },
+                      { key: 'generations', label: 'Optimization Cycles', min: 50, max: 2000, step: 50, title: 'How many times the optimizer is run.' },
+                      { key: 'popSize', label: 'Lineup Pool Size', min: 16, max: 512, step: 16, title: 'Number of lineups being evaluated per optimization cylce.' },
+                    ] as { key: 'minHamming' | 'patience' | 'generations' | 'popSize'; label: string; min: number; max: number; step: number; title: string }[]
+                  ).map(({ key, label, min, max, step, title }) => (
+                    <div key={key}>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-ink/40" title={title}>
+                          {label}
+                        </label>
                         <input
-                          type="range"
+                          type="number"
                           min={min}
                           max={max}
                           step={step}
                           value={config[key] as number}
                           onChange={(e) => {
-                            setConfig((prev) => ({ ...prev, [key]: parseInt(e.target.value, 10) }));
+                            const val = parseInt(e.target.value, 10);
+                            if (!isNaN(val)) {
+                              setConfig((prev) => ({ ...prev, [key]: Math.min(max, Math.max(min, val)) }));
+                            }
                           }}
-                          className="w-full h-1 accent-orange-500 cursor-pointer"
+                          onBlur={(e) => {
+                            const val = parseInt(e.target.value, 10);
+                            setConfig((prev) => ({ ...prev, [key]: isNaN(val) ? min : Math.min(max, Math.max(min, val)) }));
+                          }}
+                          className="w-14 bg-white border border-ink/20 rounded-sm px-1.5 py-0.5 text-[11px] font-mono text-ink text-right focus:border-drafting-orange outline-none"
                         />
                       </div>
-                    ))}
-                  </div>
+                      <input
+                        type="range"
+                        min={min}
+                        max={max}
+                        step={step}
+                        value={config[key] as number}
+                        onChange={(e) => {
+                          setConfig((prev) => ({ ...prev, [key]: parseInt(e.target.value, 10) }));
+                        }}
+                        className="w-full h-1 accent-orange-500 cursor-pointer"
+                      />
+                    </div>
+                  ))}
                 </div>
+              </div>
 
                 <div className="border border-ink/10 rounded-sm p-3 bg-white/60">
                   <h4 className="text-[10px] font-black uppercase tracking-widest text-ink/50 mb-2">Locked Players</h4>
@@ -2849,7 +2775,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
 
             <div className="pt-4 border-t border-ink/10 mt-4 flex items-center justify-between">
               <div className="text-[9px] font-mono text-ink/40">
-                Settings auto-save as you make changes.
+                Settings auto-save as you make changes and when you leave this page.
               </div>
               <button
                 type="button"
