@@ -410,6 +410,10 @@ const preprocessPlayers = (
       : config.maxExposure;
     const minExposurePct = locked ? 100 : clamp(rawMinExp, 0, 100);
     const maxExposurePct = locked ? 100 : clamp(rawMaxExp, minExposurePct, 100);
+    if (!locked && maxExposurePct <= 0) {
+      // Treat 0% max exposure as explicit exclusion to avoid wasting search effort.
+      continue;
+    }
 
     result.push({
       index: i,
@@ -1192,7 +1196,7 @@ const runQIEA = async (
   resolvedConfig: { salaryCap: number; salaryFloor: number; numLineups: number },
   rawPlayers: Player[],
   onProgress: (pct: number, best: Lineup | null, found: number) => void,
-): Promise<ArchiveEntry[]> => {
+): Promise<{ archive: ArchiveEntry[]; exposureRelaxed: boolean }> => {
   const thetas = initThetas(players, config.popSize, config);
   const archive: ArchiveEntry[] = [];
   const lockedIndexes = players
@@ -1206,6 +1210,7 @@ const runQIEA = async (
   let patienceCounter = 0;
   let lastArchiveSize = 0;
   let lastBestScore = -Infinity;
+  let exposureRelaxed = false;
 
   for (let gen = 0; gen < config.generations; gen++) {
     const collapsed = observePopulation(thetas, players.length);
@@ -1304,11 +1309,14 @@ const runQIEA = async (
     }
   }
 
-  // Post-loop greedy fill: if QIEA stalled before filling the archive,
-  // generate random valid lineups with progressively relaxed Hamming until full.
-  if (archive.length < resolvedConfig.numLineups) {
-    const target = resolvedConfig.numLineups;
-    const maxAttempts = (target - archive.length) * 500;
+  const greedyFill = (
+    target: number,
+    attemptsPerMissing: number,
+    admissionMinHamming: number,
+    maxAllowed: number[],
+    minRequired: number[],
+  ) => {
+    const maxAttempts = Math.max(0, (target - archive.length) * attemptsPerMissing);
     for (let attempt = 0; attempt < maxAttempts && archive.length < target; attempt++) {
       const rand = new Uint8Array(players.length);
       for (let j = 0; j < players.length; j++) {
@@ -1320,16 +1328,58 @@ const runQIEA = async (
       );
       if (!result.valid) continue;
       const score = scoreLineup(result.playerIdxs, players, config);
-      const remaining = target - archive.length;
-      const relaxedHamming = remaining <= Math.ceil(target * 0.15) ? 1 : 2;
       attemptArchiveAdmission(
         archive, score, result.lineup, result.playerIdxs,
-        relaxedHamming, target, exposureCounts, maxAllowedByPlayer, minRequiredByPlayer,
+        admissionMinHamming, target, exposureCounts, maxAllowed, minRequired,
       );
+    }
+  };
+
+  // Post-loop greedy fill with original constraints first.
+  if (archive.length < resolvedConfig.numLineups) {
+    const target = resolvedConfig.numLineups;
+    const remaining = target - archive.length;
+    const admissionMinHamming = remaining <= Math.ceil(target * 0.15) ? 1 : 2;
+    greedyFill(target, 500, admissionMinHamming, maxAllowedByPlayer, minRequiredByPlayer);
+  }
+
+  // If still short, progressively relax exposure caps and min-exposure obligations.
+  // This keeps the optimizer productive when user-provided exposure bounds are too tight.
+  if (archive.length < resolvedConfig.numLineups) {
+    const target = resolvedConfig.numLineups;
+    const noMinRequired = new Array<number>(players.length).fill(0);
+    const relaxationSteps = [5, 10, 15, 20, 30, 40, 50, 75, 100];
+
+    for (const relaxPct of relaxationSteps) {
+      if (archive.length >= target) break;
+      const relaxedMaxAllowed = players.map((p, i) => {
+        const relaxedPctForPlayer = Math.min(100, p.maxExposurePct + relaxPct);
+        const rawMax = Math.max(0, Math.floor((relaxedPctForPlayer / 100) * target + 1e-9));
+        const baseline = Math.max(maxAllowedByPlayer[i], rawMax);
+        return clamp(baseline, 0, target);
+      });
+
+      const before = archive.length;
+      greedyFill(target, 800, 1, relaxedMaxAllowed, noMinRequired);
+      if (archive.length > before) {
+        exposureRelaxed = true;
+      }
     }
   }
 
-  return archive;
+  // Last-resort fill: preserve uniqueness constraint only, ignore exposure bounds.
+  if (archive.length < resolvedConfig.numLineups) {
+    const target = resolvedConfig.numLineups;
+    const unconstrainedMaxAllowed = new Array<number>(players.length).fill(target);
+    const noMinRequired = new Array<number>(players.length).fill(0);
+    const before = archive.length;
+    greedyFill(target, 1200, 1, unconstrainedMaxAllowed, noMinRequired);
+    if (archive.length > before) {
+      exposureRelaxed = true;
+    }
+  }
+
+  return { archive, exposureRelaxed };
 };
 
 // ---------------------------------------------------------------------------
@@ -1361,7 +1411,7 @@ workerScope.onmessage = async (event: MessageEvent<RequestPayload>) => {
     }
 
     // 4. Run QIEA optimizer
-    const archive = await runQIEA(
+    const { archive, exposureRelaxed } = await runQIEA(
       players,
       eligibility,
       qieaConfig,
@@ -1395,19 +1445,22 @@ workerScope.onmessage = async (event: MessageEvent<RequestPayload>) => {
       .filter((x) => x.need > x.got)
       .sort((a, b) => (b.need - b.got) - (a.need - a.got));
 
+    const warnings: string[] = [];
     if (unmetMinPlayers.length > 0) {
       const sample = unmetMinPlayers
         .slice(0, 5)
         .map(({ idx, need, got }) => `${rawPlayers[players[idx].index]?.name || `Player ${idx}`} (${got}/${need})`)
         .join(', ');
-      throw new Error(
-        `Unable to satisfy minimum exposure constraints for ${unmetMinPlayers.length} player(s): ${sample}. ` +
-        'Try reducing min exposure, increasing lineups, or widening your player pool.'
+      warnings.push(
+        `Minimum exposure targets were not fully met for ${unmetMinPlayers.length} player(s): ${sample}.`,
       );
+    }
+    if (exposureRelaxed) {
+      warnings.push('Exposure constraints were relaxed to maximize feasible unique lineup generation.');
     }
 
     const lineups = formatPortfolio(archive, players, rawPlayers);
-    workerScope.postMessage({ type: 'result', lineups });
+    workerScope.postMessage({ type: 'result', lineups, warnings, exposureRelaxed });
   } catch (error) {
     workerScope.postMessage({
       type: 'error',

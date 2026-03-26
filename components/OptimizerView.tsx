@@ -947,6 +947,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [optimizerNotices, setOptimizerNotices] = useState<string[]>([]);
   const [lineupSort, setLineupSort] = useState<SortConfig>({ key: 'projection', dir: 'desc' });
   const [exposureSort, setExposureSort] = useState<SortConfig>({ key: 'exposure', dir: 'desc' });
   const [expandedExposureRowId, setExpandedExposureRowId] = useState<string | null>(null);
@@ -1091,6 +1092,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     setError(null);
     setProgress(0);
     setGeneratedLineups([]);
+    setOptimizerNotices([]);
 
     try {
       const activeOverrideEntries = Object.entries(playerOverrides).filter(([, overrides]) => {
@@ -1177,6 +1179,11 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             setGeneratedLineups(scored);
             setIsOptimizing(false);
             setProgress(100);
+            const workerWarnings: string[] = Array.isArray(msg.warnings) ? msg.warnings : [];
+            setOptimizerNotices(workerWarnings);
+            if (workerWarnings.length > 0) {
+              console.warn('[optimizer] constraint warnings:', workerWarnings);
+            }
             if (!msg.lineups || msg.lineups.length === 0) {
               setError('No valid lineups could be generated with the current filters.');
             } else if (msg.lineups.length < config.numLineups) {
@@ -1198,9 +1205,10 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
               const suggestion = hasUserConstraints
                 ? ' Try clearing advanced settings or relaxing pool filters/exposure caps for more combinations.'
                 : ' Try expanding the player pool to increase valid unique combinations.';
+              const warningSuffix = workerWarnings.length > 0 ? ` ${workerWarnings.join(' ')}` : '';
               setError(
                 `Generated ${msg.lineups.length}/${config.numLineups} feasible unique lineups before exhaustion.` +
-                `${detail}${suggestion}`,
+                `${detail}${suggestion}${warningSuffix}`,
               );
             }
             worker.terminate();
@@ -1208,6 +1216,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           }
           case 'error':
             setError(msg.message);
+            setOptimizerNotices([]);
             setIsOptimizing(false);
             worker.terminate();
             break;
@@ -1216,6 +1225,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
 
       worker.onerror = (err) => {
         setError("Worker Error: Optimization failed to start.");
+        setOptimizerNotices([]);
         setIsOptimizing(false);
         worker.terminate();
       };
@@ -1831,10 +1841,25 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             )}
           </div>
 
+          <div className="p-2 rounded-sm border border-amber-200 bg-amber-50/80">
+            <p className="text-[9px] font-bold text-amber-800 uppercase tracking-widest leading-tight">
+              Min/Max exposure are best-effort targets. If constraints are too tight for the requested lineup count, the optimizer may relax exposure bounds to return as many valid unique lineups as possible. Lock/Exclude remain hard constraints.
+            </p>
+          </div>
+
           {error && (
             <div className="p-3 bg-red-600/10 border border-red-600/20 rounded-sm flex items-start gap-2 animate-in slide-in-from-top-2">
               <AlertCircle className="w-3.5 h-3.5 text-red-600 shrink-0 mt-0.5" />
               <p className="text-[9px] font-bold text-red-600 uppercase leading-tight">{error}</p>
+            </div>
+          )}
+
+          {optimizerNotices.length > 0 && (
+            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-sm flex items-start gap-2 animate-in slide-in-from-top-2">
+              <AlertCircle className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />
+              <p className="text-[9px] font-bold text-amber-800 uppercase leading-tight">
+                {optimizerNotices.join(' ')}
+              </p>
             </div>
           )}
         </div>

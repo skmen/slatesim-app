@@ -170,8 +170,21 @@ const toNum = (v: any, fallback = 0): number => {
   return Number.isFinite(n) ? n : fallback;
 };
 
-const normalizeTeamKey = (value: any): string =>
-  String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const TEAM_KEY_ALIASES: Record<string, string> = {
+  UTA: 'UTA',
+  UTAH: 'UTA',
+  UTAHJAZZ: 'UTA',
+  UTH: 'UTA',
+  WAS: 'WAS',
+  WASHINGTON: 'WAS',
+  WASHINGTONWIZARDS: 'WAS',
+};
+
+const normalizeTeamKey = (value: any): string => {
+  const token = String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!token) return '';
+  return TEAM_KEY_ALIASES[token] || token;
+};
 
 const getGamePairKey = (game: GameInfo): string => {
   const teamA = normalizeTeamKey(game?.teamA?.teamId ?? game?.teamA?.abbreviation);
