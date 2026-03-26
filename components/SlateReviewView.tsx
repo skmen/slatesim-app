@@ -227,9 +227,17 @@ export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, 
     return `${baseUrl}/${selectedDate}/${encodeURIComponent(selectedSlate)}/analysis.json`;
   }, [baseUrl, selectedDate, selectedSlate]);
 
-  const exposureUrl = useMemo(() => {
-    if (!baseUrl || !selectedDate || !selectedSlate) return null;
-    return `${baseUrl}/${selectedDate}/${encodeURIComponent(selectedSlate)}/exposure.json`;
+  const exposureUrlCandidates = useMemo(() => {
+    if (!baseUrl || !selectedDate || !selectedSlate) return [] as string[];
+    const safeSlate = encodeURIComponent(selectedSlate);
+    return [
+      `${baseUrl}/${selectedDate}/${safeSlate}/exposure.json`,
+      `${baseUrl}/${selectedDate}/${safeSlate}/exposures.json`,
+      `${baseUrl}/${selectedDate}/${safeSlate}/player_exposure.json`,
+      `${baseUrl}/${selectedDate}/${safeSlate}/player_exposures.json`,
+      `${baseUrl}/${selectedDate}/exposure.json`,
+      `${baseUrl}/${selectedDate}/exposures.json`,
+    ];
   }, [baseUrl, selectedDate, selectedSlate]);
 
   useEffect(() => {
@@ -237,7 +245,7 @@ export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, 
   }, [selectedDate, selectedSlate]);
 
   useEffect(() => {
-    if (!analysisUrl || !exposureUrl) return;
+    if (!analysisUrl || exposureUrlCandidates.length === 0) return;
     let cancelled = false;
 
     const load = async () => {
@@ -262,7 +270,29 @@ export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, 
         }
       };
 
-      const [analysisResult, exposureResult] = await Promise.all([fetchJson(analysisUrl), fetchJson(exposureUrl)]);
+      const fetchFirstJson = async (
+        urls: string[],
+      ): Promise<{ ok: boolean; data?: any; error?: string; url?: string }> => {
+        const errors: string[] = [];
+        for (const url of urls) {
+          const result = await fetchJson(url);
+          if (result.ok) return { ok: true, data: result.data, url };
+          errors.push(`${url} -> ${result.error || 'error'}`);
+          // Stop early on non-404 because this is likely a real issue instead of a missing file.
+          if (!String(result.error || '').startsWith('HTTP 404')) {
+            break;
+          }
+        }
+        return {
+          ok: false,
+          error: errors.length > 0 ? errors.join(' | ') : 'Unable to load JSON',
+        };
+      };
+
+      const [analysisResult, exposureResult] = await Promise.all([
+        fetchJson(analysisUrl),
+        fetchFirstJson(exposureUrlCandidates),
+      ]);
       if (cancelled) return;
 
       if (analysisResult.ok) {
@@ -286,7 +316,7 @@ export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, 
     return () => {
       cancelled = true;
     };
-  }, [analysisUrl, exposureUrl]);
+  }, [analysisUrl, exposureUrlCandidates]);
 
   const { rows: exposureRows, unmatchedCount } = useMemo(
     () => parseExposureRows(exposureData, players),
