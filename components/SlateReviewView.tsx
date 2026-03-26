@@ -230,13 +230,20 @@ export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, 
   const exposureUrlCandidates = useMemo(() => {
     if (!baseUrl || !selectedDate || !selectedSlate) return [] as string[];
     const safeSlate = encodeURIComponent(selectedSlate);
+    const rawKey = `${selectedDate}/${selectedSlate}/exposure_tiers.json`;
+    const encodedKey = encodeURIComponent(rawKey);
+    const doubleEncodedKey = encodeURIComponent(encodedKey);
     return [
       `${baseUrl}/${selectedDate}/${safeSlate}/exposure.json`,
       `${baseUrl}/${selectedDate}/${safeSlate}/exposures.json`,
+      `${baseUrl}/${selectedDate}/${safeSlate}/exposure_tiers.json`,
       `${baseUrl}/${selectedDate}/${safeSlate}/player_exposure.json`,
       `${baseUrl}/${selectedDate}/${safeSlate}/player_exposures.json`,
       `${baseUrl}/${selectedDate}/exposure.json`,
       `${baseUrl}/${selectedDate}/exposures.json`,
+      `${baseUrl}/${selectedDate}/exposure_tiers.json`,
+      `${baseUrl}/${encodedKey}`,
+      `${baseUrl}/${doubleEncodedKey}`,
     ];
   }, [baseUrl, selectedDate, selectedSlate]);
 
