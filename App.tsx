@@ -22,6 +22,7 @@ import ReportView from './components/ReportView';
 import { CompareView } from './components/CompareView';
 import { SlateSimLogo } from './components/SlateSimLogo';
 import { SlateRecommendations } from './components/SlateRecommendations';
+import { SlateReviewView } from './components/SlateReviewView';
 
 // Simple error boundary to prevent report page from blanking the UI
 class ErrorBoundary extends React.Component<{ fallback: React.ReactNode }, { hasError: boolean }> {
@@ -588,6 +589,7 @@ const AdminPagePanel: React.FC<{
     { label: 'Optimizer', target: ViewState.OPTIMIZER },
     { label: 'Entries', target: ViewState.ENTRY_MANAGER },
     { label: 'Report', target: ViewState.REPORT },
+    ...(adminViewMode === 'admin' ? [{ label: 'Slate Review', target: ViewState.SLATE_REVIEW }] : []),
     { label: 'Picks', target: ViewState.SLATE_RECOMMENDATIONS },
   ];
   const routeLinks = [
@@ -901,6 +903,12 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
       setView(ViewState.RESEARCH);
     }
   }, [view]);
+
+  useEffect(() => {
+    if ((!isAdmin || adminViewMode !== 'admin') && view === ViewState.SLATE_REVIEW) {
+      setView(ViewState.RESEARCH);
+    }
+  }, [adminViewMode, isAdmin, view]);
 
   useEffect(() => {
     if (!loading) {
@@ -1397,6 +1405,13 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                   body="Upgrade to Soft Launch to unlock post-slate reporting and accuracy breakdowns."
                 />
               )
+            )}
+            {!previewMode && view === ViewState.SLATE_REVIEW && isAdmin && adminViewMode === 'admin' && (
+              <SlateReviewView
+                selectedDate={selectedDate}
+                selectedSlate={selectedSlate}
+                players={state.slate.players || []}
+              />
             )}
             {!previewMode && view === ViewState.SLATE_RECOMMENDATIONS && (
               canAccessPicks ? (

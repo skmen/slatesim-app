@@ -120,6 +120,7 @@ export enum ViewState {
   LOAD = 'load',
   ENTRY_MANAGER = 'entry_manager',
   REPORT = 'report',
+  SLATE_REVIEW = 'slate_review',
   SLATE_NEWS = 'slate_news',
   SLATE_RECOMMENDATIONS = 'slate_recommendations',
 }
@@ -182,7 +183,8 @@ export enum ViewState {
   LOAD = 'LOAD',
   PROJECTIONS = 'PROJECTIONS',
   RESEARCH = 'RESEARCH',
-  OPTIMIZER = 'OPTIMIZER'
+  OPTIMIZER = 'OPTIMIZER',
+  SLATE_REVIEW = 'slate_review',
 }
 
 export interface AppState {
