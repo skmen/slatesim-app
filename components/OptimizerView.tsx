@@ -2689,58 +2689,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                   </table>
                 </div>
               </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 overflow-hidden">
-              <div className="border border-ink/10 rounded-sm p-3 bg-white/60">
-                <h4 className="text-[10px] font-black uppercase tracking-widest text-ink/50 mb-3">Optimizer Tuning</h4>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-4">
-                  {(
-                    [
-                      { key: 'minHamming', label: 'Min Uniquie Players', min: 1, max: 7, step: 1, title: 'Minimum number of unique players between generated lineups.' },
-                      { key: 'patience', label: 'Auto-Stop Limit', min: 10, max: 500, step: 10, title: 'Max cycles to stop at if no improvements.' },
-                      { key: 'generations', label: 'Optimization Cycles', min: 50, max: 2000, step: 50, title: 'How many times the optimizer is run.' },
-                      { key: 'popSize', label: 'Lineup Pool Size', min: 16, max: 512, step: 16, title: 'Number of lineups being evaluated per optimization cylce.' },
-                    ] as { key: 'minHamming' | 'patience' | 'generations' | 'popSize'; label: string; min: number; max: number; step: number; title: string }[]
-                  ).map(({ key, label, min, max, step, title }) => (
-                    <div key={key}>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <label className="text-[9px] font-black uppercase tracking-widest text-ink/40" title={title}>
-                          {label}
-                        </label>
-                        <input
-                          type="number"
-                          min={min}
-                          max={max}
-                          step={step}
-                          value={config[key] as number}
-                          onChange={(e) => {
-                            const val = parseInt(e.target.value, 10);
-                            if (!isNaN(val)) {
-                              setConfig((prev) => ({ ...prev, [key]: Math.min(max, Math.max(min, val)) }));
-                            }
-                          }}
-                          onBlur={(e) => {
-                            const val = parseInt(e.target.value, 10);
-                            setConfig((prev) => ({ ...prev, [key]: isNaN(val) ? min : Math.min(max, Math.max(min, val)) }));
-                          }}
-                          className="w-14 bg-white border border-ink/20 rounded-sm px-1.5 py-0.5 text-[11px] font-mono text-ink text-right focus:border-drafting-orange outline-none"
-                        />
-                      </div>
-                      <input
-                        type="range"
-                        min={min}
-                        max={max}
-                        step={step}
-                        value={config[key] as number}
-                        onChange={(e) => {
-                          setConfig((prev) => ({ ...prev, [key]: parseInt(e.target.value, 10) }));
-                        }}
-                        className="w-full h-1 accent-orange-500 cursor-pointer"
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
-
+            <div className="grid grid-cols-1 gap-4 overflow-hidden">
                 <div className="border border-ink/10 rounded-sm p-3 bg-white/60">
                   <h4 className="text-[10px] font-black uppercase tracking-widest text-ink/50 mb-2">Locked Players</h4>
                   <div className="flex flex-wrap gap-2">

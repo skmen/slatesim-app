@@ -1,1454 +1,1141 @@
-
 import { Lineup, Player } from '../../types';
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const DK_SLOTS = ['PG', 'SG', 'SF', 'PF', 'C', 'G', 'F', 'UTIL'] as const;
-type Slot = (typeof DK_SLOTS)[number];
+type DkSlot = (typeof DK_SLOTS)[number];
+
 const workerScope = self as any;
 
-// ---------------------------------------------------------------------------
-// Interfaces
-// ---------------------------------------------------------------------------
+interface PlayerWithMetrics extends Player {
+  dvp_rank?: number;
+  value_score?: number;
+  ceiling_final?: number;
+  ceiling_gap_adjusted?: number;
+  minutes_multiplier?: number;
+  promoted_starter?: boolean;
+  game_id?: string;
+  tier?: 'elite' | 'mid_range' | 'value' | 'punt';
+  own_mean?: number;
+  minutes_proj?: number;
+}
 
-interface OptimizerConfig {
-  numLineups?: number;
-  salaryCap?: number;
-  salaryFloor?: number;
-  salary_floor?: number;
-  maxExposure?: number;
-  ceilingWeight?: number;
-  ceiling_weight?: number;
-  ownershipPenalty?: number;
-  ownership_penalty?: number;
-  popSize?: number;
-  pop_size?: number;
-  generations?: number;
-  patience?: number;
-  minHamming?: number;
-  min_hamming?: number;
-  primaryStackSize?: number;
-  primary_stack_size?: number;
-  primaryStackBonus?: number;
-  primary_stack_bonus?: number;
-  gameStackSize?: number;
-  game_stack_size?: number;
-  gameStackBonus?: number;
-  game_stack_bonus?: number;
-  enableThetaBias?: boolean;
-  enable_theta_bias?: boolean;
-  thetaBiasStrength?: number;
-  theta_bias_strength?: number;
-  enableStackScoring?: boolean;
-  enable_stack_scoring?: boolean;
-  stackMinGameTotal?: number;
-  stack_min_game_total?: number;
-  deltaTheta?: number;
-  delta_theta?: number;
+interface AnchorCombo {
+  players: PlayerWithMetrics[];
+  ceiling_sum: number;
+  projection_sum: number;
+  avg_ownership: number;
+  score: number;
+  repetitions: number;
+}
+
+interface GeneratorConfig {
+  n_lineups: number;
+  global_max_exposure_pct: number;
+  min_hamming_distance: number;
+  chalk_threshold_own: number;
+  chalk_threshold_proj: number;
+  leverage_ceiling_gap_min: number;
+  leverage_value_score_min: number;
+  filler_value_score_min: number;
+  max_anchor_appearances: number;
+  max_leverage_appearances: number;
+  max_filler_appearances: number;
+  salary_cap: number;
+  salary_floor: number;
+  required_positions: Record<DkSlot, number>;
+}
+
+interface ExposureBound {
+  min: number;
+  max: number;
+}
+
+interface ConfirmedLineupInfo {
+  status?: string;
+  minutes_projected?: number;
+  depth_rank?: number;
 }
 
 interface RequestPayload {
   players: Player[];
-  config?: OptimizerConfig;
+  config?: Record<string, unknown>;
+  exposures?:
+    | Map<string, { min?: number; max?: number }>
+    | Array<[string, { min?: number; max?: number }]>
+    | Record<string, { min?: number; max?: number }>;
+  locks?: Set<string> | string[];
+  excludes?: Set<string> | string[];
+  confirmedLineups?:
+    | Map<string, ConfirmedLineupInfo>
+    | Array<[string, ConfirmedLineupInfo]>
+    | Record<string, ConfirmedLineupInfo>;
 }
 
-interface QIEAConfig {
-  popSize:            number;   // default 128
-  generations:        number;   // default 500
-  patience:           number;   // default 150
-  minHamming:         number;   // default 3
-  deltaTheta:         number;   // default 0.01 * PI
-
-  enableThetaBias:    boolean;  // default true
-  thetaBiasStrength:  number;   // default 0.5
-
-  enableStackScoring: boolean;  // default true
-  primaryStackSize:   number;   // default 3
-  primaryStackBonus:  number;   // default 5.0
-  gameStackSize:      number;   // default 2
-  gameStackBonus:     number;   // default 3.0
-
-  ceilingWeight:      number;   // default 0.25
-  ownershipPenalty:   number;   // default 0.10
-  stackMinGameTotal:  number;   // default 215
-  maxExposure:        number;   // global max exposure % for all non-locked players, default 100
-}
-
-interface QIEAPlayer {
-  index:      number;   // index into the original Player[] from slate.json
-  salary:     number;
-  projection: number;   // GPP-adjusted (ceiling blended)
-  ownership:  number;   // 0-100
-  team:       string;
-  opponent:   string;
-  gameSlug:   string;
-  gameTotal:  number;
-  positions:      string[];
-  locked:         boolean;
-  excluded:       boolean;
-  minExposurePct: number;   // 0-100, from optimizerMinExposure
-  maxExposurePct: number;   // 0-100, from optimizerMaxExposure or global cap
-}
-
-interface ArchiveEntry {
-  lineup:  Uint8Array;  // binary vector, length n_players
-  score:   number;
-  players: number[];    // sorted selected QIEAPlayer indexes, length 8
-}
-
-interface RepairResult {
-  lineup:     Uint8Array;
-  playerIdxs: number[];  // exactly 8 QIEAPlayer indexes, in slot order
-  salary:     number;
-  valid:      boolean;
-}
-
-interface ExposureBounds {
-  minRequiredByPlayer: number[];
-  maxAllowedByPlayer: number[];
-}
-
-// ---------------------------------------------------------------------------
-// Utility functions (preserved from original)
-// ---------------------------------------------------------------------------
-
-const safeNumber = (value: unknown, fallback = 0): number => {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+const DEFAULT_CONFIG: GeneratorConfig = {
+  n_lineups: 20,
+  global_max_exposure_pct: 100,
+  min_hamming_distance: 2,
+  chalk_threshold_own: 15,
+  chalk_threshold_proj: 45,
+  leverage_ceiling_gap_min: 10,
+  leverage_value_score_min: 45,
+  filler_value_score_min: 30,
+  max_anchor_appearances: 10,
+  max_leverage_appearances: 5,
+  max_filler_appearances: 3,
+  salary_cap: 50000,
+  salary_floor: 0,
+  required_positions: { PG: 1, SG: 1, SF: 1, PF: 1, C: 1, G: 1, F: 1, UTIL: 1 },
 };
 
-const clamp = (value: number, min: number, max: number): number => {
-  if (value < min) return min;
-  if (value > max) return max;
-  return value;
+const clamp = (val: number, min: number, max: number): number => Math.min(max, Math.max(min, val));
+
+const safeNumber = (val: unknown, fallback = 0): number => {
+  const num = Number(val);
+  return Number.isFinite(num) ? num : fallback;
 };
 
-const normKey = (value: string): string =>
-  String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const linearScale = (val: number, minVal: number, maxVal: number): number => {
+  if (!Number.isFinite(val) || maxVal <= minVal) return 0;
+  return clamp(((val - minVal) / (maxVal - minVal)) * 100, 0, 100);
+};
 
-const readByKeys = (obj: Record<string, any> | undefined, keys: string[]): any => {
-  if (!obj || typeof obj !== 'object') return undefined;
-  const keyMap = new Map<string, string>();
-  Object.keys(obj).forEach((k) => keyMap.set(normKey(k), k));
+const normalizeOwnership = (val: number): number => {
+  if (!Number.isFinite(val)) return 0;
+  if (val <= 1) return clamp(val * 100, 0, 100);
+  return clamp(val, 0, 100);
+};
+
+const getNumeric = (player: Player, keys: string[], fallback = 0): number => {
   for (const key of keys) {
-    const actualKey = keyMap.get(normKey(key));
-    if (actualKey) return obj[actualKey];
+    const raw = (player as any)?.[key];
+    if (raw === undefined || raw === null || raw === '') continue;
+    const parsed = Number(typeof raw === 'string' ? raw.replace('%', '') : raw);
+    if (Number.isFinite(parsed)) return parsed;
   }
-  return undefined;
+  return fallback;
 };
 
-const readFromPlayer = (player: Player, keys: string[]): any => {
-  const sources = [
-    player as Record<string, any>,
-    (player as any).slateData,
-    (player as any).advancedMetrics,
-    (player as any).statsProfile,
-  ];
-  for (const source of sources) {
-    const value = readByKeys(source, keys);
-    if (value !== undefined && value !== null && value !== '') return value;
-  }
-  return undefined;
+const getStatus = (player: Player): string => String((player as any)?.status || '').toLowerCase();
+
+const getOwnership = (player: Player): number => {
+  const raw = getNumeric(player, ['OWN_MEAN', 'ownership', 'projectedOwnership', 'projOwnership', 'own'], 0);
+  return normalizeOwnership(raw);
 };
 
-const readNumericMaybe = (player: Player, keys: string[]): number | undefined => {
-  const raw = readFromPlayer(player, keys);
-  if (raw === undefined || raw === null || raw === '') return undefined;
-  const numeric = Number(typeof raw === 'string' ? raw.replace('%', '') : raw);
-  return Number.isFinite(numeric) ? numeric : undefined;
+const getMinutesProjection = (player: Player): number => {
+  return getNumeric(player, ['minutesProjection', 'MINUTES_PROJ', 'minutes_proj', 'proj_minutes'], 0);
 };
 
-const readString = (player: Player, keys: string[]): string => {
-  const raw = readFromPlayer(player, keys);
-  if (raw === undefined || raw === null) return '';
-  return String(raw).trim();
+const getCeiling = (player: Player): number => {
+  const projected = safeNumber(player.projection, 0);
+  return getNumeric(
+    player,
+    ['ceiling', 'ceilingProjection', 'ceilingProj', 'projectedCeiling', 'fptsCeiling', 'dkCeiling'],
+    projected,
+  );
 };
 
 const parsePositions = (position: string): string[] => {
   return String(position || '')
-    .split(/[\/,\s]+/)
-    .map((p) => p.trim().toUpperCase())
+    .toUpperCase()
+    .split(/[\s,\/]+/)
+    .map((x) => x.trim())
     .filter(Boolean);
 };
 
-const canFitDK = (player: Player, slot: Slot): boolean => {
-  const pos = parsePositions(player.position);
-  switch (slot) {
-    case 'PG':   return pos.includes('PG');
-    case 'SG':   return pos.includes('SG');
-    case 'SF':   return pos.includes('SF');
-    case 'PF':   return pos.includes('PF');
-    case 'C':    return pos.includes('C');
-    case 'G':    return pos.includes('PG') || pos.includes('SG');
-    case 'F':    return pos.includes('SF') || pos.includes('PF');
-    case 'UTIL': return true;
-    default:     return false;
+const getEligibleSlots = (position: string): DkSlot[] => {
+  const pos = parsePositions(position);
+  const slots = new Set<DkSlot>();
+  if (pos.includes('PG')) {
+    slots.add('PG');
+    slots.add('G');
+    slots.add('UTIL');
   }
+  if (pos.includes('SG')) {
+    slots.add('SG');
+    slots.add('G');
+    slots.add('UTIL');
+  }
+  if (pos.includes('SF')) {
+    slots.add('SF');
+    slots.add('F');
+    slots.add('UTIL');
+  }
+  if (pos.includes('PF')) {
+    slots.add('PF');
+    slots.add('F');
+    slots.add('UTIL');
+  }
+  if (pos.includes('C')) {
+    slots.add('C');
+    slots.add('UTIL');
+  }
+  if (pos.includes('G')) {
+    slots.add('G');
+    slots.add('UTIL');
+  }
+  if (pos.includes('F')) {
+    slots.add('F');
+    slots.add('UTIL');
+  }
+  if (slots.size === 0) slots.add('UTIL');
+  return Array.from(slots);
 };
 
-const normalizeOwnership = (value: number): number => {
-  if (!Number.isFinite(value)) return 0;
-  if (value <= 1) return clamp(value * 100, 0, 100);
-  return clamp(value, 0, 100);
+const canAssignDraftKingsSlots = (lineup: PlayerWithMetrics[]): boolean => {
+  if (lineup.length !== DK_SLOTS.length) return false;
+
+  const slotOrder = [...DK_SLOTS].sort((a, b) => {
+    const aCount = lineup.filter((p) => getEligibleSlots(p.position).includes(a)).length;
+    const bCount = lineup.filter((p) => getEligibleSlots(p.position).includes(b)).length;
+    return aCount - bCount;
+  });
+
+  const used = new Set<number>();
+
+  const dfs = (slotIndex: number): boolean => {
+    if (slotIndex >= slotOrder.length) return true;
+    const slot = slotOrder[slotIndex];
+
+    for (let i = 0; i < lineup.length; i++) {
+      if (used.has(i)) continue;
+      if (!getEligibleSlots(lineup[i].position).includes(slot)) continue;
+      used.add(i);
+      if (dfs(slotIndex + 1)) return true;
+      used.delete(i);
+    }
+
+    return false;
+  };
+
+  return dfs(0);
 };
 
-// ---------------------------------------------------------------------------
-// Player field readers (preserved from original)
-// ---------------------------------------------------------------------------
-
-const getOwnershipPctMaybe = (player: Player): number | undefined => {
-  const own = readNumericMaybe(player, ['ownership', 'projectedOwnership', 'projOwnership', 'own', 'OWN']);
-  if (!Number.isFinite(Number(own))) return undefined;
-  return normalizeOwnership(Number(own));
+const getSalaryTier = (salary: number): PlayerWithMetrics['tier'] => {
+  if (salary >= 9000) return 'elite';
+  if (salary >= 5000) return 'mid_range';
+  if (salary >= 3500) return 'value';
+  return 'punt';
 };
 
-const getTeamMaybe = (player: Player): string => {
-  return readString(player, ['team', 'teamAbbr', 'team_abbr', 'teamId', 'team_id', 'TEAM']);
+const normalizeDvpDiffToRank = (dvpDiff: number): number => {
+  const clamped = clamp(dvpDiff, -5, 5);
+  const rank = 15 - clamped * 3;
+  return Math.round(clamp(rank, 1, 30));
 };
 
-const getOpponentMaybe = (player: Player): string => {
-  return readString(player, ['opponent', 'opp', 'OPP', 'opposingTeam', 'opposing_team', 'opp_team']);
+const calculateMinuteMultiplier = (projMin: number, confirmedMin: number, isPromoted: boolean): number => {
+  if (projMin <= 0 || confirmedMin <= 0) return 1;
+
+  const rawMultiplier = confirmedMin / projMin;
+
+  if (isPromoted && rawMultiplier >= 1.8) {
+    return Math.min(1.8, rawMultiplier * 0.95);
+  }
+  if (isPromoted && rawMultiplier >= 1.3) {
+    return Math.min(1.6, rawMultiplier * 0.9);
+  }
+  if (rawMultiplier > 1.1) {
+    return Math.min(1.2, rawMultiplier * 0.85);
+  }
+  return 1;
 };
 
-const getGameTotalMaybe = (player: Player): number | undefined => {
-  return readNumericMaybe(player, [
-    'gameTotal', 'game_total', 'overUnder', 'over_under',
-    'total', 'TOTAL', 'gameOu', 'game_ou', 'slateTotal',
-  ]);
+const extractGameId = (player: Player): string => {
+  const team = String(player.team || 'UNK').toUpperCase().trim();
+  const opp = String(player.opponent || 'UNK').toUpperCase().trim();
+  return [team, opp].sort().join('_vs_');
 };
 
-const getGameSlug = (team: string, opponent: string): string => {
-  const parts = [team.toLowerCase().trim(), opponent.toLowerCase().trim()].sort();
-  return parts.join('_vs_');
+const calculateValueScore = (player: PlayerWithMetrics, dvpRank: number): number => {
+  const salary = Math.max(1, safeNumber(player.salary, 0));
+  const projection = Math.max(0, safeNumber(player.projection, 0));
+  const ceiling = Math.max(projection, safeNumber(player.ceiling, projection));
+  const ownership = getOwnership(player);
+
+  const tierWeights: Record<NonNullable<PlayerWithMetrics['tier']>, Record<string, number>> = {
+    elite: { value: 0.15, dvp: 0.15, form: 0.25, ceiling: 0.25, ownership: 0.1, vegas: 0.1 },
+    mid_range: { value: 0.25, dvp: 0.25, form: 0.25, ceiling: 0.1, ownership: 0.05, vegas: 0.1 },
+    value: { value: 0.35, dvp: 0.2, form: 0.2, ceiling: 0.1, ownership: 0.05, vegas: 0.1 },
+    punt: { value: 0.4, dvp: 0.15, form: 0.2, ceiling: 0.1, ownership: 0.1, vegas: 0.05 },
+  };
+
+  const tier = getSalaryTier(salary);
+  const weights = tierWeights[tier];
+
+  const valueSub = linearScale(projection / (salary / 1000), 3, 7.5);
+  const dvpSub = clamp(((30 - dvpRank) / 29) * 100, 0, 100);
+  const formSub = 50;
+  const ceilingSub = projection > 0 ? linearScale(ceiling / projection, 1, 2) : 50;
+  const ownershipSub = clamp(((50 - ownership) / 50) * 100, 0, 100);
+  const vegasSub = 50;
+
+  const weighted =
+    valueSub * weights.value +
+    dvpSub * weights.dvp +
+    formSub * weights.form +
+    ceilingSub * weights.ceiling +
+    ownershipSub * weights.ownership +
+    vegasSub * weights.vegas;
+
+  const totalWeight = Object.values(weights).reduce((sum, n) => sum + n, 0);
+  return clamp(weighted / totalWeight, 0, 100);
 };
 
-const getCeilingTieBreaker = (player: Player): number => {
-  return Math.max(0, safeNumber(readNumericMaybe(player, [
-    'ceiling',
-    'ceilingProjection',
-    'ceilingProj',
-    'projectedCeiling',
-    'fptsCeiling',
-    'dkCeiling',
-  ]), 0));
+const toStringSet = (input: unknown): Set<string> => {
+  if (!input) return new Set<string>();
+  if (input instanceof Set) return new Set(Array.from(input).map((x) => String(x)));
+  if (Array.isArray(input)) return new Set(input.map((x) => String(x)));
+  return new Set<string>();
 };
 
-// ---------------------------------------------------------------------------
-// Slot index helper
-// ---------------------------------------------------------------------------
+const parseOptionalNumber = (val: unknown): number | undefined => {
+  if (val === undefined || val === null || val === '') return undefined;
+  const parsed = Number(val);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
 
-const slotIndex = (slot: Slot): number => DK_SLOTS.indexOf(slot);
+const toExposureMap = (
+  input: RequestPayload['exposures'],
+): Map<string, { min?: number; max?: number }> => {
+  if (!input) return new Map();
+  if (input instanceof Map) return new Map(input);
+  if (Array.isArray(input)) return new Map(input);
+  if (typeof input === 'object') {
+    return new Map(
+      Object.entries(input).map(([k, v]) => [
+        String(k),
+        {
+          min: parseOptionalNumber((v as any)?.min),
+          max: parseOptionalNumber((v as any)?.max),
+        },
+      ]),
+    );
+  }
+  return new Map();
+};
 
-// ---------------------------------------------------------------------------
-// Config resolution
-// ---------------------------------------------------------------------------
+const toConfirmedLineups = (input: RequestPayload['confirmedLineups']): Map<string, ConfirmedLineupInfo> => {
+  if (!input) return new Map();
+  if (input instanceof Map) return new Map(input);
+  if (Array.isArray(input)) return new Map(input);
+  if (typeof input === 'object') {
+    return new Map(Object.entries(input).map(([k, v]) => [String(k), (v || {}) as ConfirmedLineupInfo]));
+  }
+  return new Map();
+};
 
-const resolveQIEAConfig = (config?: OptimizerConfig): QIEAConfig => {
-  const popSize = Math.max(
-    8,
-    Math.floor(safeNumber((config as any)?.popSize ?? (config as any)?.pop_size, 128))
-  );
-  const generations = Math.max(
+const percentageToCount = (value: number, total: number, roundMode: 'min' | 'max'): number => {
+  if (!Number.isFinite(value)) return roundMode === 'min' ? 0 : total;
+
+  let pct = value;
+  if (pct > 0 && pct <= 1) {
+    pct = pct * 100;
+  }
+  pct = clamp(pct, 0, 100);
+
+  const raw = (pct / 100) * total;
+  return roundMode === 'min' ? Math.ceil(raw - 1e-9) : Math.floor(raw + 1e-9);
+};
+
+const resolveGeneratorConfig = (raw?: Record<string, unknown>): GeneratorConfig => {
+  const nLineups = Math.max(
     1,
-    Math.floor(safeNumber((config as any)?.generations, 500))
+    Math.floor(
+      safeNumber(
+        raw?.n_lineups ?? raw?.numLineups ?? raw?.nLineups,
+        DEFAULT_CONFIG.n_lineups,
+      ),
+    ),
   );
-  const patience = Math.max(
-    1,
-    Math.floor(safeNumber((config as any)?.patience, 150))
-  );
+
   const minHamming = Math.max(
     1,
-    Math.floor(safeNumber((config as any)?.minHamming ?? (config as any)?.min_hamming, 3))
+    Math.floor(
+      safeNumber(
+        raw?.min_hamming_distance ?? raw?.minHamming ?? raw?.min_hamming,
+        DEFAULT_CONFIG.min_hamming_distance,
+      ),
+    ),
   );
-  const deltaTheta = clamp(
-    safeNumber((config as any)?.deltaTheta ?? (config as any)?.delta_theta, 0.01 * Math.PI),
-    0.001 * Math.PI,
-    0.1 * Math.PI
+
+  const salaryCap = Math.max(
+    1000,
+    Math.floor(safeNumber(raw?.salary_cap ?? raw?.salaryCap, DEFAULT_CONFIG.salary_cap)),
   );
-  const enableThetaBias =
-    (config as any)?.enableThetaBias ?? (config as any)?.enable_theta_bias ?? true;
-  const thetaBiasStrength = clamp(
-    safeNumber((config as any)?.thetaBiasStrength ?? (config as any)?.theta_bias_strength, 0.5),
-    0.0,
-    1.0
-  );
-  const enableStackScoring =
-    (config as any)?.enableStackScoring ?? (config as any)?.enable_stack_scoring ?? true;
-  const primaryStackSize = Math.max(
+
+  const salaryFloorRaw = safeNumber(raw?.salary_floor ?? raw?.salaryFloor, DEFAULT_CONFIG.salary_floor);
+  const salaryFloor = Math.max(0, Math.min(salaryCap, Math.floor(salaryFloorRaw)));
+
+  const maxAnchor = Math.max(
     1,
-    Math.floor(safeNumber((config as any)?.primaryStackSize ?? (config as any)?.primary_stack_size, 3))
+    Math.floor(
+      safeNumber(raw?.max_anchor_appearances, Math.max(DEFAULT_CONFIG.max_anchor_appearances, Math.ceil(nLineups * 0.5))),
+    ),
   );
-  const primaryStackBonus = safeNumber(
-    (config as any)?.primaryStackBonus ?? (config as any)?.primary_stack_bonus,
-    5.0
-  );
-  const gameStackSize = Math.max(
+  const maxLeverage = Math.max(
     1,
-    Math.floor(safeNumber((config as any)?.gameStackSize ?? (config as any)?.game_stack_size, 2))
+    Math.floor(
+      safeNumber(raw?.max_leverage_appearances, Math.max(DEFAULT_CONFIG.max_leverage_appearances, Math.ceil(nLineups * 0.25))),
+    ),
   );
-  const gameStackBonus = safeNumber(
-    (config as any)?.gameStackBonus ?? (config as any)?.game_stack_bonus,
-    3.0
-  );
-  const ceilingWeight = clamp(
-    safeNumber((config as any)?.ceilingWeight ?? (config as any)?.ceiling_weight, 0.25),
-    0,
-    0.5
-  );
-  const ownershipPenalty = Math.max(
-    0,
-    safeNumber((config as any)?.ownershipPenalty ?? (config as any)?.ownership_penalty, 0.10)
-  );
-  const stackMinGameTotal = Math.max(
-    0,
-    safeNumber((config as any)?.stackMinGameTotal ?? (config as any)?.stack_min_game_total, 215)
+  const maxFiller = Math.max(
+    1,
+    Math.floor(
+      safeNumber(raw?.max_filler_appearances, Math.max(DEFAULT_CONFIG.max_filler_appearances, Math.ceil(nLineups * 0.15))),
+    ),
   );
 
   return {
-    popSize,
-    generations,
-    patience,
-    minHamming,
-    deltaTheta,
-    enableThetaBias: Boolean(enableThetaBias),
-    thetaBiasStrength,
-    enableStackScoring: Boolean(enableStackScoring),
-    primaryStackSize,
-    primaryStackBonus,
-    gameStackSize,
-    gameStackBonus,
-    ceilingWeight,
-    ownershipPenalty,
-    stackMinGameTotal,
-    maxExposure: clamp(safeNumber((config as any)?.maxExposure, 100), 0, 100),
+    ...DEFAULT_CONFIG,
+    n_lineups: nLineups,
+    global_max_exposure_pct: clamp(
+      safeNumber(raw?.global_max_exposure_pct ?? raw?.maxExposure ?? raw?.max_exposure, DEFAULT_CONFIG.global_max_exposure_pct),
+      0,
+      100,
+    ),
+    min_hamming_distance: minHamming,
+    salary_cap: salaryCap,
+    salary_floor: salaryFloor,
+    chalk_threshold_own: safeNumber(raw?.chalk_threshold_own, DEFAULT_CONFIG.chalk_threshold_own),
+    chalk_threshold_proj: safeNumber(raw?.chalk_threshold_proj, DEFAULT_CONFIG.chalk_threshold_proj),
+    leverage_ceiling_gap_min: safeNumber(raw?.leverage_ceiling_gap_min, DEFAULT_CONFIG.leverage_ceiling_gap_min),
+    leverage_value_score_min: safeNumber(raw?.leverage_value_score_min, DEFAULT_CONFIG.leverage_value_score_min),
+    filler_value_score_min: safeNumber(raw?.filler_value_score_min, DEFAULT_CONFIG.filler_value_score_min),
+    max_anchor_appearances: maxAnchor,
+    max_leverage_appearances: maxLeverage,
+    max_filler_appearances: maxFiller,
   };
 };
 
-const resolveRunConfig = (
-  config?: OptimizerConfig
-): { salaryCap: number; salaryFloor: number; numLineups: number } => {
-  const numLineups = Math.max(1, Math.floor(safeNumber(config?.numLineups, 20)));
-  const salaryCap = Math.max(1, Math.floor(safeNumber(config?.salaryCap, 50000)));
-  const salaryFloor = clamp(
-    Math.floor(safeNumber(
-      (config as any)?.salaryFloor ?? (config as any)?.salary_floor,
-      49000
-    )),
-    0,
-    salaryCap
-  );
-  return { numLineups, salaryCap, salaryFloor };
-};
+const resolveExposureBounds = (
+  players: PlayerWithMetrics[],
+  targetLineups: number,
+  globalMaxPct: number,
+  explicitExposureMap: Map<string, { min?: number; max?: number }>,
+  locks: Set<string>,
+): Map<string, ExposureBound> => {
+  const out = new Map<string, ExposureBound>();
 
-// ---------------------------------------------------------------------------
-// Player preprocessing
-// ---------------------------------------------------------------------------
+  for (const player of players) {
+    const explicit = explicitExposureMap.get(player.id);
 
-const preprocessPlayers = (
-  players: Player[],
-  config: QIEAConfig,
-  _salaryCap: number,
-): QIEAPlayer[] => {
-  const result: QIEAPlayer[] = [];
+    const playerMin = safeNumber((player as any)?.optimizerMinExposure, NaN);
+    const playerMax = safeNumber((player as any)?.optimizerMaxExposure, NaN);
 
-  for (let i = 0; i < players.length; i++) {
-    const player = players[i];
+    const minPct = Number.isFinite(explicit?.min as number)
+      ? (explicit?.min as number)
+      : Number.isFinite(playerMin)
+        ? playerMin
+        : 0;
 
-    const isExcluded = Boolean(
-      (player as any).optimizerExcluded || (player as any).excluded
-    );
-    if (isExcluded) continue;
+    const maxPct = Number.isFinite(explicit?.max as number)
+      ? (explicit?.max as number)
+      : Number.isFinite(playerMax)
+        ? playerMax
+        : globalMaxPct;
 
-    // Must be eligible for at least one DK slot
-    const hasSlot = DK_SLOTS.some((slot) => canFitDK(player, slot));
-    if (!hasSlot) continue;
-
-    const positions = parsePositions(player.position);
-
-    // GPP-adjusted projection
-    const rawProjection = Math.max(0, safeNumber(player.projection, 0));
-    const rawCeil = getCeilingTieBreaker(player);
-    const effectiveCeil = rawCeil > 0 ? rawCeil : rawProjection;
-    const adjustedProjection =
-      rawProjection * (1 - config.ceilingWeight) +
-      effectiveCeil * config.ceilingWeight;
-
-    const ownRaw = getOwnershipPctMaybe(player);
-    const ownership = ownRaw !== undefined ? ownRaw : 0;
-
-    const team = getTeamMaybe(player);
-    const opponent = getOpponentMaybe(player);
-    const gameSlug = getGameSlug(team, opponent);
-
-    const gameTotalRaw = getGameTotalMaybe(player);
-    const gameTotal = gameTotalRaw !== undefined ? gameTotalRaw : 220;
-
-    const locked = Boolean((player as any).optimizerLocked);
-
-    // Low-total game filter — bypass for locked players (user explicitly wants them)
-    if (
-      !locked &&
-      gameTotalRaw !== undefined &&
-      gameTotalRaw > 0 &&
-      gameTotalRaw < config.stackMinGameTotal
-    ) {
+    if (locks.has(player.id)) {
+      out.set(player.id, { min: targetLineups, max: targetLineups });
       continue;
     }
 
-    // Per-player exposure bounds (component stamps these on each player before sending)
-    const rawMinExp = safeNumber((player as any).optimizerMinExposure, 0);
-    const rawMaxExp = (player as any).optimizerMaxExposure !== undefined
-      ? safeNumber((player as any).optimizerMaxExposure, config.maxExposure)
-      : config.maxExposure;
-    const minExposurePct = locked ? 100 : clamp(rawMinExp, 0, 100);
-    const maxExposurePct = locked ? 100 : clamp(rawMaxExp, minExposurePct, 100);
-    if (!locked && maxExposurePct <= 0) {
-      // Treat 0% max exposure as explicit exclusion to avoid wasting search effort.
-      continue;
-    }
+    const minCount = percentageToCount(minPct, targetLineups, 'min');
+    const maxCount = Math.max(minCount, percentageToCount(maxPct, targetLineups, 'max'));
 
-    result.push({
-      index: i,
-      salary: Math.max(0, safeNumber(player.salary, 0)),
-      projection: adjustedProjection,
-      ownership,
-      team,
-      opponent,
-      gameSlug,
-      gameTotal,
-      positions,
-      locked,
-      excluded: false,
-      minExposurePct,
-      maxExposurePct,
+    out.set(player.id, {
+      min: clamp(minCount, 0, targetLineups),
+      max: clamp(maxCount, 0, targetLineups),
     });
   }
 
+  return out;
+};
+
+const enrichPlayersWithMetrics = (
+  players: Player[],
+  confirmedLineups: Map<string, ConfirmedLineupInfo>,
+): PlayerWithMetrics[] => {
+  return players.map((player) => {
+    const enriched: PlayerWithMetrics = { ...player };
+
+    const dvpDiff = getNumeric(player, ['OPP_DEF_ONOFF_FP_ALLOWED_DIFF_POS', 'dvp_diff', 'dvpDiff'], 0);
+    enriched.dvp_rank = normalizeDvpDiffToRank(dvpDiff);
+
+    const ownMean = getOwnership(player);
+    enriched.own_mean = ownMean;
+
+    const minutesProjection = getMinutesProjection(player);
+    enriched.minutes_proj = minutesProjection;
+
+    enriched.tier = getSalaryTier(safeNumber(player.salary, 0));
+    enriched.value_score = calculateValueScore(enriched, enriched.dvp_rank);
+
+    const confirmed = confirmedLineups.get(player.id);
+    if (confirmed) {
+      const confirmedMinutes = safeNumber(confirmed.minutes_projected, minutesProjection || 20);
+      const projectedMinutes = Math.max(1, minutesProjection || 20);
+      const isPromoted = safeNumber(confirmed.depth_rank, 99) === 1 && ownMean > 5;
+
+      enriched.minutes_multiplier = calculateMinuteMultiplier(projectedMinutes, confirmedMinutes, isPromoted);
+      enriched.promoted_starter = isPromoted;
+      enriched.ceiling_final = getCeiling(player) * enriched.minutes_multiplier;
+    } else {
+      enriched.minutes_multiplier = 1;
+      enriched.promoted_starter = false;
+      enriched.ceiling_final = getCeiling(player);
+    }
+
+    enriched.ceiling_gap_adjusted = safeNumber(enriched.ceiling_final, 0) - safeNumber(player.projection, 0);
+    enriched.game_id = extractGameId(player);
+
+    return enriched;
+  });
+};
+
+const identifyChalk = (players: PlayerWithMetrics[], config: GeneratorConfig): PlayerWithMetrics[] => {
+  return players.filter(
+    (p) =>
+      p.own_mean !== undefined &&
+      p.own_mean >= config.chalk_threshold_own &&
+      safeNumber(p.projection, 0) >= config.chalk_threshold_proj &&
+      getStatus(p) !== 'out',
+  );
+};
+
+const combinations = <T,>(arr: T[], size: number): T[][] => {
+  if (size <= 0 || arr.length < size) return [];
+  const result: T[][] = [];
+
+  const recurse = (start: number, current: T[]) => {
+    if (current.length === size) {
+      result.push([...current]);
+      return;
+    }
+
+    for (let i = start; i < arr.length; i++) {
+      current.push(arr[i]);
+      recurse(i + 1, current);
+      current.pop();
+    }
+  };
+
+  recurse(0, []);
   return result;
 };
 
-// ---------------------------------------------------------------------------
-// Eligibility matrix — 8 x n_players boolean matrix
-// ---------------------------------------------------------------------------
+const generateAnchorCombos = (
+  chalkPlayers: PlayerWithMetrics[],
+  fallbackPlayers: PlayerWithMetrics[],
+): AnchorCombo[] => {
+  const source = (chalkPlayers.length >= 2 ? chalkPlayers : fallbackPlayers)
+    .slice()
+    .sort((a, b) => safeNumber(b.ceiling_final, 0) - safeNumber(a.ceiling_final, 0));
 
-const canFitDKFromPositions = (positions: string[], slot: Slot): boolean => {
-  switch (slot) {
-    case 'PG':   return positions.includes('PG');
-    case 'SG':   return positions.includes('SG');
-    case 'SF':   return positions.includes('SF');
-    case 'PF':   return positions.includes('PF');
-    case 'C':    return positions.includes('C');
-    case 'G':    return positions.includes('PG') || positions.includes('SG');
-    case 'F':    return positions.includes('SF') || positions.includes('PF');
-    case 'UTIL': return true;
-    default:     return false;
+  const top = source.slice(0, 8);
+  if (top.length === 0) return [];
+
+  const combos2 = combinations(top, Math.min(2, top.length)).filter((c) => c.length === 2);
+  const combos3 = top.length >= 3 ? combinations(top, 3) : [];
+  const base = [...combos2, ...combos3];
+
+  if (base.length === 0) {
+    return [
+      {
+        players: [top[0]],
+        ceiling_sum: safeNumber(top[0].ceiling_final, top[0].projection),
+        projection_sum: safeNumber(top[0].projection, 0),
+        avg_ownership: safeNumber(top[0].own_mean, 0),
+        score: safeNumber(top[0].ceiling_final, top[0].projection),
+        repetitions: 0,
+      },
+    ];
   }
+
+  return base
+    .map((combo) => {
+      const ceilingSum = combo.reduce((sum, p) => sum + safeNumber(p.ceiling_final, p.projection), 0);
+      const projectionSum = combo.reduce((sum, p) => sum + safeNumber(p.projection, 0), 0);
+      const avgOwnership = combo.reduce((sum, p) => sum + safeNumber(p.own_mean, 0), 0) / combo.length;
+      return {
+        players: combo,
+        ceiling_sum: ceilingSum,
+        projection_sum: projectionSum,
+        avg_ownership: avgOwnership,
+        score: ceilingSum * (1 - avgOwnership / 100),
+        repetitions: 0,
+      };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 30);
 };
 
-const buildEligibilityMatrix = (players: QIEAPlayer[]): boolean[][] => {
-  const n = players.length;
-  const matrix: boolean[][] = DK_SLOTS.map(() => new Array<boolean>(n).fill(false));
-  for (let j = 0; j < n; j++) {
-    for (let s = 0; s < DK_SLOTS.length; s++) {
-      matrix[s][j] = canFitDKFromPositions(players[j].positions, DK_SLOTS[s]);
-    }
-  }
-  return matrix;
-};
+const layerKey = (playerId: string, layer: 'anchor' | 'leverage' | 'filler'): string => `${layer}:${playerId}`;
 
-// ---------------------------------------------------------------------------
-// Layer 1: Theta initialization with game-total bias
-// ---------------------------------------------------------------------------
-
-const initThetas = (
-  players: QIEAPlayer[],
-  popSize: number,
-  config: QIEAConfig,
-): Float32Array[] => {
-  const n = players.length;
-  const BASE = Math.PI / 4;
-  const thetas: Float32Array[] = Array.from({ length: popSize }, () =>
-    new Float32Array(n).fill(BASE)
-  );
-
-  if (config.enableThetaBias) {
-    let maxTotal = 0;
-    for (const p of players) {
-      if (p.gameTotal > maxTotal) maxTotal = p.gameTotal;
-    }
-    if (maxTotal > 0) {
-      for (let i = 0; i < popSize; i++) {
-        for (let j = 0; j < n; j++) {
-          const boost =
-            (players[j].gameTotal / maxTotal) *
-            config.thetaBiasStrength *
-            (Math.PI / 8);
-          thetas[i][j] = clamp(BASE + boost, 0.001, Math.PI / 2 - 0.001);
-        }
-      }
-    }
-  }
-
-  // Min-exposure bias: scale theta upward proportional to required exposure %
-  // A player at 50% min exposure gets a proportional push toward PI/2
-  for (let j = 0; j < n; j++) {
-    const minPct = players[j].minExposurePct;
-    if (minPct > 0 && !players[j].locked) {
-      const boost = (minPct / 100) * (Math.PI / 4);
-      for (let i = 0; i < popSize; i++) {
-        thetas[i][j] = clamp(thetas[i][j] + boost, 0.001, Math.PI / 2 - 0.001);
-      }
-    }
-  }
-
-  // Locked player override — near-certain selection across the whole population
-  for (let j = 0; j < n; j++) {
-    if (players[j].locked) {
-      for (let i = 0; i < popSize; i++) {
-        thetas[i][j] = Math.PI / 2 - 0.001;
-      }
-    }
-  }
-
-  return thetas;
-};
-
-// ---------------------------------------------------------------------------
-// Observation (wave-function collapse)
-// ---------------------------------------------------------------------------
-
-const observePopulation = (thetas: Float32Array[], n: number): Uint8Array[] => {
-  const popSize = thetas.length;
-  const collapsed: Uint8Array[] = [];
-  for (let i = 0; i < popSize; i++) {
-    const ind = new Uint8Array(n);
-    for (let j = 0; j < n; j++) {
-      const p = Math.sin(thetas[i][j]) ** 2;
-      ind[j] = Math.random() < p ? 1 : 0;
-    }
-    collapsed.push(ind);
-  }
-  return collapsed;
-};
-
-// ---------------------------------------------------------------------------
-// Repair — structural validity only (Layer 3 stack enforcement excluded)
-// repairLineup must never throw — returns valid:false on unresolvable inputs
-// ---------------------------------------------------------------------------
-
-const repairLineup = (
-  collapsed: Uint8Array,
-  players: QIEAPlayer[],
-  eligibility: boolean[][],
-  salaryCap: number,
-  salaryFloor: number,
-  lockedIndexes: number[],
-): RepairResult => {
-  const n = players.length;
-  const invalidResult: RepairResult = {
-    lineup: new Uint8Array(n),
-    playerIdxs: [],
-    salary: 0,
-    valid: false,
-  };
-
-  try {
-    const bits = new Uint8Array(collapsed);
-    const lockedSet = new Set(lockedIndexes);
-
-    // STEP 1: Force locked players in
-    for (const li of lockedIndexes) {
-      if (li >= 0 && li < n) bits[li] = 1;
-    }
-
-    // STEP 2: Adjust to exactly 8 active players
-    let active: number[] = [];
-    for (let j = 0; j < n; j++) {
-      if (bits[j] === 1) active.push(j);
-    }
-
-    if (active.length > 8) {
-      const sortable = active
-        .filter((j) => !lockedSet.has(j))
-        .sort(
-          (a, b) =>
-            players[a].projection / Math.max(1, players[a].salary) -
-            players[b].projection / Math.max(1, players[b].salary)
-        );
-      let excess = active.length - 8;
-      for (let i = 0; i < sortable.length && excess > 0; i++) {
-        bits[sortable[i]] = 0;
-        excess--;
-      }
-      active = [];
-      for (let j = 0; j < n; j++) {
-        if (bits[j] === 1) active.push(j);
-      }
-    }
-
-    if (active.length < 8) {
-      const needed = 8 - active.length;
-      const currentSal = active.reduce((sum, j) => sum + players[j].salary, 0);
-      const avgBudget = (salaryCap - currentSal) / needed;
-      const activeSet = new Set(active);
-      let inactive: number[] = [];
-      for (let j = 0; j < n; j++) {
-        if (!activeSet.has(j) && !players[j].excluded) inactive.push(j);
-      }
-      let viable = inactive.filter((j) => players[j].salary <= avgBudget + 1500);
-      if (viable.length < needed) viable = inactive;
-      viable.sort((a, b) => players[b].projection - players[a].projection);
-      const toAdd = viable.slice(0, needed);
-      for (const j of toAdd) {
-        bits[j] = 1;
-        active.push(j);
-      }
-    }
-
-    // STEP 3: Greedy positional slot assignment
-    let activeSet = new Set(active);
-    const assigned = new Map<Slot, number>();
-    const usedPlayers = new Set<number>();
-
-    for (let s = 0; s < DK_SLOTS.length; s++) {
-      const slot = DK_SLOTS[s];
-      const candidates = active.filter(
-        (j) => !usedPlayers.has(j) && eligibility[s][j]
-      );
-
-      if (candidates.length > 0) {
-        const best = candidates.reduce((a, b) =>
-          players[a].projection >= players[b].projection ? a : b
-        );
-        assigned.set(slot, best);
-        usedPlayers.add(best);
-      } else {
-        // No eligible active player — bring in a free agent
-        const allInactive: number[] = [];
-        for (let j = 0; j < n; j++) {
-          if (!activeSet.has(j) && !usedPlayers.has(j) && !players[j].excluded) {
-            allInactive.push(j);
-          }
-        }
-        const eligibleFAs = allInactive.filter((j) => eligibility[s][j]);
-        if (eligibleFAs.length === 0) return invalidResult;
-
-        const faIdx = eligibleFAs.reduce((a, b) =>
-          players[a].projection >= players[b].projection ? a : b
-        );
-
-        // Drop lowest proj/salary active player not yet assigned (never a locked player)
-        const unassignedActive = active.filter((j) => !usedPlayers.has(j) && !lockedSet.has(j));
-        if (unassignedActive.length === 0) return invalidResult;
-
-        const victim = unassignedActive.reduce((a, b) =>
-          players[a].projection / Math.max(1, players[a].salary) <=
-          players[b].projection / Math.max(1, players[b].salary)
-            ? a
-            : b
-        );
-
-        active = active.filter((j) => j !== victim);
-        bits[victim] = 0;
-        activeSet.delete(victim);
-        active.push(faIdx);
-        bits[faIdx] = 1;
-        activeSet.add(faIdx);
-
-        assigned.set(slot, faIdx);
-        usedPlayers.add(faIdx);
-      }
-    }
-
-    // UTIL fallback: assign any remaining active player not yet placed
-    const remaining = active.filter((j) => !usedPlayers.has(j));
-    if (remaining.length > 0 && !assigned.has('UTIL')) {
-      assigned.set('UTIL', remaining[0]);
-      usedPlayers.add(remaining[0]);
-    }
-
-    // STEP 4: Salary cap repair (swap-based, position-safe)
-    const slotOf = new Map<number, Slot>();
-    assigned.forEach((playerIdx, slot) => slotOf.set(playerIdx, slot));
-
-    let currentSalary = 0;
-    usedPlayers.forEach((j) => { currentSalary += players[j].salary; });
-
-    const seenSwaps = new Set<string>();
-    let maxIters = n * 2;
-
-    while (currentSalary > salaryCap && maxIters > 0) {
-      maxIters--;
-      const inactiveAll: number[] = [];
-      for (let j = 0; j < n; j++) {
-        if (!usedPlayers.has(j) && !players[j].excluded) inactiveAll.push(j);
-      }
-
-      let bestSavings = -1;
-      let toDrop = -1;
-
-      usedPlayers.forEach((pIdx) => {
-        if (lockedSet.has(pIdx)) return;  // never evict locked players
-        const slot = slotOf.get(pIdx);
-        if (!slot) return;
-        const si = slotIndex(slot);
-        const eligibleFAs = inactiveAll.filter((j) => eligibility[si][j]);
-        if (eligibleFAs.length === 0) return;
-        const cheapestSalary = eligibleFAs.reduce(
-          (minSal, j) => Math.min(minSal, players[j].salary),
-          Infinity
-        );
-        const savings = players[pIdx].salary - cheapestSalary;
-        if (savings > bestSavings) {
-          bestSavings = savings;
-          toDrop = pIdx;
-        }
-      });
-
-      if (toDrop === -1) {
-        return { lineup: new Uint8Array(n), playerIdxs: [], salary: currentSalary, valid: false };
-      }
-
-      const dropSlot = slotOf.get(toDrop)!;
-      const dropSi = slotIndex(dropSlot);
-      const eligibleFAs = inactiveAll.filter((j) => eligibility[dropSi][j]);
-      const overage = currentSalary - salaryCap;
-      const affordable = eligibleFAs.filter(
-        (j) => players[j].salary <= players[toDrop].salary - overage
-      );
-      const toAdd =
-        affordable.length > 0
-          ? affordable.reduce((a, b) =>
-              players[a].projection >= players[b].projection ? a : b
-            )
-          : eligibleFAs.reduce((a, b) =>
-              players[a].salary <= players[b].salary ? a : b
-            );
-
-      const swapKey = `${toDrop}_${toAdd}`;
-      if (seenSwaps.has(swapKey)) {
-        return { lineup: new Uint8Array(n), playerIdxs: [], salary: currentSalary, valid: false };
-      }
-      seenSwaps.add(swapKey);
-
-      usedPlayers.delete(toDrop);
-      usedPlayers.add(toAdd);
-      assigned.set(dropSlot, toAdd);
-      slotOf.delete(toDrop);
-      slotOf.set(toAdd, dropSlot);
-      currentSalary = currentSalary - players[toDrop].salary + players[toAdd].salary;
-    }
-
-    // STEP 4b: Salary floor enforcement
-    while (currentSalary < salaryFloor) {
-      let lowestSalaryPlayer = -1;
-      let lowestSalary = Infinity;
-      usedPlayers.forEach((j) => {
-        if (lockedSet.has(j)) return;  // never replace locked players
-        if (players[j].salary < lowestSalary) {
-          lowestSalary = players[j].salary;
-          lowestSalaryPlayer = j;
-        }
-      });
-      if (lowestSalaryPlayer === -1) break;
-
-      const upgradeSlot = slotOf.get(lowestSalaryPlayer)!;
-      const upgradeSi = slotIndex(upgradeSlot);
-      const inactiveForUpgrade: number[] = [];
-      for (let j = 0; j < n; j++) {
-        if (!usedPlayers.has(j) && !players[j].excluded) inactiveForUpgrade.push(j);
-      }
-      const upgrades = inactiveForUpgrade.filter(
-        (j) =>
-          eligibility[upgradeSi][j] &&
-          players[j].salary > players[lowestSalaryPlayer].salary &&
-          currentSalary - players[lowestSalaryPlayer].salary + players[j].salary <= salaryCap
-      );
-      if (upgrades.length === 0) break;
-
-      const toAdd = upgrades.reduce((a, b) =>
-        players[a].projection >= players[b].projection ? a : b
-      );
-
-      usedPlayers.delete(lowestSalaryPlayer);
-      usedPlayers.add(toAdd);
-      assigned.set(upgradeSlot, toAdd);
-      slotOf.delete(lowestSalaryPlayer);
-      slotOf.set(toAdd, upgradeSlot);
-      currentSalary = currentSalary - players[lowestSalaryPlayer].salary + players[toAdd].salary;
-    }
-
-    // STEP 5: Build output
-    const playerIdxs = DK_SLOTS.map((slot) => assigned.get(slot) ?? -1);
-    const valid =
-      playerIdxs.every((idx) => idx >= 0) &&
-      new Set(playerIdxs).size === 8 &&
-      currentSalary <= salaryCap;
-
-    const lineup = new Uint8Array(n);
-    playerIdxs.filter((i) => i >= 0).forEach((i) => { lineup[i] = 1; });
-
-    return { lineup, playerIdxs, salary: currentSalary, valid };
-  } catch {
-    return invalidResult;
-  }
-};
-
-// ---------------------------------------------------------------------------
-// Layer 2: Stack-aware fitness scoring
-// ---------------------------------------------------------------------------
-
-const scoreLineup = (
-  playerIdxs: number[],
-  players: QIEAPlayer[],
-  config: QIEAConfig,
-): number => {
-  let score = 0;
-
-  for (const idx of playerIdxs) {
-    score +=
-      players[idx].projection -
-      config.ownershipPenalty * players[idx].ownership;
-  }
-
-  if (config.enableStackScoring) {
-    const teamCounts = new Map<string, number[]>();
-    for (const idx of playerIdxs) {
-      const team = players[idx].team;
-      if (!teamCounts.has(team)) teamCounts.set(team, []);
-      teamCounts.get(team)!.push(idx);
-    }
-
-    // Primary stack bonus
-    let primaryTeam = '';
-    let primaryCount = 0;
-    teamCounts.forEach((idxs, team) => {
-      if (idxs.length > primaryCount) {
-        primaryCount = idxs.length;
-        primaryTeam = team;
-      }
-    });
-
-    if (primaryCount >= config.primaryStackSize) {
-      score += config.primaryStackBonus * primaryCount;
-    }
-
-    // Game stack bonus (bring-back)
-    if (primaryTeam) {
-      const primaryIdxs = teamCounts.get(primaryTeam)!;
-      const primaryGameSlug = players[primaryIdxs[0]].gameSlug;
-
-      teamCounts.forEach((otherIdxs, otherTeam) => {
-        if (otherTeam === primaryTeam) return;
-        if (players[otherIdxs[0]].gameSlug === primaryGameSlug) {
-          if (otherIdxs.length >= config.gameStackSize) {
-            score += config.gameStackBonus * otherIdxs.length;
-          }
-        }
-      });
-    }
-
-  }
-
-  return score;
-};
-
-// ---------------------------------------------------------------------------
-// Rotation gate
-// ---------------------------------------------------------------------------
-
-const applyRotation = (
-  thetas: Float32Array[],
-  repaired: Uint8Array[],
-  targets: Uint8Array[],
-  scores: number[],
-  targetScores: number[],
-  validMask: boolean[],
-  config: QIEAConfig,
-): void => {
-  const popSize = thetas.length;
-  const n = thetas[0].length;
-
-  for (let i = 0; i < popSize; i++) {
-    if (!validMask[i]) continue;
-    const f_xi = scores[i];
-    const f_b = targetScores[i];
-
-    for (let j = 0; j < n; j++) {
-      const x_ij = repaired[i][j];
-      const b_j = targets[i][j];
-      let rot_sign = 0;
-
-      if (f_xi < f_b) {
-        if (x_ij === 0 && b_j === 1) rot_sign = 1;
-        else if (x_ij === 1 && b_j === 0) rot_sign = -1;
-      } else if (f_xi > f_b) {
-        if (x_ij === 0 && b_j === 1) rot_sign = -1;
-        else if (x_ij === 1 && b_j === 0) rot_sign = 1;
-      }
-
-      const newTheta = thetas[i][j] + rot_sign * config.deltaTheta;
-      thetas[i][j] = clamp(newTheta, 0.001, Math.PI / 2 - 0.001);
-    }
-  }
-};
-
-// ---------------------------------------------------------------------------
-// Archive management
-// ---------------------------------------------------------------------------
-
-const hammingDistance = (a: Uint8Array, b: Uint8Array): number => {
-  let dist = 0;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) dist++;
-  }
-  return dist;
-};
-
-const attemptArchiveAdmission = (
-  archive: ArchiveEntry[],
-  score: number,
-  lineup: Uint8Array,
-  playerIdxs: number[],
-  minHamming: number,
-  maxSize: number,
-  exposureCounts: number[],
-  maxAllowedByPlayer: number[],
-  minRequiredByPlayer: number[],
+const canAddPlayer = (
+  player: PlayerWithMetrics,
+  usedIds: Set<string>,
+  globalAppearances: Map<string, number>,
+  layerAppearances: Map<string, number>,
+  exposures: Map<string, ExposureBound>,
+  config: GeneratorConfig,
+  layer: 'anchor' | 'leverage' | 'filler',
+  maxExposureBuffer: number,
+  isLocked: boolean,
 ): boolean => {
-  const totalDeficitForCounts = (counts: number[]): number => {
-    let total = 0;
-    for (let i = 0; i < counts.length; i++) {
-      const need = minRequiredByPlayer[i] - counts[i];
-      if (need > 0) total += need;
-    }
-    return total;
-  };
+  if (usedIds.has(player.id)) return false;
 
-  const totalDeficitAfterChange = (lineupToAdd: number[], lineupToRemove: number[] | null): number => {
-    const addSet = new Set(lineupToAdd);
-    const removeSet = lineupToRemove ? new Set(lineupToRemove) : null;
-    let total = 0;
-    for (let i = 0; i < exposureCounts.length; i++) {
-      const afterCount =
-        exposureCounts[i] +
-        (addSet.has(i) ? 1 : 0) -
-        (removeSet?.has(i) ? 1 : 0);
-      const need = minRequiredByPlayer[i] - afterCount;
-      if (need > 0) total += need;
-    }
-    return total;
-  };
+  if (!isLocked) {
+    const current = globalAppearances.get(player.id) || 0;
+    const bound = exposures.get(player.id);
+    const maxAllowed = (bound?.max ?? config.n_lineups) + maxExposureBuffer;
+    if (current + 1 > maxAllowed) return false;
 
-  const canSatisfyMinExposureAfterChange = (lineupToAdd: number[], lineupToRemove: number[] | null): boolean => {
-    const addSet = new Set(lineupToAdd);
-    const removeSet = lineupToRemove ? new Set(lineupToRemove) : null;
-    const archiveSizeAfter = archive.length + 1 - (lineupToRemove ? 1 : 0);
-    const remainingSlotsAfter = maxSize - archiveSizeAfter;
+    const layerCurrent = layerAppearances.get(layerKey(player.id, layer)) || 0;
+    const layerCap =
+      layer === 'anchor'
+        ? config.max_anchor_appearances
+        : layer === 'leverage'
+          ? config.max_leverage_appearances
+          : config.max_filler_appearances;
 
-    for (let i = 0; i < exposureCounts.length; i++) {
-      const afterCount =
-        exposureCounts[i] +
-        (addSet.has(i) ? 1 : 0) -
-        (removeSet?.has(i) ? 1 : 0);
-      const neededAfter = Math.max(0, minRequiredByPlayer[i] - afterCount);
-      if (neededAfter > remainingSlotsAfter) return false;
-    }
-
-    return true;
-  };
-
-  if (archive.length === 0) {
-    for (const idx of playerIdxs) {
-      if (exposureCounts[idx] >= maxAllowedByPlayer[idx]) return false;
-    }
-    if (!canSatisfyMinExposureAfterChange(playerIdxs, null)) return false;
-
-    archive.push({
-      lineup: lineup.slice(),
-      score,
-      players: [...playerIdxs], // preserve DK slot order (PG,SG,SF,PF,C,G,F,UTIL)
-    });
-    for (const idx of playerIdxs) exposureCounts[idx]++;
-    return true;
+    if (layerCurrent + 1 > layerCap + maxExposureBuffer) return false;
   }
 
-  let minDist = Infinity;
-  for (const entry of archive) {
-    const d = hammingDistance(lineup, entry.lineup);
-    if (d < minDist) minDist = d;
-  }
-
-  if (minDist < minHamming) return false;
-
-  if (archive.length < maxSize) {
-    // Hard max-exposure gate for append
-    for (const idx of playerIdxs) {
-      if (exposureCounts[idx] >= maxAllowedByPlayer[idx]) return false;
-    }
-    if (!canSatisfyMinExposureAfterChange(playerIdxs, null)) return false;
-
-    archive.push({
-      lineup: lineup.slice(),
-      score,
-      players: [...playerIdxs], // preserve DK slot order (PG,SG,SF,PF,C,G,F,UTIL)
-    });
-    for (const idx of playerIdxs) exposureCounts[idx]++;
-    return true;
-  }
-
-  const currentDeficit = totalDeficitForCounts(exposureCounts);
-  let selectedEvictIdx = -1;
-  let bestDeficitReduction = -1;
-  let bestScoreDelta = -Infinity;
-
-  // Candidate replacement when archive is full.
-  for (let evictIdx = 0; evictIdx < archive.length; evictIdx++) {
-    const evictPlayers = archive[evictIdx].players;
-    const evictSet = new Set(evictPlayers);
-
-    // Max exposure gate for replacement (considering evicted lineup's exposure release).
-    let violatesMax = false;
-    for (const idx of playerIdxs) {
-      const released = evictSet.has(idx) ? 1 : 0;
-      if (exposureCounts[idx] - released >= maxAllowedByPlayer[idx]) {
-        violatesMax = true;
-        break;
-      }
-    }
-    if (violatesMax) continue;
-    if (!canSatisfyMinExposureAfterChange(playerIdxs, evictPlayers)) continue;
-
-    const nextDeficit = totalDeficitAfterChange(playerIdxs, evictPlayers);
-    const deficitReduction = currentDeficit - nextDeficit;
-    const scoreDelta = score - archive[evictIdx].score;
-    const improvesDeficit = deficitReduction > 0;
-
-    // Maintain quality unless replacement helps satisfy minimum exposure obligations.
-    if (!improvesDeficit && scoreDelta <= 0) continue;
-
-    if (
-      deficitReduction > bestDeficitReduction ||
-      (deficitReduction === bestDeficitReduction && scoreDelta > bestScoreDelta)
-    ) {
-      selectedEvictIdx = evictIdx;
-      bestDeficitReduction = deficitReduction;
-      bestScoreDelta = scoreDelta;
-    }
-  }
-
-  if (selectedEvictIdx === -1) return false;
-
-  archive.push({
-    lineup: lineup.slice(),
-    score,
-    players: [...playerIdxs],
-  });
-  for (const idx of playerIdxs) exposureCounts[idx]++;
-  for (const idx of archive[selectedEvictIdx].players) exposureCounts[idx]--;
-  archive.splice(selectedEvictIdx, 1);
   return true;
 };
 
-const buildExposureBounds = (
-  players: QIEAPlayer[],
-  numLineups: number,
-): ExposureBounds => {
-  const minRequiredByPlayer = players.map((p) =>
-    p.locked
-      ? numLineups
-      : Math.max(0, Math.ceil((p.minExposurePct / 100) * numLineups - 1e-9))
-  );
+const salaryFeasibleAfterAdd = (
+  currentLineup: PlayerWithMetrics[],
+  candidate: PlayerWithMetrics,
+  allPlayers: PlayerWithMetrics[],
+  usedIds: Set<string>,
+  config: GeneratorConfig,
+): boolean => {
+  const nextLineup = [...currentLineup, candidate];
+  const nextSalary = nextLineup.reduce((sum, p) => sum + safeNumber(p.salary, 0), 0);
 
-  const maxAllowedByPlayer = players.map((p, i) => {
-    const rawMax = p.locked
-      ? numLineups
-      : Math.max(0, Math.floor((p.maxExposurePct / 100) * numLineups + 1e-9));
-    return clamp(rawMax, minRequiredByPlayer[i], numLineups);
-  });
+  if (nextSalary > config.salary_cap) return false;
 
-  return { minRequiredByPlayer, maxAllowedByPlayer };
-};
-
-const selectTargets = (
-  repaired: Uint8Array[],
-  archive: ArchiveEntry[],
-  validMask: boolean[],
-): { targets: Uint8Array[]; targetScores: number[] } => {
-  const popSize = repaired.length;
-  const targets: Uint8Array[] = [];
-  const targetScores: number[] = [];
-  const fallback = archive.length > 0 ? archive[0] : null;
-
-  for (let i = 0; i < popSize; i++) {
-    if (!validMask[i] || archive.length === 0) {
-      targets.push(fallback ? fallback.lineup : repaired[i]);
-      targetScores.push(fallback ? fallback.score : 0);
-      continue;
-    }
-
-    // Target = archive entry with max Hamming distance
-    let bestEntry = archive[0];
-    let maxDist = -1;
-    for (const entry of archive) {
-      const d = hammingDistance(repaired[i], entry.lineup);
-      if (d > maxDist) {
-        maxDist = d;
-        bestEntry = entry;
-      }
-    }
-    targets.push(bestEntry.lineup);
-    targetScores.push(bestEntry.score);
+  const needed = DK_SLOTS.length - nextLineup.length;
+  if (needed <= 0) {
+    return nextSalary >= config.salary_floor;
   }
 
-  return { targets, targetScores };
+  const remainingSalaries = allPlayers
+    .filter((p) => !usedIds.has(p.id) && p.id !== candidate.id)
+    .map((p) => safeNumber(p.salary, 0))
+    .sort((a, b) => a - b);
+
+  if (remainingSalaries.length < needed) return false;
+
+  const cheapest = remainingSalaries.slice(0, needed).reduce((sum, n) => sum + n, 0);
+  const priciest = remainingSalaries.slice(-needed).reduce((sum, n) => sum + n, 0);
+
+  if (nextSalary + cheapest > config.salary_cap) return false;
+  if (nextSalary + priciest < config.salary_floor) return false;
+
+  return true;
 };
 
-const bootstrapRotation = (
-  thetas: Float32Array[],
-  repaired: Uint8Array[],
-  scores: number[],
-  validMask: boolean[],
-  config: QIEAConfig,
-): void => {
-  let bestScore = -Infinity;
-  let bestIdx = -1;
-  for (let i = 0; i < scores.length; i++) {
-    if (validMask[i] && scores[i] > bestScore) {
-      bestScore = scores[i];
-      bestIdx = i;
-    }
+const computeHammingDistance = (a: PlayerWithMetrics[], b: PlayerWithMetrics[]): number => {
+  const aIds = new Set(a.map((p) => p.id));
+  const overlap = b.reduce((count, p) => count + (aIds.has(p.id) ? 1 : 0), 0);
+  return DK_SLOTS.length - overlap;
+};
+
+const respectsHamming = (
+  candidate: PlayerWithMetrics[],
+  accepted: PlayerWithMetrics[][],
+  minDistance: number,
+): boolean => {
+  return accepted.every((lineup) => computeHammingDistance(candidate, lineup) >= minDistance);
+};
+
+const isValidLineup = (
+  lineup: PlayerWithMetrics[],
+  config: GeneratorConfig,
+  locks: Set<string>,
+): boolean => {
+  if (lineup.length !== DK_SLOTS.length) return false;
+
+  const totalSalary = lineup.reduce((sum, p) => sum + safeNumber(p.salary, 0), 0);
+  if (totalSalary > config.salary_cap || totalSalary < config.salary_floor) return false;
+
+  for (const lockId of locks) {
+    if (!lineup.some((p) => p.id === lockId)) return false;
   }
-  if (bestIdx === -1) return;
 
-  const bestTarget = repaired[bestIdx];
-  const uniformTargets = repaired.map(() => bestTarget);
-  const uniformTargetScores = scores.map(() => bestScore);
-
-  applyRotation(
-    thetas, repaired, uniformTargets, scores, uniformTargetScores, validMask, config
-  );
+  if (!canAssignDraftKingsSlots(lineup)) return false;
+  return true;
 };
 
-// ---------------------------------------------------------------------------
-// Output formatting
-// ---------------------------------------------------------------------------
+const chooseAnchorCombo = (
+  combos: AnchorCombo[],
+  comboAppearances: Map<string, number>,
+  exposures: Map<string, ExposureBound>,
+  appearances: Map<string, number>,
+  config: GeneratorConfig,
+): AnchorCombo | null => {
+  if (combos.length === 0) return null;
 
-const archiveEntryToLineup = (
-  entry: ArchiveEntry,
-  qieaPlayers: QIEAPlayer[],
-  originalPlayers: Player[],
-  index: number,
-): Lineup => {
-  const playerIds = entry.players.map((i) => originalPlayers[qieaPlayers[i].index].id);
-  const totalSalary = entry.players.reduce((sum, i) => sum + qieaPlayers[i].salary, 0);
-  // totalProjection uses raw player.projection from originalPlayers (not GPP-adjusted)
-  const totalProjection =
-    Math.round(
-      entry.players.reduce(
-        (sum, i) => sum + safeNumber(originalPlayers[qieaPlayers[i].index].projection, 0),
-        0
-      ) * 100
-    ) / 100;
+  const scored = combos
+    .map((combo) => {
+      const comboKey = combo.players.map((p) => p.id).sort().join('|');
+      const reps = comboAppearances.get(comboKey) || 0;
+      const maxReps = Math.max(2, Math.floor(config.n_lineups / Math.max(1, combos.length / 2)));
+      if (reps >= maxReps) return null;
 
-  return {
-    id: `qiea_${index}_${entry.players.join('_')}`,
-    playerIds,
-    totalSalary,
-    totalProjection,
-    players: [],
-    lineupSource: 'optimizer',
-  };
+      const underExposureBoost = combo.players.reduce((sum, player) => {
+        const cur = appearances.get(player.id) || 0;
+        const min = exposures.get(player.id)?.min || 0;
+        return sum + Math.max(0, min - cur) * 25;
+      }, 0);
+
+      return {
+        combo,
+        score: combo.score + underExposureBoost - reps * 10,
+      };
+    })
+    .filter((row): row is { combo: AnchorCombo; score: number } => Boolean(row))
+    .sort((a, b) => b.score - a.score);
+
+  if (scored.length === 0) return null;
+
+  const topK = scored.slice(0, Math.min(5, scored.length));
+  return topK[Math.floor(Math.random() * topK.length)].combo;
 };
 
-const formatPortfolio = (
-  archive: ArchiveEntry[],
-  qieaPlayers: QIEAPlayer[],
-  originalPlayers: Player[],
-): Lineup[] => {
-  const sorted = [...archive].sort((a, b) => b.score - a.score);
-  return sorted.map((entry, idx) =>
-    archiveEntryToLineup(entry, qieaPlayers, originalPlayers, idx)
-  );
+const pickBestCandidate = (
+  candidates: PlayerWithMetrics[],
+  anchorTeams: Set<string>,
+  appearances: Map<string, number>,
+  exposures: Map<string, ExposureBound>,
+  scoreFn: (player: PlayerWithMetrics) => number,
+): PlayerWithMetrics | null => {
+  if (candidates.length === 0) return null;
+
+  const ranked = candidates
+    .map((player) => {
+      const bound = exposures.get(player.id);
+      const current = appearances.get(player.id) || 0;
+      const underMinBoost = bound && current < bound.min ? (bound.min - current) * 1000 : 0;
+      const stackBoost = anchorTeams.has(player.team) || anchorTeams.has(player.opponent || '') ? 1.15 : 1;
+      const jitter = 0.9 + Math.random() * 0.2;
+
+      return {
+        player,
+        score: (scoreFn(player) + underMinBoost) * stackBoost * jitter,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  return ranked[0]?.player || null;
 };
 
-// ---------------------------------------------------------------------------
-// Main QIEA loop
-// ---------------------------------------------------------------------------
+const fillLineup = (
+  anchors: PlayerWithMetrics[],
+  pool: PlayerWithMetrics[],
+  exposures: Map<string, ExposureBound>,
+  locks: Set<string>,
+  excludes: Set<string>,
+  globalAppearances: Map<string, number>,
+  layerAppearances: Map<string, number>,
+  config: GeneratorConfig,
+  maxExposureBuffer: number,
+): PlayerWithMetrics[] | null => {
+  const byId = new Map(pool.map((p) => [p.id, p]));
+  const lockPlayers = Array.from(locks)
+    .map((id) => byId.get(id))
+    .filter((p): p is PlayerWithMetrics => Boolean(p));
 
-const runQIEA = async (
-  players: QIEAPlayer[],
-  eligibility: boolean[][],
-  config: QIEAConfig,
-  resolvedConfig: { salaryCap: number; salaryFloor: number; numLineups: number },
-  rawPlayers: Player[],
-  onProgress: (pct: number, best: Lineup | null, found: number) => void,
-): Promise<{ archive: ArchiveEntry[]; exposureRelaxed: boolean }> => {
-  const thetas = initThetas(players, config.popSize, config);
-  const archive: ArchiveEntry[] = [];
-  const lockedIndexes = players
-    .map((p, i) => (p.locked ? i : -1))
-    .filter((i) => i !== -1);
+  if (lockPlayers.length !== locks.size) {
+    return null;
+  }
 
-  const { minRequiredByPlayer, maxAllowedByPlayer } = buildExposureBounds(players, resolvedConfig.numLineups);
-  // Live count of how many archive entries each player currently appears in
-  const exposureCounts = new Array<number>(players.length).fill(0);
+  const fixedById = new Map<string, PlayerWithMetrics>();
+  for (const player of [...anchors, ...lockPlayers]) {
+    if (excludes.has(player.id) && !locks.has(player.id)) return null;
+    fixedById.set(player.id, player);
+  }
 
-  let patienceCounter = 0;
-  let lastArchiveSize = 0;
-  let lastBestScore = -Infinity;
-  let exposureRelaxed = false;
+  const fixed = Array.from(fixedById.values());
+  if (fixed.length > DK_SLOTS.length) return null;
 
-  for (let gen = 0; gen < config.generations; gen++) {
-    const collapsed = observePopulation(thetas, players.length);
+  const fixedSalary = fixed.reduce((sum, p) => sum + safeNumber(p.salary, 0), 0);
+  if (fixedSalary > config.salary_cap) return null;
 
-    const repaired: Uint8Array[] = [];
-    const scores: number[] = [];
-    const validMask: boolean[] = [];
-    const lineupIdxs: number[][] = [];
+  const anchorTeams = new Set<string>();
+  for (const anchor of anchors) {
+    if (anchor.team) anchorTeams.add(anchor.team);
+    if (anchor.opponent) anchorTeams.add(anchor.opponent);
+  }
 
-    for (let i = 0; i < config.popSize; i++) {
-      const result = repairLineup(
-        collapsed[i],
-        players,
-        eligibility,
-        resolvedConfig.salaryCap,
-        resolvedConfig.salaryFloor,
-        lockedIndexes,
-      );
-      repaired.push(result.lineup);
-      if (result.valid) {
-        validMask.push(true);
-        scores.push(scoreLineup(result.playerIdxs, players, config));
-        lineupIdxs.push(result.playerIdxs);
-      } else {
-        validMask.push(false);
-        scores.push(0);
-        lineupIdxs.push([]);
-      }
-    }
+  for (let attempt = 0; attempt < 80; attempt++) {
+    const lineup: PlayerWithMetrics[] = [...fixed];
+    const usedIds = new Set<string>(lineup.map((p) => p.id));
 
-    // Relax Hamming constraint as archive fills: 3 → 2 → 1
-    const fillRatio = archive.length / resolvedConfig.numLineups;
-    const effectiveMinHamming =
-      fillRatio >= 0.9 ? 1 : fillRatio >= 0.75 ? 2 : config.minHamming;
+    const addPlayer = (player: PlayerWithMetrics, layer: 'anchor' | 'leverage' | 'filler'): boolean => {
+      if (usedIds.has(player.id)) return false;
+      if (excludes.has(player.id) && !locks.has(player.id)) return false;
+      if (getStatus(player) === 'out' && !locks.has(player.id)) return false;
 
-    let archiveChanged = false;
-    for (let i = 0; i < config.popSize; i++) {
-      if (!validMask[i]) continue;
       if (
-        attemptArchiveAdmission(
-          archive,
-          scores[i],
-          repaired[i],
-          lineupIdxs[i],
-          effectiveMinHamming,
-          resolvedConfig.numLineups,
-          exposureCounts,
-          maxAllowedByPlayer,
-          minRequiredByPlayer,
+        !canAddPlayer(
+          player,
+          usedIds,
+          globalAppearances,
+          layerAppearances,
+          exposures,
+          config,
+          layer,
+          maxExposureBuffer,
+          locks.has(player.id),
         )
       ) {
-        archiveChanged = true;
+        return false;
+      }
+
+      if (!salaryFeasibleAfterAdd(lineup, player, pool, usedIds, config)) return false;
+
+      lineup.push(player);
+      usedIds.add(player.id);
+      return true;
+    };
+
+    if (lineup.length < DK_SLOTS.length) {
+      const leverageNeeded = Math.min(3, DK_SLOTS.length - lineup.length);
+      for (let i = 0; i < leverageNeeded; i++) {
+        const leverageCandidates = pool.filter((p) => {
+          if (usedIds.has(p.id)) return false;
+          if (excludes.has(p.id) || getStatus(p) === 'out') return false;
+          if (safeNumber(p.minutes_proj, 0) < 15) return false;
+          if (safeNumber(p.ceiling_gap_adjusted, 0) < config.leverage_ceiling_gap_min) return false;
+          if (safeNumber(p.salary, 0) < 5000 || safeNumber(p.salary, 0) > 8500) return false;
+          if (safeNumber(p.value_score, 50) < config.leverage_value_score_min) return false;
+          if (safeNumber(p.own_mean, 0) >= 25) return false;
+          return true;
+        });
+
+        const chosen = pickBestCandidate(
+          leverageCandidates,
+          anchorTeams,
+          globalAppearances,
+          exposures,
+          (p) => {
+            const gameBonus = anchorTeams.has(p.team) || anchorTeams.has(p.opponent || '') ? 2.5 : 1;
+            return (
+              (safeNumber(p.value_score, 50) / 100) *
+              Math.max(0, safeNumber(p.ceiling_gap_adjusted, 0)) *
+              (1 - safeNumber(p.own_mean, 0) / 100) *
+              gameBonus
+            );
+          },
+        );
+
+        if (!chosen) break;
+        addPlayer(chosen, 'leverage');
       }
     }
 
-    const currentBest =
-      archive.length > 0
-        ? archive.reduce((max, e) => Math.max(max, e.score), -Infinity)
-        : -Infinity;
+    while (lineup.length < DK_SLOTS.length) {
+      const remainingCandidates = pool.filter((p) => {
+        if (usedIds.has(p.id)) return false;
+        if (excludes.has(p.id) || getStatus(p) === 'out') return false;
+        if (safeNumber(p.minutes_proj, 0) < 8) return false;
+        if (safeNumber(p.value_score, 50) < config.filler_value_score_min) return false;
+        return true;
+      });
 
-    if (archive.length === lastArchiveSize && currentBest <= lastBestScore) {
-      patienceCounter++;
-    } else {
-      patienceCounter = 0;
-      lastArchiveSize = archive.length;
-      lastBestScore = currentBest;
-    }
-
-    if (patienceCounter >= config.patience) break;
-
-    if (archive.length === 0) {
-      bootstrapRotation(thetas, repaired, scores, validMask, config);
-    } else {
-      const { targets, targetScores } = selectTargets(repaired, archive, validMask);
-      applyRotation(thetas, repaired, targets, scores, targetScores, validMask, config);
-    }
-
-    if (gen % 10 === 0 || archiveChanged) {
-      const pct = Math.round(((gen + 1) / config.generations) * 100);
-      const bestEntry =
-        archive.length > 0
-          ? archive.reduce((a, b) => (a.score > b.score ? a : b))
-          : null;
-      onProgress(
-        pct,
-        bestEntry
-          ? archiveEntryToLineup(bestEntry, players, rawPlayers, gen)
-          : null,
-        archive.length,
+      const candidate = pickBestCandidate(
+        remainingCandidates,
+        anchorTeams,
+        globalAppearances,
+        exposures,
+        (p) => {
+          const value = safeNumber(p.value_score, 50) / 100;
+          const ceilingGap = Math.max(0, safeNumber(p.ceiling_gap_adjusted, 0));
+          const ownershipEdge = 1 - safeNumber(p.own_mean, 0) / 100;
+          const salary = safeNumber(p.salary, 0);
+          const salaryFactor = salary < 5000 ? 1.1 : 0.95;
+          return value * (1 + ceilingGap / 20) * ownershipEdge * salaryFactor;
+        },
       );
+
+      if (!candidate) break;
+
+      const layer: 'leverage' | 'filler' =
+        safeNumber(candidate.salary, 0) >= 5000 ? 'leverage' : 'filler';
+
+      if (!addPlayer(candidate, layer)) {
+        // Remove and retry with a temporary ban for this attempt.
+        usedIds.add(candidate.id);
+      }
     }
 
-    // Yield to the event loop every 50 generations
-    if (gen % 50 === 49) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    if (!isValidLineup(lineup, config, locks)) continue;
+    return lineup;
+  }
+
+  return null;
+};
+
+const finalizeLineups = (lineups: PlayerWithMetrics[][]): Lineup[] => {
+  return lineups.map((lineup, idx) => {
+    const totalSalary = lineup.reduce((sum, p) => sum + safeNumber(p.salary, 0), 0);
+    const totalProjection = lineup.reduce((sum, p) => sum + safeNumber(p.projection, 0), 0);
+    const totalCeiling = lineup.reduce((sum, p) => sum + safeNumber(p.ceiling_final, p.ceiling), 0);
+    const totalOwnership = lineup.reduce((sum, p) => sum + safeNumber(p.own_mean, 0), 0);
+
+    return {
+      id: `gpp_${Date.now()}_${idx + 1}`,
+      playerIds: lineup.map((p) => p.id),
+      players: lineup,
+      totalSalary,
+      totalProjection,
+      totalCeiling,
+      totalOwnership,
+      lineupSource: 'optimizer',
+    };
+  });
+};
+
+const recordLineupAppearances = (
+  lineup: PlayerWithMetrics[],
+  appearances: Map<string, number>,
+  layerAppearances: Map<string, number>,
+  anchors: Set<string>,
+): void => {
+  for (const player of lineup) {
+    appearances.set(player.id, (appearances.get(player.id) || 0) + 1);
+
+    const layer: 'anchor' | 'leverage' | 'filler' = anchors.has(player.id)
+      ? 'anchor'
+      : safeNumber(player.salary, 0) >= 5000
+        ? 'leverage'
+        : 'filler';
+
+    const key = layerKey(player.id, layer);
+    layerAppearances.set(key, (layerAppearances.get(key) || 0) + 1);
+  }
+};
+
+const generateLineups = (
+  rawPlayers: Player[],
+  config: GeneratorConfig,
+  explicitExposures: Map<string, { min?: number; max?: number }>,
+  lockIds: Set<string>,
+  excludeIds: Set<string>,
+  confirmedLineups: Map<string, ConfirmedLineupInfo>,
+  onProgress: (progress: number, currentBest: Lineup | null, count: number) => void,
+): { lineups: Lineup[]; warnings: string[]; exposureRelaxed: boolean } => {
+  const warnings: string[] = [];
+
+  if (lockIds.size > DK_SLOTS.length) {
+    throw new Error(`Too many locked players (${lockIds.size}). Max is ${DK_SLOTS.length}.`);
+  }
+
+  for (const id of lockIds) {
+    if (excludeIds.has(id)) {
+      throw new Error(`Player ${id} is both locked and excluded.`);
     }
   }
 
-  const greedyFill = (
-    target: number,
-    attemptsPerMissing: number,
-    admissionMinHamming: number,
-    maxAllowed: number[],
-    minRequired: number[],
-  ) => {
-    const maxAttempts = Math.max(0, (target - archive.length) * attemptsPerMissing);
-    for (let attempt = 0; attempt < maxAttempts && archive.length < target; attempt++) {
-      const rand = new Uint8Array(players.length);
-      for (let j = 0; j < players.length; j++) {
-        rand[j] = players[j].locked ? 1 : Math.random() < 0.25 ? 1 : 0;
+  const enrichedAll = enrichPlayersWithMetrics(rawPlayers, confirmedLineups);
+
+  const byId = new Map(enrichedAll.map((p) => [p.id, p]));
+  for (const id of lockIds) {
+    if (!byId.has(id)) {
+      throw new Error(`Locked player ${id} is not in the current player pool.`);
+    }
+  }
+
+  const globalMaxPct = config.global_max_exposure_pct;
+  const exposureBounds = resolveExposureBounds(enrichedAll, config.n_lineups, globalMaxPct, explicitExposures, lockIds);
+
+  const activePool = enrichedAll.filter((p) => {
+    if (excludeIds.has(p.id) && !lockIds.has(p.id)) return false;
+    if (getStatus(p) === 'out' && !lockIds.has(p.id)) return false;
+    return safeNumber(p.salary, 0) > 0 && safeNumber(p.projection, 0) > 0;
+  });
+
+  if (activePool.length < DK_SLOTS.length) {
+    throw new Error(`Optimizer pool too small (${activePool.length}) after exclusions.`);
+  }
+
+  const chalk = identifyChalk(activePool, config);
+  const sortedFallback = activePool
+    .slice()
+    .sort((a, b) => safeNumber(b.projection, 0) - safeNumber(a.projection, 0));
+  const anchorCombos = generateAnchorCombos(chalk, sortedFallback);
+
+  if (anchorCombos.length === 0) {
+    throw new Error('Unable to form anchor combos from the current player pool.');
+  }
+
+  const accepted: PlayerWithMetrics[][] = [];
+  const seenKeys = new Set<string>();
+  const appearances = new Map<string, number>();
+  const layerAppearances = new Map<string, number>();
+  const comboAppearances = new Map<string, number>();
+  let bestProjection = -Infinity;
+  let exposureRelaxed = false;
+
+  const attemptBuild = (maxExposureBuffer: number, maxAttempts: number): void => {
+    let attempts = 0;
+
+    while (accepted.length < config.n_lineups && attempts < maxAttempts) {
+      attempts += 1;
+
+      const combo = chooseAnchorCombo(anchorCombos, comboAppearances, exposureBounds, appearances, config);
+      if (!combo) continue;
+
+      const lineup = fillLineup(
+        combo.players,
+        activePool,
+        exposureBounds,
+        lockIds,
+        excludeIds,
+        appearances,
+        layerAppearances,
+        config,
+        maxExposureBuffer,
+      );
+
+      if (!lineup) continue;
+      if (!respectsHamming(lineup, accepted, config.min_hamming_distance)) continue;
+
+      const key = lineup
+        .map((p) => p.id)
+        .sort()
+        .join('|');
+      if (seenKeys.has(key)) continue;
+
+      const overMax = lineup.some((p) => {
+        const current = appearances.get(p.id) || 0;
+        const maxAllowed = (exposureBounds.get(p.id)?.max ?? config.n_lineups) + maxExposureBuffer;
+        return current + 1 > maxAllowed;
+      });
+      if (overMax) continue;
+
+      accepted.push(lineup);
+      seenKeys.add(key);
+
+      const comboKey = combo.players.map((p) => p.id).sort().join('|');
+      comboAppearances.set(comboKey, (comboAppearances.get(comboKey) || 0) + 1);
+      recordLineupAppearances(lineup, appearances, layerAppearances, new Set(combo.players.map((p) => p.id)));
+
+      const lineupProjection = lineup.reduce((sum, p) => sum + safeNumber(p.projection, 0), 0);
+      if (lineupProjection > bestProjection) {
+        bestProjection = lineupProjection;
       }
-      const result = repairLineup(
-        rand, players, eligibility,
-        resolvedConfig.salaryCap, resolvedConfig.salaryFloor, lockedIndexes,
-      );
-      if (!result.valid) continue;
-      const score = scoreLineup(result.playerIdxs, players, config);
-      attemptArchiveAdmission(
-        archive, score, result.lineup, result.playerIdxs,
-        admissionMinHamming, target, exposureCounts, maxAllowed, minRequired,
-      );
+
+      const progress = Math.min(99, Math.round((accepted.length / config.n_lineups) * 100));
+      onProgress(progress, finalizeLineups([lineup])[0], accepted.length);
     }
   };
 
-  // Post-loop greedy fill with original constraints first.
-  if (archive.length < resolvedConfig.numLineups) {
-    const target = resolvedConfig.numLineups;
-    const remaining = target - archive.length;
-    const admissionMinHamming = remaining <= Math.ceil(target * 0.15) ? 1 : 2;
-    greedyFill(target, 500, admissionMinHamming, maxAllowedByPlayer, minRequiredByPlayer);
-  }
+  attemptBuild(0, config.n_lineups * 350);
 
-  // If still short, progressively relax exposure caps and min-exposure obligations.
-  // This keeps the optimizer productive when user-provided exposure bounds are too tight.
-  if (archive.length < resolvedConfig.numLineups) {
-    const target = resolvedConfig.numLineups;
-    const noMinRequired = new Array<number>(players.length).fill(0);
-    const relaxationSteps = [5, 10, 15, 20, 30, 40, 50, 75, 100];
-
-    for (const relaxPct of relaxationSteps) {
-      if (archive.length >= target) break;
-      const relaxedMaxAllowed = players.map((p, i) => {
-        const relaxedPctForPlayer = Math.min(100, p.maxExposurePct + relaxPct);
-        const rawMax = Math.max(0, Math.floor((relaxedPctForPlayer / 100) * target + 1e-9));
-        const baseline = Math.max(maxAllowedByPlayer[i], rawMax);
-        return clamp(baseline, 0, target);
-      });
-
-      const before = archive.length;
-      greedyFill(target, 800, 1, relaxedMaxAllowed, noMinRequired);
-      if (archive.length > before) {
-        exposureRelaxed = true;
-      }
+  if (accepted.length < config.n_lineups) {
+    exposureRelaxed = true;
+    for (const buffer of [1, 2, 3, 5, 8, 12]) {
+      if (accepted.length >= config.n_lineups) break;
+      attemptBuild(buffer, config.n_lineups * 220);
     }
   }
 
-  // Last-resort fill: preserve uniqueness constraint only, ignore exposure bounds.
-  if (archive.length < resolvedConfig.numLineups) {
-    const target = resolvedConfig.numLineups;
-    const unconstrainedMaxAllowed = new Array<number>(players.length).fill(target);
-    const noMinRequired = new Array<number>(players.length).fill(0);
-    const before = archive.length;
-    greedyFill(target, 1200, 1, unconstrainedMaxAllowed, noMinRequired);
-    if (archive.length > before) {
-      exposureRelaxed = true;
-    }
+  if (accepted.length < config.n_lineups) {
+    warnings.push(
+      `Generated ${accepted.length}/${config.n_lineups} unique lineups before exhausting feasible combinations.`,
+    );
   }
 
-  return { archive, exposureRelaxed };
+  const unmetMin = Array.from(exposureBounds.entries())
+    .map(([id, bound]) => ({ id, min: bound.min, got: appearances.get(id) || 0 }))
+    .filter((row) => row.min > row.got)
+    .sort((a, b) => b.min - b.got - (a.min - a.got));
+
+  if (unmetMin.length > 0) {
+    const sample = unmetMin
+      .slice(0, 6)
+      .map((row) => {
+        const name = byId.get(row.id)?.name || row.id;
+        return `${name} (${row.got}/${row.min})`;
+      })
+      .join(', ');
+
+    warnings.push(`Minimum exposure targets not fully met for ${unmetMin.length} player(s): ${sample}.`);
+  }
+
+  if (exposureRelaxed) {
+    warnings.push('Exposure constraints were relaxed to maximize feasible lineup generation.');
+  }
+
+  const lineupModels = finalizeLineups(accepted);
+  onProgress(100, lineupModels[0] || null, lineupModels.length);
+
+  return {
+    lineups: lineupModels,
+    warnings,
+    exposureRelaxed,
+  };
 };
 
-// ---------------------------------------------------------------------------
-// Worker entrypoint
-// ---------------------------------------------------------------------------
-
-workerScope.onmessage = async (event: MessageEvent<RequestPayload>) => {
+workerScope.onmessage = (event: MessageEvent<RequestPayload>) => {
   try {
-    const { players: rawPlayers, config: rawConfig } = event.data || { players: [] };
+    const payload = event.data || { players: [] };
+    const players = Array.isArray(payload.players) ? payload.players : [];
 
-    if (!Array.isArray(rawPlayers) || rawPlayers.length === 0) {
+    if (players.length === 0) {
       throw new Error('No players provided. Load the slate before running the optimizer.');
     }
 
-    // 1. Resolve config
-    const qieaConfig = resolveQIEAConfig(rawConfig);
-    const resolvedConfig = resolveRunConfig(rawConfig);
+    const config = resolveGeneratorConfig(payload.config);
 
-    // 2. Preprocess players and build eligibility matrix
-    const players = preprocessPlayers(rawPlayers, qieaConfig, resolvedConfig.salaryCap);
-    const eligibility = buildEligibilityMatrix(players);
+    const requestLocks = toStringSet(payload.locks);
+    const requestExcludes = toStringSet(payload.excludes);
 
-    if (players.length < 8) {
-      throw new Error('Not enough eligible players to build a lineup.');
-    }
-    for (let s = 0; s < DK_SLOTS.length; s++) {
-      const ok = players.some((_p, j) => eligibility[s][j]);
-      if (!ok) throw new Error(`No eligible players for slot ${DK_SLOTS[s]}.`);
-    }
-    // 4. Run QIEA optimizer
-    const { archive, exposureRelaxed } = await runQIEA(
+    const playerLocks = new Set(
+      players
+        .filter((p) => Boolean((p as any)?.optimizerLocked))
+        .map((p) => String(p.id)),
+    );
+    const playerExcludes = new Set(
+      players
+        .filter((p) => Boolean((p as any)?.optimizerExcluded))
+        .map((p) => String(p.id)),
+    );
+
+    const locks = new Set<string>([...requestLocks, ...playerLocks]);
+    const excludes = new Set<string>([...requestExcludes, ...playerExcludes]);
+
+    const explicitExposureMap = toExposureMap(payload.exposures);
+    const confirmedLineups = toConfirmedLineups(payload.confirmedLineups);
+
+    const result = generateLineups(
       players,
-      eligibility,
-      qieaConfig,
-      resolvedConfig,
-      rawPlayers,
-      (pct, best, found) => {
+      config,
+      explicitExposureMap,
+      locks,
+      excludes,
+      confirmedLineups,
+      (progress, currentBest, count) => {
         workerScope.postMessage({
           type: 'progress',
-          progress: pct,
-          currentBest: best,
-          lineupsFound: found,
+          progress,
+          currentBest,
+          lineupsFound: count,
         });
       },
     );
 
-    if (archive.length === 0) {
-      throw new Error(
-        'No valid lineups found. Check salary cap, positions, and slate data.'
-      );
-    }
-
-    const { minRequiredByPlayer } = buildExposureBounds(players, resolvedConfig.numLineups);
-    const achievedExposureCounts = new Array<number>(players.length).fill(0);
-    archive.forEach((entry) => {
-      entry.players.forEach((idx) => {
-        achievedExposureCounts[idx] += 1;
-      });
+    workerScope.postMessage({
+      type: 'result',
+      lineups: result.lineups,
+      warnings: result.warnings,
+      exposureRelaxed: result.exposureRelaxed,
     });
-    const unmetMinPlayers = players
-      .map((p, idx) => ({ idx, need: minRequiredByPlayer[idx], got: achievedExposureCounts[idx] }))
-      .filter((x) => x.need > x.got)
-      .sort((a, b) => (b.need - b.got) - (a.need - a.got));
-
-    const warnings: string[] = [];
-    if (unmetMinPlayers.length > 0) {
-      const sample = unmetMinPlayers
-        .slice(0, 5)
-        .map(({ idx, need, got }) => `${rawPlayers[players[idx].index]?.name || `Player ${idx}`} (${got}/${need})`)
-        .join(', ');
-      warnings.push(
-        `Minimum exposure targets were not fully met for ${unmetMinPlayers.length} player(s): ${sample}.`,
-      );
-    }
-    if (exposureRelaxed) {
-      warnings.push('Exposure constraints were relaxed to maximize feasible unique lineup generation.');
-    }
-
-    const lineups = formatPortfolio(archive, players, rawPlayers);
-    workerScope.postMessage({ type: 'result', lineups, warnings, exposureRelaxed });
   } catch (error) {
     workerScope.postMessage({
       type: 'error',
