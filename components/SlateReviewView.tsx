@@ -212,7 +212,8 @@ export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, 
   const [applyMessage, setApplyMessage] = useState<string | null>(null);
 
   const baseUrl = useMemo(() => {
-    const base = String((import.meta as any).env?.VITE_R2_BASE_URL || '').trim();
+    const env = (import.meta as any).env || {};
+    const base = String(env.DATA_BASE_URL || env.VITE_R2_BASE_URL || '').trim();
     return base.replace(/\/+$/, '');
   }, []);
 
@@ -353,7 +354,7 @@ export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, 
   if (!baseUrl) {
     return (
       <div className="max-w-5xl mx-auto rounded-sm border border-ink/10 bg-white/55 p-6 text-sm text-ink/70">
-        Set <span className="font-mono">VITE_R2_BASE_URL</span> to enable Slate Review fetches.
+        Set <span className="font-mono">DATA_BASE_URL</span> to enable Slate Review fetches.
       </div>
     );
   }
@@ -475,4 +476,3 @@ export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, 
     </div>
   );
 };
-

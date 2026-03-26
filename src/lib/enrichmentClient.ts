@@ -25,9 +25,10 @@ export interface PlayerEnrichmentFile {
 export async function fetchPlayerEnrichment(
   slateDate: string,
 ): Promise<PlayerEnrichmentFile | null> {
-  const base = (import.meta as any).env?.VITE_R2_BASE_URL;
+  const env = (import.meta as any).env || {};
+  const base = env.DATA_BASE_URL || env.VITE_R2_BASE_URL;
   if (!base) {
-    console.warn('[enrichmentClient] VITE_R2_BASE_URL is not set — skipping enrichment fetch');
+    console.warn('[enrichmentClient] DATA_BASE_URL is not set — skipping enrichment fetch');
     return null;
   }
   const url = `${base}/${slateDate}/player_enrichment.json`;
