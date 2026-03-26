@@ -977,6 +977,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
   const [settingsRevision, setSettingsRevision] = useState(0);
   const [selectedMatchups, setSelectedMatchups] = useState<string[]>([]);
   const [teamStackWeights, setTeamStackWeights] = useState<Record<string, number>>({});
+  const [teamStackPlayerTargets, setTeamStackPlayerTargets] = useState<Record<string, number>>({});
   const [poolSort, setPoolSort] = useState<SortConfig | null>(null);
   const [playerOverrides, setPlayerOverrides] = useState<Record<string, { minutes?: number; projection?: number; minExposure?: number; maxExposure?: number; exclude?: boolean }>>({});
   const [poolSearch, setPoolSearch] = useState('');
@@ -1021,6 +1022,14 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       );
       return Object.keys(pruned).length !== Object.keys(prev).length ? pruned : prev;
     });
+    setTeamStackPlayerTargets((prev) => {
+      const pruned = Object.fromEntries(
+        Object.entries(prev)
+          .filter(([teamId, target]) => validTeamIds.has(teamId) && Number.isFinite(Number(target)) && Number(target) > 0)
+          .map(([teamId, target]) => [teamId, Math.min(6, Math.max(0, Math.floor(Number(target))))])
+      ) as Record<string, number>;
+      return Object.keys(pruned).length !== Object.keys(prev).length ? pruned : prev;
+    });
   }, [games]);
 
   useEffect(() => {
@@ -1040,6 +1049,14 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         const weights: Record<string, number> = {};
         (parsed.selectedTeams as string[]).forEach((t) => { weights[t] = 1; });
         setTeamStackWeights(weights);
+      }
+      if (parsed.teamStackPlayerTargets && typeof parsed.teamStackPlayerTargets === 'object' && !Array.isArray(parsed.teamStackPlayerTargets)) {
+        const targets = Object.fromEntries(
+          Object.entries(parsed.teamStackPlayerTargets)
+            .filter(([, target]) => Number.isFinite(Number(target)) && Number(target) > 0)
+            .map(([teamId, target]) => [teamId, Math.min(6, Math.max(0, Math.floor(Number(target))))])
+        ) as Record<string, number>;
+        setTeamStackPlayerTargets(targets);
       }
       if (parsed.playerOverrides && typeof parsed.playerOverrides === 'object') {
         const prunedEntries = Object.entries(parsed.playerOverrides)
@@ -1082,9 +1099,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       return;
     }
     if (!slateDateForSaveRef.current) return;
-    const payload = { lockedIds, selectedMatchups, teamStackWeights, playerOverrides };
+    const payload = { lockedIds, selectedMatchups, teamStackWeights, teamStackPlayerTargets, playerOverrides };
     localStorage.setItem(getAdvancedSettingsStorageKey(slateDateForSaveRef.current), JSON.stringify(payload));
-  }, [lockedIds, selectedMatchups, teamStackWeights, playerOverrides]);
+  }, [lockedIds, selectedMatchups, teamStackWeights, teamStackPlayerTargets, playerOverrides]);
 
   const startOptimization = () => {
     if (isOptimizing) return;
@@ -1116,6 +1133,17 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         const val = parseExposurePercentMaybe(overrides?.maxExposure);
         return val !== undefined && val < 100;
       }).length;
+      const activeTeamStackWeights = Object.fromEntries(
+        Object.entries(teamStackWeights)
+          .filter(([, weight]) => Number.isFinite(Number(weight)) && Number(weight) > 0)
+          .map(([teamId, weight]) => [teamId, Math.min(5, Math.max(1, Math.floor(Number(weight))))])
+      ) as Record<string, number>;
+      const activeTeamStackPlayerTargets = Object.fromEntries(
+        Object.entries(teamStackPlayerTargets)
+          .filter(([, target]) => Number.isFinite(Number(target)) && Number(target) > 0)
+          .map(([teamId, target]) => [teamId, Math.min(6, Math.max(0, Math.floor(Number(target))))])
+      ) as Record<string, number>;
+      const totalTeamStackPlayersRequested = Object.values(activeTeamStackPlayerTargets).reduce((sum, count) => sum + count, 0);
 
       // Scope pool to teams in the current slate's games (if games are known)
       const slateTeamIds = games.length > 0
@@ -1145,6 +1173,20 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           };
         })
         .filter((player) => !Boolean((player as any).optimizerExcluded));
+
+      if (totalTeamStackPlayersRequested > DK_SLOTS.length) {
+        setError(`Team Stack requires ${totalTeamStackPlayersRequested} players, but a lineup only has ${DK_SLOTS.length} slots.`);
+        setIsOptimizing(false);
+        return;
+      }
+      for (const [teamId, requiredCount] of Object.entries(activeTeamStackPlayerTargets)) {
+        const availableCount = pool.filter((player) => player.team === teamId).length;
+        if (availableCount < requiredCount) {
+          setError(`Team Stack requires ${requiredCount} players from ${teamId}, but only ${availableCount} are available after filters.`);
+          setIsOptimizing(false);
+          return;
+        }
+      }
 
       if (pool.length < DK_SLOTS.length) {
         setError(`Optimizer pool too small (${pool.length} players) after filters/exclusions.`);
@@ -1197,6 +1239,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
               if (config.deltaFromBestProjection > 0) diagnostics.push(`projection floor -${config.deltaFromBestProjection}`);
               if (poolFilters.length > 0) diagnostics.push(`${poolFilters.length} pool filters`);
               if (poolSearch.trim()) diagnostics.push('pool search active');
+              if (Object.keys(activeTeamStackPlayerTargets).length > 0) diagnostics.push('team stack player targets');
 
               const hasUserConstraints = diagnostics.length > 0;
               const detail = hasUserConstraints
@@ -1237,7 +1280,11 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
 
       const request = {
         players: enrichedPool,
-        config: { ...config, teamStackWeights: Object.keys(teamStackWeights).length > 0 ? teamStackWeights : undefined },
+        config: {
+          ...config,
+          teamStackWeights: Object.keys(activeTeamStackWeights).length > 0 ? activeTeamStackWeights : undefined,
+          teamStackPlayerTargets: Object.keys(activeTeamStackPlayerTargets).length > 0 ? activeTeamStackPlayerTargets : undefined,
+        },
       };
 
       worker.postMessage(request);
@@ -1557,15 +1604,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     });
   }, []);
 
-  const teamOptions = useMemo(() => {
-    const set = new Set<string>();
-    games.forEach((g) => {
-      set.add(g.teamA.teamId);
-      set.add(g.teamB.teamId);
-    });
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [games]);
-
   const saveAdvancedSettings = () => {
     setShowAdvanced(false);
   };
@@ -1575,6 +1613,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     setLockedIds([]);
     setSelectedMatchups([]);
     setTeamStackWeights({});
+    setTeamStackPlayerTargets({});
     setPlayerOverrides({});
     setSettingsRevision((r) => r + 1);
   };
@@ -2648,48 +2687,69 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
               </div>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 overflow-hidden">
                 <div className="border border-ink/10 rounded-sm p-3 bg-white/60">
-                  <h4 className="text-[10px] font-black uppercase tracking-widest text-ink/50 mb-2">Team Stack Priority</h4>
-                  <div className="space-y-3">
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-ink/50 mb-2">Team Stack</h4>
+                  <div className="space-y-2">
                     <div>
                       <div className="text-[9px] font-black uppercase tracking-widest text-ink/40 mb-1">Matchups</div>
-                      <div className="flex overflow-x-auto gap-2 pb-1 scrollbar-hide">
+                      <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
                         {games.map((game) => {
-                          const isSelected = selectedMatchups.includes(game.matchupKey);
+                          const teams = ([
+                            { teamId: game.teamA.teamId, abbr: game.teamA.abbreviation },
+                            { teamId: game.teamB.teamId, abbr: game.teamB.abbreviation },
+                          ] as { teamId: string; abbr: string }[]);
                           return (
                             <div
                               key={game.matchupKey}
-                              onClick={() => {
-                                setSelectedMatchups((prev) => isSelected
-                                  ? prev.filter((k) => k !== game.matchupKey)
-                                  : [...prev, game.matchupKey]
-                                );
-                              }}
-                              className={`flex-shrink-0 w-32 bg-white/70 rounded-sm p-2 border transition-colors cursor-pointer ${
-                                isSelected ? 'border-drafting-orange bg-drafting-orange/10' : 'border-ink/10 hover:border-drafting-orange/40'
-                              }`}
+                              className="bg-white/70 rounded-sm p-2 border border-ink/10"
                             >
-                              <div className="flex items-center justify-center gap-1 text-[11px] font-black italic text-ink">
-                                {([
-                                  { teamId: game.teamA.teamId, abbr: game.teamA.abbreviation },
-                                  { teamId: game.teamB.teamId, abbr: game.teamB.abbreviation },
-                                ] as { teamId: string; abbr: string }[]).map(({ teamId, abbr }, i) => {
+                              <div className="text-[9px] font-black uppercase tracking-widest text-ink/35 mb-1.5">
+                                {game.teamB.abbreviation}@{game.teamA.abbreviation}
+                              </div>
+                              <div className="space-y-1.5">
+                                {teams.map(({ teamId, abbr }) => {
                                   const w = teamStackWeights[teamId] ?? 0;
+                                  const targetPlayers = teamStackPlayerTargets[teamId] ?? 0;
                                   return (
-                                    <React.Fragment key={teamId}>
-                                      {i === 1 && <span className="text-[9px] text-ink/40 font-mono">@</span>}
+                                    <div key={teamId} className="flex items-center justify-between gap-2">
                                       <button
                                         type="button"
-                                        onClick={(e) => { e.stopPropagation(); toggleTeamWeight(teamId); }}
-                                        className={`relative transition-colors px-1.5 py-0.5 rounded-sm ${
-                                          w > 0 ? 'text-white bg-drafting-orange' : 'text-ink hover:text-drafting-orange'
+                                        onClick={() => toggleTeamWeight(teamId)}
+                                        className={`relative min-w-[46px] text-center px-2 py-1 rounded-sm text-[10px] font-black uppercase tracking-widest border transition-colors ${
+                                          w > 0
+                                            ? 'bg-drafting-orange text-white border-drafting-orange'
+                                            : 'border-ink/20 text-ink/70 hover:border-drafting-orange/40 hover:text-ink'
                                         }`}
+                                        title="Click to set team priority (1-5)"
                                       >
                                         {abbr}
-                                        {w >= 2 && (
+                                        {w > 0 && (
                                           <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-3.5 h-3.5 rounded-full bg-ink text-white text-[8px] font-black leading-none">{w}</span>
                                         )}
                                       </button>
-                                    </React.Fragment>
+                                      <div className="flex items-center gap-1.5">
+                                        <select
+                                          value={targetPlayers}
+                                          onChange={(e) => {
+                                            const next = Math.min(6, Math.max(0, Math.floor(Number(e.target.value) || 0)));
+                                            setTeamStackPlayerTargets((prev) => {
+                                              if (next <= 0) {
+                                                const { [teamId]: _removed, ...rest } = prev;
+                                                return rest;
+                                              }
+                                              return { ...prev, [teamId]: next };
+                                            });
+                                          }}
+                                          className="w-14 bg-white border border-ink/20 rounded-sm px-1.5 py-0.5 text-[11px] font-mono text-ink text-right focus:border-drafting-orange outline-none"
+                                        >
+                                          {Array.from({ length: 7 }, (_, idx) => idx).map((num) => (
+                                            <option key={num} value={num}>
+                                              {num}
+                                            </option>
+                                          ))}
+                                        </select>
+                                        <span className="text-[9px] font-black uppercase tracking-widest text-ink/45 whitespace-nowrap">players</span>
+                                      </div>
+                                    </div>
                                   );
                                 })}
                               </div>
@@ -2698,28 +2758,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                         })}
                       </div>
                     </div>
-                    <div>
-                      <div className="text-[9px] font-black uppercase tracking-widest text-ink/40 mb-1">Teams</div>
-                      <div className="flex flex-wrap gap-2">
-                        {teamOptions.map((team) => {
-                          const w = teamStackWeights[team] ?? 0;
-                          return (
-                            <button
-                              key={team}
-                              type="button"
-                              onClick={() => toggleTeamWeight(team)}
-                              className={`relative px-2 py-1 rounded-sm text-[10px] font-black uppercase tracking-widest border ${
-                                w > 0 ? 'bg-drafting-orange text-white border-drafting-orange' : 'border-ink/20 text-ink/60 hover:border-drafting-orange/40 hover:text-ink'
-                              }`}
-                            >
-                              {team}
-                              {w >= 2 && (
-                                <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-3.5 h-3.5 rounded-full bg-ink text-white text-[8px] font-black leading-none">{w}</span>
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
+                    <div className="text-[9px] text-ink/45">
+                      Click a team badge to set priority (1-5). Set players to require at least that many from each team.
                     </div>
                   </div>
                 </div>
