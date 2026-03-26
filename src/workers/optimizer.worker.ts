@@ -390,7 +390,9 @@ const resolveGeneratorConfig = (raw?: Record<string, unknown>): GeneratorConfig 
     ...DEFAULT_CONFIG,
     n_lineups: nLineups,
     global_max_exposure_pct: clamp(
-      safeNumber(raw?.global_max_exposure_pct ?? raw?.maxExposure ?? raw?.max_exposure, DEFAULT_CONFIG.global_max_exposure_pct),
+      // Intentionally ignore legacy `maxExposure`/`max_exposure` so baseline
+      // runs are not silently constrained by persisted UI defaults.
+      safeNumber(raw?.global_max_exposure_pct, DEFAULT_CONFIG.global_max_exposure_pct),
       0,
       100,
     ),

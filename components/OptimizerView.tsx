@@ -22,7 +22,7 @@ import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
-import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260326-gpp-fix1';
+import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260326-gpp-fix2';
 import { usePlayerEnrichment } from '../src/hooks/usePlayerEnrichment';
 import { useLineupScoring } from '../src/hooks/useLineupScoring';
 
@@ -99,7 +99,7 @@ const createDefaultOptimizerConfig = (): OptimizerConfigState => ({
   salaryCap: 50000,
   salaryFloor: 49500,
   minExposure: 0,
-  maxExposure: 50,
+  maxExposure: 100,
   site: 'DraftKings',
   optimizerMode: 'max_projection',
   upsideDelta: 8,
