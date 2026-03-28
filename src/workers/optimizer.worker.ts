@@ -662,7 +662,7 @@ function computePositionGroups(players: PlayerWithMetrics[]): Record<string, num
  * Formats a list of (coefficient, variable) pairs into an LP expression string.
  * Handles sign formatting so terms join cleanly (e.g. "3.5 x0 + 2.1 x1 - 0.5 x2").
  */
-function formatLPTerms(coeffs: number[], varNames: string[]): string {
+function formatLPTermTokens(coeffs: number[], varNames: string[]): string[] {
   const parts: string[] = [];
   for (let i = 0; i < coeffs.length; i++) {
     const c = coeffs[i];
@@ -675,7 +675,40 @@ function formatLPTerms(coeffs: number[], varNames: string[]): string {
       parts.push(`+ ${c.toFixed(6)} ${varNames[i]}`);
     }
   }
-  return parts.length > 0 ? parts.join(' ') : '0';
+  return parts;
+}
+
+function formatUnitTermTokens(varNames: string[]): string[] {
+  const parts: string[] = [];
+  for (let i = 0; i < varNames.length; i++) {
+    if (i === 0) parts.push(varNames[i]);
+    else parts.push(`+ ${varNames[i]}`);
+  }
+  return parts;
+}
+
+function wrapTokens(tokens: string[], maxTokensPerLine = 20): string[] {
+  if (tokens.length === 0) return ['0'];
+  const lines: string[] = [];
+  for (let i = 0; i < tokens.length; i += maxTokensPerLine) {
+    lines.push(tokens.slice(i, i + maxTokensPerLine).join(' '));
+  }
+  return lines;
+}
+
+function appendConstraint(
+  lines: string[],
+  label: string,
+  tokens: string[],
+  operator: '<=' | '>=' | '=',
+  rhs: number,
+): void {
+  const wrapped = wrapTokens(tokens);
+  wrapped.forEach((chunk, idx) => {
+    const prefix = idx === 0 ? ` ${label}: ` : '  ';
+    const suffix = idx === wrapped.length - 1 ? ` ${operator} ${rhs}` : '';
+    lines.push(`${prefix}${chunk}${suffix}`);
+  });
 }
 
 /**
@@ -716,18 +749,20 @@ function buildLPModel(
 
   // Objective: maximize effective projections
   lines.push('Maximize');
-  lines.push(` obj: ${formatLPTerms(effectiveProjections, varNames)}`);
+  const objectiveWrapped = wrapTokens(formatLPTermTokens(effectiveProjections, varNames));
+  lines.push(` obj: ${objectiveWrapped[0]}`);
+  objectiveWrapped.slice(1).forEach((chunk) => lines.push(`  ${chunk}`));
 
   lines.push('Subject To');
 
   // Roster size = 8
-  lines.push(` roster: ${varNames.join(' + ')} = ${DK_SLOTS.length}`);
+  appendConstraint(lines, 'roster', formatUnitTermTokens(varNames), '=', DK_SLOTS.length);
 
   // Salary cap
   const salaryCoeffs = players.map((p) => safeNumber(p.salary, 0));
-  lines.push(` sal_max: ${formatLPTerms(salaryCoeffs, varNames)} <= ${config.salary_cap}`);
+  appendConstraint(lines, 'sal_max', formatLPTermTokens(salaryCoeffs, varNames), '<=', config.salary_cap);
   if (config.salary_floor > 0) {
-    lines.push(` sal_min: ${formatLPTerms(salaryCoeffs, varNames)} >= ${config.salary_floor}`);
+    appendConstraint(lines, 'sal_min', formatLPTermTokens(salaryCoeffs, varNames), '>=', config.salary_floor);
   }
 
   // Position group constraints
@@ -740,8 +775,8 @@ function buildLPModel(
   for (const [groupName, minCount] of Object.entries(posGroupMinimums)) {
     const indices = posGroups[groupName];
     if (!indices || indices.length === 0) continue;
-    const terms = indices.map((i) => varNames[i]).join(' + ');
-    lines.push(` pos_${groupName}: ${terms} >= ${minCount}`);
+    const terms = formatUnitTermTokens(indices.map((i) => varNames[i]));
+    appendConstraint(lines, `pos_${groupName}`, terms, '>=', minCount);
   }
 
   // Game-stack constraints (optional)
@@ -758,7 +793,7 @@ function buildLPModel(
     if (games.length > 0) {
       const yNames = games.map(([gid]) => `yg_${gid}`);
       // At least one game must be stacked
-      lines.push(` game_stack_any: ${yNames.join(' + ')} >= 1`);
+      appendConstraint(lines, 'game_stack_any', formatUnitTermTokens(yNames), '>=', 1);
       // For each game: sum(x_i) >= min_stack_size * y_g
       //   Rewritten as: sum(x_i) - min_stack_size * y_g >= 0
       games.forEach(([gid, idxs], gi) => {
@@ -790,7 +825,9 @@ function buildLPModel(
 
   // Binary variable declarations (all player vars are binary 0/1)
   lines.push('Binary');
-  lines.push(` ${varNames.join(' ')}`);
+  for (let i = 0; i < varNames.length; i += 40) {
+    lines.push(` ${varNames.slice(i, i + 40).join(' ')}`);
+  }
 
   // Game stack auxiliary variables are also binary
   if (config.enforce_game_stack) {
@@ -805,7 +842,9 @@ function buildLPModel(
       .filter(([, idxs]) => idxs.length >= config.min_game_stack_size)
       .map(([gid]) => `yg_${gid}`);
     if (auxVars.length > 0) {
-      lines.push(` ${auxVars.join(' ')}`);
+      for (let i = 0; i < auxVars.length; i += 40) {
+        lines.push(` ${auxVars.slice(i, i + 40).join(' ')}`);
+      }
     }
   }
 
