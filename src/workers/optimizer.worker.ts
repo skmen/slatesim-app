@@ -689,11 +689,10 @@ function formatUnitTermTokens(varNames: string[]): string[] {
 
 function wrapTokens(tokens: string[], maxTokensPerLine = 20): string[] {
   if (tokens.length === 0) return ['0'];
-  const lines: string[] = [];
-  for (let i = 0; i < tokens.length; i += maxTokensPerLine) {
-    lines.push(tokens.slice(i, i + maxTokensPerLine).join(' '));
-  }
-  return lines;
+  // Keep each expression on a single line to avoid parser edge-cases on very large slates.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  void maxTokensPerLine;
+  return [tokens.join(' ')];
 }
 
 function appendConstraint(
@@ -867,6 +866,167 @@ async function initSolver(): Promise<HighsSolver> {
   return _solverPromise;
 }
 
+const sumSalary = (players: PlayerWithMetrics[]): number =>
+  players.reduce((sum, p) => sum + safeNumber(p.salary, 0), 0);
+
+const sumProjection = (players: PlayerWithMetrics[]): number =>
+  players.reduce((sum, p) => sum + safeNumber(p.projection, 0), 0);
+
+const weightedPick = <T,>(items: Array<{ item: T; weight: number }>): T => {
+  const total = items.reduce((sum, row) => sum + Math.max(0, row.weight), 0);
+  if (total <= 0) return items[Math.floor(Math.random() * items.length)].item;
+  let r = Math.random() * total;
+  for (const row of items) {
+    r -= Math.max(0, row.weight);
+    if (r <= 0) return row.item;
+  }
+  return items[items.length - 1].item;
+};
+
+const overlapCount = (a: PlayerWithMetrics[], b: PlayerWithMetrics[]): number => {
+  const bIds = new Set(b.map((p) => p.id));
+  return a.reduce((count, p) => count + (bIds.has(p.id) ? 1 : 0), 0);
+};
+
+const findSlotAssignment = (lineup: PlayerWithMetrics[]): DkSlot[] | null => {
+  const assignment: DkSlot[] = new Array(lineup.length);
+  const usedSlots = new Set<DkSlot>();
+  const order = lineup
+    .map((p, idx) => ({ idx, eligible: getEligibleSlots(p.position) }))
+    .sort((a, b) => a.eligible.length - b.eligible.length);
+
+  const dfs = (k: number): boolean => {
+    if (k >= order.length) return true;
+    const row = order[k];
+    for (const slot of row.eligible) {
+      if (usedSlots.has(slot)) continue;
+      usedSlots.add(slot);
+      assignment[row.idx] = slot;
+      if (dfs(k + 1)) return true;
+      usedSlots.delete(slot);
+    }
+    return false;
+  };
+
+  return dfs(0) ? assignment : null;
+};
+
+const buildHeuristicLineup = (
+  activePool: PlayerWithMetrics[],
+  config: GeneratorConfig,
+  lockIds: Set<string>,
+  dynamicExcludes: Set<string>,
+  exposureBounds: Map<string, ExposureBound>,
+  appearances: Map<string, number>,
+  underExposureBonus: Map<string, number>,
+  accepted: PlayerWithMetrics[][],
+  randPct: number,
+): PlayerWithMetrics[] | null => {
+  const lockedPlayers = activePool.filter((p) => lockIds.has(p.id));
+  if (lockedPlayers.length > DK_SLOTS.length) return null;
+  const lockAssignment = findSlotAssignment(lockedPlayers);
+  if (lockedPlayers.length > 0 && !lockAssignment) return null;
+  const occupiedSlots = new Set<DkSlot>((lockAssignment || []).filter(Boolean));
+
+  let best: PlayerWithMetrics[] | null = null;
+  let bestScore = -Infinity;
+  const attempts = Math.max(600, Math.min(2000, activePool.length * 6));
+
+  const isCandidateAvailable = (p: PlayerWithMetrics, selectedIds: Set<string>): boolean => {
+    if (selectedIds.has(p.id)) return false;
+    if (dynamicExcludes.has(p.id) && !lockIds.has(p.id)) return false;
+    const bound = exposureBounds.get(p.id);
+    if (bound && (appearances.get(p.id) || 0) >= bound.max) return false;
+    return true;
+  };
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const selected: PlayerWithMetrics[] = [...lockedPlayers];
+    const selectedIds = new Set(selected.map((p) => p.id));
+    const remainingSlots = DK_SLOTS.filter((slot) => !occupiedSlots.has(slot));
+
+    while (selected.length < DK_SLOTS.length && remainingSlots.length > 0) {
+      const currentSalary = sumSalary(selected);
+      const nextSlot = remainingSlots
+        .map((slot) => {
+          const count = activePool.reduce((acc, p) => {
+            if (!isCandidateAvailable(p, selectedIds)) return acc;
+            return acc + (getEligibleSlots(p.position).includes(slot) ? 1 : 0);
+          }, 0);
+          return { slot, count };
+        })
+        .sort((a, b) => a.count - b.count)[0]?.slot;
+
+      if (!nextSlot) break;
+      const slotsLeftAfterPick = remainingSlots.length - 1;
+      const candidates = activePool.filter((p) => {
+        if (!isCandidateAvailable(p, selectedIds)) return false;
+        if (!getEligibleSlots(p.position).includes(nextSlot)) return false;
+
+        const nextSalary = currentSalary + safeNumber(p.salary, 0);
+        if (nextSalary > config.salary_cap) return false;
+
+        if (slotsLeftAfterPick <= 0) {
+          return nextSalary >= config.salary_floor;
+        }
+
+        const remainingSalaries = activePool
+          .filter((q) => q.id !== p.id && isCandidateAvailable(q, selectedIds))
+          .map((q) => safeNumber(q.salary, 0))
+          .filter((s) => s > 0)
+          .sort((a, b) => a - b);
+
+        if (remainingSalaries.length < slotsLeftAfterPick) return false;
+        const minRemain = remainingSalaries.slice(0, slotsLeftAfterPick).reduce((sum, s) => sum + s, 0);
+        const maxRemain = remainingSalaries.slice(-slotsLeftAfterPick).reduce((sum, s) => sum + s, 0);
+
+        if (nextSalary + minRemain > config.salary_cap) return false;
+        if (nextSalary + maxRemain < config.salary_floor) return false;
+        return true;
+      });
+
+      if (candidates.length === 0) break;
+
+      const scored = candidates
+        .map((p) => {
+          const base = safeNumber(p.projection, 0) + (underExposureBonus.get(p.id) || 0);
+          const jitter = randPct > 0 ? base * boxMullerGaussian() * randPct : 0;
+          return {
+            item: p,
+            score: Math.max(0.001, base + jitter),
+          };
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 20)
+        .map((row) => ({ item: row.item, weight: row.score }));
+
+      const picked = weightedPick(scored);
+      selected.push(picked);
+      selectedIds.add(picked.id);
+      const slotIndex = remainingSlots.indexOf(nextSlot);
+      if (slotIndex >= 0) remainingSlots.splice(slotIndex, 1);
+    }
+
+    if (selected.length !== DK_SLOTS.length) continue;
+    const totalSalary = sumSalary(selected);
+    if (totalSalary < config.salary_floor || totalSalary > config.salary_cap) continue;
+    if (!canAssignDraftKingsSlots(selected)) continue;
+
+    const tooSimilar = accepted.some((prev) =>
+      overlapCount(selected, prev) > DK_SLOTS.length - config.min_hamming_distance,
+    );
+    if (tooSimilar) continue;
+
+    const score = sumProjection(selected);
+    if (score > bestScore) {
+      best = selected;
+      bestScore = score;
+    }
+  }
+
+  return best;
+};
+
 // ---- Core Lineup Generator (ILP-based) ----
 
 const generateLineups = async (
@@ -938,6 +1098,7 @@ const generateLineups = async (
   }
 
   let earlyStop = false;
+  let solverFailedHard = false;
 
   for (let iter = 0; iter < config.n_lineups && !earlyStop; iter++) {
     const randPct = getRandomizationPct(iter, config);
@@ -1004,6 +1165,7 @@ const generateLineups = async (
               const finalMsg = finalFallbackErr instanceof Error ? finalFallbackErr.message : String(finalFallbackErr);
               warnings.push(`Solver error at lineup ${iter + 1}: ${primaryError} Parse fallback failed: ${parseFallbackMsg} Presolve-off failed: ${finalMsg}`);
               if (iter === 0) warnings.push(`LP preview: ${lpString.slice(0, 500)}`);
+              solverFailedHard = true;
               earlyStop = true;
               break;
             }
@@ -1016,12 +1178,14 @@ const generateLineups = async (
             const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
             warnings.push(`Solver error at lineup ${iter + 1}: ${primaryError} Presolve-off fallback failed: ${fallbackMsg}`);
             if (iter === 0) warnings.push(`LP preview: ${lpString.slice(0, 500)}`);
+            solverFailedHard = true;
             earlyStop = true;
             break;
           }
         } else {
           warnings.push(`Solver error at lineup ${iter + 1}: ${primaryError}`);
           if (iter === 0) warnings.push(`LP preview: ${lpString.slice(0, 500)}`);
+          solverFailedHard = true;
           earlyStop = true;
           break;
         }
@@ -1101,6 +1265,67 @@ const generateLineups = async (
         toSerializableLineup(
           accepted[accepted.length - 1],
           `gpp_progress_${accepted.length}_${Math.random().toString(36).slice(2, 7)}`,
+        ),
+        accepted.length,
+      );
+    }
+  }
+
+  if (solverFailedHard && accepted.length < config.n_lineups) {
+    warnings.push('Primary solver unavailable; using heuristic lineup fallback.');
+  }
+
+  if (accepted.length < config.n_lineups) {
+    if (!solverFailedHard) {
+      warnings.push('Completing remaining lineups with heuristic fallback.');
+    }
+    for (let iter = accepted.length; iter < config.n_lineups; iter++) {
+      const randPct = getRandomizationPct(iter, config);
+      const dynamicExcludes = new Set<string>(excludeIds);
+      for (const [id, bound] of exposureBounds) {
+        if ((appearances.get(id) || 0) >= bound.max) {
+          dynamicExcludes.add(id);
+        }
+      }
+
+      const underExposureBonus = new Map<string, number>();
+      const remainingIters = config.n_lineups - iter;
+      for (const [id, bound] of exposureBounds) {
+        const got = appearances.get(id) || 0;
+        const needed = bound.min - got;
+        if (needed > 0 && remainingIters > 0) {
+          underExposureBonus.set(id, Math.min((needed / remainingIters) * 5, 10));
+        }
+      }
+
+      const lineup = buildHeuristicLineup(
+        activePool,
+        config,
+        lockIds,
+        dynamicExcludes,
+        exposureBounds,
+        appearances,
+        underExposureBonus,
+        accepted,
+        randPct,
+      );
+
+      if (!lineup) {
+        warnings.push(`Heuristic fallback exhausted at lineup ${iter + 1}; stopping at ${accepted.length} lineups.`);
+        break;
+      }
+
+      accepted.push(lineup);
+      lineup.forEach((p) => {
+        appearances.set(p.id, (appearances.get(p.id) || 0) + 1);
+      });
+
+      const progress = Math.min(99, Math.round((accepted.length / config.n_lineups) * 100));
+      onProgress(
+        progress,
+        toSerializableLineup(
+          accepted[accepted.length - 1],
+          `gpp_fallback_${accepted.length}_${Math.random().toString(36).slice(2, 7)}`,
         ),
         accepted.length,
       );
