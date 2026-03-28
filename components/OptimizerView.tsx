@@ -1234,28 +1234,40 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             if (workerWarnings.length > 0) {
               console.warn('[optimizer] constraint warnings:', workerWarnings);
             }
-            if (!msg.lineups || msg.lineups.length === 0) {
-              setError('No valid lineups could be generated with the current filters.');
-            } else if (msg.lineups.length < config.numLineups) {
-              const diagnostics: string[] = [];
-              if (lockedIds.length > 0) diagnostics.push(`${lockedIds.length} locked`);
-              if (excludedOverrideCount > 0) diagnostics.push(`${excludedOverrideCount} excluded`);
-              if (minExposureOverrideCount > 0) diagnostics.push(`${minExposureOverrideCount} min-exp caps`);
-              if (maxExposureOverrideCount > 0) diagnostics.push(`${maxExposureOverrideCount} max-exp caps`);
-              if (config.salaryFloor > 0) diagnostics.push(`salary floor $${config.salaryFloor}`);
-              if (config.enableStatConstraints) diagnostics.push(`stat constraints ${config.statConstraintMode}`);
-              if (config.deltaFromBestProjection > 0) diagnostics.push(`projection floor -${config.deltaFromBestProjection}`);
-              if (poolFilters.length > 0) diagnostics.push(`${poolFilters.length} pool filters`);
-              if (poolSearch.trim()) diagnostics.push('pool search active');
+            const diagnostics: string[] = [];
+            if (lockedIds.length > 0) diagnostics.push(`${lockedIds.length} locked`);
+            if (excludedOverrideCount > 0) diagnostics.push(`${excludedOverrideCount} excluded`);
+            if (minExposureOverrideCount > 0) diagnostics.push(`${minExposureOverrideCount} min-exp caps`);
+            if (maxExposureOverrideCount > 0) diagnostics.push(`${maxExposureOverrideCount} max-exp caps`);
+            if (config.salaryFloor > 0) diagnostics.push(`salary floor $${config.salaryFloor}`);
+            if (config.enableStatConstraints) diagnostics.push(`stat constraints ${config.statConstraintMode}`);
+            if (config.deltaFromBestProjection > 0) diagnostics.push(`projection floor -${config.deltaFromBestProjection}`);
+            if (poolFilters.length > 0) diagnostics.push(`${poolFilters.length} pool filters`);
+            if (poolSearch.trim()) diagnostics.push('pool search active');
 
-              const hasUserConstraints = diagnostics.length > 0;
+            const hasUserConstraints = diagnostics.length > 0;
+            const warningSuffix = workerWarnings.length > 0 ? ` ${workerWarnings.join(' ')}` : '';
+            if (!msg.lineups || msg.lineups.length === 0) {
+              if (hasUserConstraints) {
+                setError(
+                  `No valid lineups could be generated with the active constraints.` +
+                  ` Active constraints detected: ${diagnostics.join(', ')}.` +
+                  ` Try clearing advanced settings or relaxing pool, exposure, or salary constraints.${warningSuffix}`,
+                );
+              } else {
+                setError(
+                  `No valid lineups could be generated from the current player pool.` +
+                  ` No explicit filters or advanced constraints were detected; this usually means the slate is infeasible under salary/position requirements.` +
+                  ` Try lowering the salary floor or expanding the player pool.${warningSuffix}`,
+                );
+              }
+            } else if (msg.lineups.length < config.numLineups) {
               const detail = hasUserConstraints
                 ? ` Active constraints detected: ${diagnostics.join(', ')}.`
                 : ' No explicit advanced constraints detected; feasible unique lineups were exhausted by salary/position/uniqueness limits in the current pool.';
               const suggestion = hasUserConstraints
-                ? ' Try clearing advanced settings or relaxing pool filters/exposure caps for more combinations.'
+                ? ' Try clearing advanced settings or relaxing pool filters, exposure caps, or salary constraints for more combinations.'
                 : ' Try expanding the player pool to increase valid unique combinations.';
-              const warningSuffix = workerWarnings.length > 0 ? ` ${workerWarnings.join(' ')}` : '';
               setError(
                 `Generated ${msg.lineups.length}/${config.numLineups} feasible unique lineups before exhaustion.` +
                 `${detail}${suggestion}${warningSuffix}`,
