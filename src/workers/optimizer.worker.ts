@@ -694,10 +694,9 @@ function buildLPModel(
   const varNames = players.map((_, i) => `x${i}`);
   const lines: string[] = [];
 
-  // Objective: negate projections so HiGHS minimization = projection maximization
-  const objCoeffs = effectiveProjections.map((p) => -p);
-  lines.push('Minimize');
-  lines.push(` obj: ${formatLPTerms(objCoeffs, varNames)}`);
+  // Objective: maximize effective projections
+  lines.push('Maximize');
+  lines.push(` obj: ${formatLPTerms(effectiveProjections, varNames)}`);
 
   lines.push('Subject To');
 
@@ -754,20 +753,26 @@ function buildLPModel(
     lines.push(` excl_${i}: ${c}`);
   });
 
-  // Bounds
-  lines.push('Bounds');
+  // Bounds: only needed for locked (fix to 1) or excluded (fix to 0) players
+  const fixedBounds: string[] = [];
   for (let i = 0; i < n; i++) {
     const id = players[i].id;
     if (excludes.has(id)) {
-      lines.push(` x${i} = 0`);
+      fixedBounds.push(` 0 <= x${i} <= 0`);
     } else if (locks.has(id)) {
-      lines.push(` x${i} = 1`);
-    } else {
-      lines.push(` 0 <= x${i} <= 1`);
+      fixedBounds.push(` 1 <= x${i} <= 1`);
     }
   }
+  if (fixedBounds.length > 0) {
+    lines.push('Bounds');
+    fixedBounds.forEach((b) => lines.push(b));
+  }
 
-  // Game stack auxiliary variable bounds
+  // Binary variable declarations (all player vars are binary 0/1)
+  lines.push('Binary');
+  lines.push(` ${varNames.join(' ')}`);
+
+  // Game stack auxiliary variables are also binary
   if (config.enforce_game_stack) {
     const gameMap = new Map<string, number[]>();
     players.forEach((p, i) => {
@@ -776,29 +781,13 @@ function buildLPModel(
       if (!gameMap.has(gid)) gameMap.set(gid, []);
       gameMap.get(gid)!.push(i);
     });
-    Array.from(gameMap.entries())
+    const auxVars = Array.from(gameMap.entries())
       .filter(([, idxs]) => idxs.length >= config.min_game_stack_size)
-      .forEach(([gid]) => {
-        lines.push(` 0 <= yg_${gid} <= 1`);
-      });
+      .map(([gid]) => `yg_${gid}`);
+    if (auxVars.length > 0) {
+      lines.push(` ${auxVars.join(' ')}`);
+    }
   }
-
-  // Integer variable declarations
-  lines.push('General');
-  const allIntVars = [...varNames];
-  if (config.enforce_game_stack) {
-    const gameMap = new Map<string, number[]>();
-    players.forEach((p, i) => {
-      if (excludes.has(p.id)) return;
-      const gid = (p.game_id || extractGameId(p)).replace(/[^a-zA-Z0-9]/g, '_');
-      if (!gameMap.has(gid)) gameMap.set(gid, []);
-      gameMap.get(gid)!.push(i);
-    });
-    Array.from(gameMap.entries())
-      .filter(([, idxs]) => idxs.length >= config.min_game_stack_size)
-      .forEach(([gid]) => allIntVars.push(`yg_${gid}`));
-  }
-  lines.push(` ${allIntVars.join(' ')}`);
 
   lines.push('End');
   return lines.join('\n');
@@ -813,7 +802,7 @@ let _solverPromise: ReturnType<typeof highsLoader> | null = null;
 async function initSolver(): Promise<HighsSolver> {
   if (!_solverPromise) {
     _solverPromise = highsLoader({
-      locateFile: (_file: string) => highsWasm as string,
+      locateFile: (file: string) => (file.endsWith('.wasm') ? highsWasm as string : file),
     });
   }
   return _solverPromise;
@@ -942,8 +931,10 @@ const generateLineups = async (
       if (result.Status !== 'Optimal') {
         if (accepted.length === 0) {
           warnings.push(
-            `Optimizer returned ${result.Status} on first solve. Check player pool, salary cap, and position availability.`,
+            `Optimizer returned ${result.Status} on first solve. Pool: ${activePool.length} players, salary ${config.salary_floor}-${config.salary_cap}. Check player pool and position availability.`,
           );
+          // Emit first 500 chars of LP for debugging
+          warnings.push(`LP preview: ${lpString.slice(0, 500)}`);
         } else {
           warnings.push(
             `Solve ${iter + 1} returned ${result.Status}; stopping at ${accepted.length} lineups.`,
