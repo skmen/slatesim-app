@@ -68,8 +68,6 @@ interface OptimizerConfigState {
   salaryCap: number;
   salaryFloor: number;
   minUniquePlayers: number;
-  generations: number;
-  population: number;
   minSalary: number;
   minMinutes: number;
   minProjectedFpts: number;
@@ -107,8 +105,6 @@ const createDefaultOptimizerConfig = (): OptimizerConfigState => ({
   salaryCap: 50000,
   salaryFloor: 49500,
   minUniquePlayers: 2,
-  generations: 80,
-  population: 80,
   minSalary: 3000,
   minMinutes: 0,
   minProjectedFpts: 15,
@@ -144,8 +140,6 @@ const sanitizeOptimizerConfig = (raw: any): OptimizerConfigState => {
   const numLineups = Number(raw?.numLineups);
   const salaryFloor = Number(raw?.salaryFloor);
   const minUniquePlayers = Number(raw?.minUniquePlayers);
-  const generations = Number(raw?.generations);
-  const population = Number(raw?.population);
   const minSalary = Number(raw?.minSalary);
   const minMinutes = Number(raw?.minMinutes);
   const minProjectedFpts = Number(raw?.minProjectedFpts);
@@ -166,8 +160,6 @@ const sanitizeOptimizerConfig = (raw: any): OptimizerConfigState => {
     salaryCap: nextSalaryCap,
     salaryFloor: nextSalaryFloor,
     minUniquePlayers: Number.isFinite(minUniquePlayers) ? Math.max(1, Math.min(8, Math.floor(minUniquePlayers))) : defaults.minUniquePlayers,
-    generations: Number.isFinite(generations) ? Math.max(10, Math.min(1000, Math.floor(generations))) : defaults.generations,
-    population: Number.isFinite(population) ? Math.max(10, Math.min(500, Math.floor(population))) : defaults.population,
     minSalary: Number.isFinite(minSalary) ? Math.max(0, Math.min(nextSalaryCap, Math.floor(minSalary / 100) * 100)) : defaults.minSalary,
     minMinutes: Number.isFinite(minMinutes) ? Math.max(0, Math.min(48, Math.round(minMinutes))) : defaults.minMinutes,
     minProjectedFpts: Number.isFinite(minProjectedFpts) ? Math.max(0, Math.min(100, Math.round(minProjectedFpts * 2) / 2)) : defaults.minProjectedFpts,
@@ -1218,7 +1210,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         : null;
 
       // Prepare player pool (only active players with salary and projection)
-      const pool = players
+      const prefilteredPool = players
         .filter((p) => p.salary > 0 && p.projection > 0 && (!slateTeamIds || slateTeamIds.has(p.team)))
         .map((player) => {
           const overrides = playerOverrides[player.id] || {};
@@ -1238,8 +1230,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             optimizerMinExposure: locked ? 100 : minExposureVal,
             optimizerMaxExposure: locked ? 100 : maxExposureVal,
           };
-        })
-        .filter((player) => {
+        });
+
+      const passesPoolThresholds = (player: Player): boolean => {
           if (Boolean((player as any).optimizerExcluded)) return false;
 
           const salary = Number(player.salary);
@@ -1257,7 +1250,21 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           }
 
           return true;
-        });
+      };
+
+      const pool = prefilteredPool.filter((player) => passesPoolThresholds(player));
+      const filteredLocked = prefilteredPool.filter(
+        (player) => Boolean((player as any).optimizerLocked) && !pool.some((p) => p.id === player.id),
+      );
+      if (filteredLocked.length > 0) {
+        const preview = filteredLocked.slice(0, 3).map((p) => p.name).join(', ');
+        setError(
+          `Locked players were removed by active thresholds (${preview}${filteredLocked.length > 3 ? ', ...' : ''}). ` +
+          `Lower min salary/minutes/proj/slatesim filters or unlock those players.`,
+        );
+        setIsOptimizing(false);
+        return;
+      }
 
       if (pool.length < DK_SLOTS.length) {
         setError(`Optimizer pool too small (${pool.length} players) after filters/exclusions/thresholds.`);
@@ -1419,6 +1426,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       const saPlayers = enrichedPool.map((p) => {
         const team = String(p.team || 'UNK').toUpperCase();
         const opp = String(p.opponent || 'UNK').toUpperCase();
+        const minExposure = parseExposurePercentMaybe((p as any).optimizerMinExposure);
+        const maxExposure = parseExposurePercentMaybe((p as any).optimizerMaxExposure);
         return {
           id: String(p.id),
           name: String(p.name || p.id),
@@ -1429,10 +1438,14 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           ownership: Number((p as any).ownership ?? 0),
           teamId: team,
           gameId: [team, opp].sort().join('_vs_'),
+          locked: Boolean((p as any).optimizerLocked),
+          excluded: Boolean((p as any).optimizerExcluded),
+          ...(minExposure !== undefined ? { minExposure } : {}),
+          ...(maxExposure !== undefined ? { maxExposure } : {}),
         };
       });
 
-      const iterations = Math.max(500, Math.min(20000, Math.floor(config.generations * config.population)));
+      const iterations = Math.max(1200, Math.min(6000, 1200 + Math.floor(saPlayers.length * 8)));
       const randomPct = Math.max(0, Math.min(100, Number(config.randomnessPct) || 0)) / 100;
       const isCash = config.statConstraintMode === 'cash';
       const request = {
@@ -1447,7 +1460,10 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           saTempEnd: 0.01,
           saIterations: iterations,
           salaryCap: 50000,
+          salaryFloor: Math.max(0, Math.min(50000, Math.floor(config.salaryFloor))),
           minSalary: Math.max(0, Number(config.minSalary) || 0),
+          minUniquePlayers: Math.max(1, Math.min(8, Math.floor(config.minUniquePlayers))),
+          randomnessPct: Math.max(0, Math.min(100, Number(config.randomnessPct) || 0)),
         },
       };
 
@@ -1969,58 +1985,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
               </div>
 
               <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
-                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Generations</label>
-                <input
-                  type="number"
-                  min={10}
-                  max={1000}
-                  step={10}
-                  value={config.generations}
-                  onChange={(e) => {
-                    const parsed = Number(e.target.value);
-                    const nextVal = Number.isFinite(parsed) ? Math.max(10, Math.min(1000, Math.floor(parsed))) : 10;
-                    setConfig((prev) => ({ ...prev, generations: nextVal }));
-                  }}
-                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
-                />
-                <input
-                  type="range"
-                  min={10}
-                  max={1000}
-                  step={10}
-                  value={config.generations}
-                  onChange={(e) => setConfig((prev) => ({ ...prev, generations: Number(e.target.value) }))}
-                  className="w-full accent-drafting-orange"
-                />
-              </div>
-
-              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
-                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Population</label>
-                <input
-                  type="number"
-                  min={10}
-                  max={500}
-                  step={10}
-                  value={config.population}
-                  onChange={(e) => {
-                    const parsed = Number(e.target.value);
-                    const nextVal = Number.isFinite(parsed) ? Math.max(10, Math.min(500, Math.floor(parsed))) : 10;
-                    setConfig((prev) => ({ ...prev, population: nextVal }));
-                  }}
-                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
-                />
-                <input
-                  type="range"
-                  min={10}
-                  max={500}
-                  step={10}
-                  value={config.population}
-                  onChange={(e) => setConfig((prev) => ({ ...prev, population: Number(e.target.value) }))}
-                  className="w-full accent-drafting-orange"
-                />
-              </div>
-
-              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
                 <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Salary Floor</label>
                 <input
                   type="number"
@@ -2205,7 +2169,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
 
           <div className="p-2 rounded-sm border border-amber-200 bg-amber-50/80">
             <p className="text-[9px] font-bold text-amber-800 uppercase tracking-widest leading-tight">
-              Min/Max exposure are best-effort targets. If constraints are too tight for the requested lineup count, the optimizer may relax exposure bounds to return as many valid unique lineups as possible. Lock/Exclude remain hard constraints.
+              Min/Max exposure, lock/exclude, and salary floor are enforced as hard constraints. If constraints are too tight, lineup generation can fail before reaching the requested count.
             </p>
           </div>
 

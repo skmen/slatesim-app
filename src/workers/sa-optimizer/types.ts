@@ -24,6 +24,10 @@ export interface Player {
   ownership: number;
   teamId: string;
   gameId: string;
+  locked?: boolean;
+  excluded?: boolean;
+  minExposure?: number;
+  maxExposure?: number;
 }
 
 export interface LineupState {
@@ -48,7 +52,10 @@ export interface OptimizerConfig {
   saTempEnd: number;
   saIterations: number;
   salaryCap: number;
+  salaryFloor: number;
   minSalary: number;
+  minUniquePlayers: number;
+  randomnessPct: number;
 }
 
 export interface WorkerInMessage {
@@ -74,4 +81,3 @@ export type WorkerOutMessage =
       type: 'error';
       payload: { message: string };
     };
-

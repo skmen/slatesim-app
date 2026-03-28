@@ -8,6 +8,10 @@ const workerScope = self as unknown as {
 };
 
 function normalizeConfig(input: OptimizerConfig): OptimizerConfig {
+  const salaryCap = Math.floor(Number.isFinite(Number(input.salaryCap)) ? Number(input.salaryCap) : 50000);
+  const salaryFloorRaw = Math.floor(Number.isFinite(Number(input.salaryFloor)) ? Number(input.salaryFloor) : 0);
+  const salaryFloor = Math.max(0, Math.min(salaryFloorRaw, salaryCap));
+
   return {
     targetLineups: Math.max(0, Math.floor(input.targetLineups ?? 0)),
     weightProjection: Number(input.weightProjection ?? 0),
@@ -17,8 +21,11 @@ function normalizeConfig(input: OptimizerConfig): OptimizerConfig {
     saTempStart: Number.isFinite(Number(input.saTempStart)) ? Number(input.saTempStart) : 5.0,
     saTempEnd: Number.isFinite(Number(input.saTempEnd)) ? Number(input.saTempEnd) : 0.01,
     saIterations: Math.max(1, Math.floor(input.saIterations ?? 2000)),
-    salaryCap: Math.floor(Number.isFinite(Number(input.salaryCap)) ? Number(input.salaryCap) : 50000),
+    salaryCap,
+    salaryFloor,
     minSalary: Math.max(0, Math.floor(Number.isFinite(Number(input.minSalary)) ? Number(input.minSalary) : 3000)),
+    minUniquePlayers: Math.max(1, Math.min(8, Math.floor(Number.isFinite(Number(input.minUniquePlayers)) ? Number(input.minUniquePlayers) : 1))),
+    randomnessPct: Math.max(0, Math.min(100, Number.isFinite(Number(input.randomnessPct)) ? Number(input.randomnessPct) : 0)),
   };
 }
 

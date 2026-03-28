@@ -16,6 +16,64 @@ function effectiveValue(player: Player, effectiveProjections: Map<string, number
   return Number.isFinite(val) ? (val as number) : player.projection;
 }
 
+function canFitSlot(player: Player, slotIdx: number): boolean {
+  const eligible = SLOT_CONFIG[slotIdx].eligible;
+  for (let i = 0; i < player.positions.length; i++) {
+    const pos = player.positions[i];
+    for (let j = 0; j < eligible.length; j++) {
+      if (pos === eligible[j]) return true;
+    }
+  }
+  return false;
+}
+
+function buildForcedAssignment(pool: PlayerPool, forcedIds: Set<string>): (Player | undefined)[] {
+  const chosenBySlot: (Player | undefined)[] = new Array(SLOT_CONFIG.length);
+  if (forcedIds.size === 0) return chosenBySlot;
+
+  const forcedPlayers: Array<{ player: Player; slots: number[] }> = [];
+  forcedIds.forEach((id) => {
+    const player = pool.byId.get(id);
+    if (!player) {
+      throw new Error(`greedyInit failed: forced player ${id} not found in pool`);
+    }
+    const slots: number[] = [];
+    for (let i = 0; i < SLOT_CONFIG.length; i++) {
+      if (canFitSlot(player, i)) slots.push(i);
+    }
+    if (slots.length === 0) {
+      throw new Error(`greedyInit failed: forced player ${player.name} (${player.id}) cannot fit any DK slot`);
+    }
+    forcedPlayers.push({ player, slots });
+  });
+
+  forcedPlayers.sort((a, b) => a.slots.length - b.slots.length);
+
+  const used = new Array<boolean>(SLOT_CONFIG.length).fill(false);
+  const dfs = (idx: number): boolean => {
+    if (idx >= forcedPlayers.length) return true;
+    const row = forcedPlayers[idx];
+    for (let i = 0; i < row.slots.length; i++) {
+      const slotIdx = row.slots[i];
+      if (used[slotIdx]) continue;
+      used[slotIdx] = true;
+      chosenBySlot[slotIdx] = row.player;
+      if (dfs(idx + 1)) return true;
+      chosenBySlot[slotIdx] = undefined;
+      used[slotIdx] = false;
+    }
+    return false;
+  };
+
+  if (!dfs(0)) {
+    throw new Error(
+      `greedyInit failed: unable to assign ${forcedPlayers.length} forced players to unique DK slots`,
+    );
+  }
+
+  return chosenBySlot;
+}
+
 function countEligibleForSlot(pool: PlayerPool, slotIdx: number): number {
   const slotDef = SLOT_CONFIG[slotIdx];
   const seen = new Set<string>();
@@ -34,7 +92,19 @@ export function greedyInit(
   pool: PlayerPool,
   config: OptimizerConfig,
   effectiveProjections: Map<string, number>,
+  forcedIds: Set<string>,
+  blockedIds: Set<string>,
 ): LineupState {
+  if (forcedIds.size > SLOT_CONFIG.length) {
+    throw new Error(`greedyInit failed: ${forcedIds.size} forced players exceed lineup size ${SLOT_CONFIG.length}`);
+  }
+
+  forcedIds.forEach((id) => {
+    if (blockedIds.has(id)) {
+      throw new Error(`greedyInit failed: player ${id} is both forced and blocked`);
+    }
+  });
+
   const slotIndices = Array.from({ length: SLOT_CONFIG.length }, (_, i) => i);
   const scarcityCount = new Array<number>(SLOT_CONFIG.length);
   for (let i = 0; i < SLOT_CONFIG.length; i++) {
@@ -48,12 +118,27 @@ export function greedyInit(
     return SCARCITY_TIEBREAKER[SLOT_CONFIG[a].slot] - SCARCITY_TIEBREAKER[SLOT_CONFIG[b].slot];
   });
 
-  const chosenBySlot: Player[] = new Array(SLOT_CONFIG.length);
+  const chosenBySlot = buildForcedAssignment(pool, forcedIds);
   const chosenIds = new Set<string>();
+  for (let i = 0; i < chosenBySlot.length; i++) {
+    const p = chosenBySlot[i];
+    if (p) chosenIds.add(p.id);
+  }
   let salaryUsed = 0;
+  chosenIds.forEach((id) => {
+    const p = pool.byId.get(id);
+    if (p) salaryUsed += p.salary;
+  });
+
+  if (salaryUsed > config.salaryCap) {
+    throw new Error(
+      `greedyInit failed: forced players salary ${salaryUsed} exceeds cap ${config.salaryCap}`,
+    );
+  }
 
   for (let s = 0; s < slotIndices.length; s++) {
     const slotIdx = slotIndices[s];
+    if (chosenBySlot[slotIdx]) continue;
     const slotDef = SLOT_CONFIG[slotIdx];
     const remainingSlots = SLOT_CONFIG.length - chosenIds.size - 1;
     const remainingSalary = config.salaryCap - salaryUsed;
@@ -66,6 +151,7 @@ export function greedyInit(
       if (!bucket) continue;
       for (let i = 0; i < bucket.length; i++) {
         const p = bucket[i];
+        if (blockedIds.has(p.id)) continue;
         if (chosenIds.has(p.id)) continue;
         if (p.salary > maxCandidateSalary) continue;
         if (!dedup.has(p.id)) dedup.set(p.id, p);
@@ -78,7 +164,41 @@ export function greedyInit(
       );
     }
 
-    const candidates = Array.from(dedup.values());
+    const candidates = Array.from(dedup.values()).filter((candidate) => {
+      const nextSalary = salaryUsed + candidate.salary;
+      if (nextSalary > config.salaryCap) return false;
+
+      if (remainingSlots <= 0) {
+        return nextSalary >= config.salaryFloor;
+      }
+
+      const remainingSalaries: number[] = [];
+      for (let i = 0; i < pool.all.length; i++) {
+        const p = pool.all[i];
+        if (p.id === candidate.id) continue;
+        if (blockedIds.has(p.id)) continue;
+        if (chosenIds.has(p.id)) continue;
+        remainingSalaries.push(p.salary);
+      }
+      if (remainingSalaries.length < remainingSlots) return false;
+      remainingSalaries.sort((a, b) => a - b);
+      let minFutureSalary = 0;
+      let maxFutureSalary = 0;
+      for (let i = 0; i < remainingSlots; i++) {
+        minFutureSalary += remainingSalaries[i];
+        maxFutureSalary += remainingSalaries[remainingSalaries.length - 1 - i];
+      }
+      if (nextSalary + minFutureSalary > config.salaryCap) return false;
+      if (nextSalary + maxFutureSalary < config.salaryFloor) return false;
+      return true;
+    });
+
+    if (candidates.length === 0) {
+      throw new Error(
+        `greedyInit failed at slot ${slotDef.slot}: no feasible candidate after salary floor/cap reservation. remainingSalary=${remainingSalary}, remainingSlots=${remainingSlots}`,
+      );
+    }
+
     candidates.sort((a, b) => {
       const ea = effectiveValue(a, effectiveProjections);
       const eb = effectiveValue(b, effectiveProjections);
@@ -93,23 +213,26 @@ export function greedyInit(
     salaryUsed += selected.salary;
   }
 
-  if (salaryUsed > config.salaryCap) {
-    throw new Error(`greedyInit produced invalid salary ${salaryUsed} > cap ${config.salaryCap}`);
+  if (salaryUsed > config.salaryCap || salaryUsed < config.salaryFloor) {
+    throw new Error(
+      `greedyInit produced invalid salary ${salaryUsed} outside [${config.salaryFloor}, ${config.salaryCap}]`,
+    );
   }
 
   let score = 0;
+  const filledSlots: Player[] = new Array(SLOT_CONFIG.length);
   for (let i = 0; i < chosenBySlot.length; i++) {
     const p = chosenBySlot[i];
     if (!p) {
       throw new Error(`greedyInit failed: slot ${SLOT_CONFIG[i].slot} remained unfilled`);
     }
+    filledSlots[i] = p;
     score += effectiveValue(p, effectiveProjections);
   }
 
   return {
-    slots: chosenBySlot,
+    slots: filledSlots,
     salaryUsed,
     score,
   };
 }
-
