@@ -136,11 +136,19 @@ export function greedyInit(
     );
   }
 
-  for (let s = 0; s < slotIndices.length; s++) {
-    const slotIdx = slotIndices[s];
-    if (chosenBySlot[slotIdx]) continue;
+  let lastFailure = '';
+  const fillSlots = (slotOrderIdx: number): boolean => {
+    if (slotOrderIdx >= slotIndices.length) return true;
+
+    const slotIdx = slotIndices[slotOrderIdx];
+    if (chosenBySlot[slotIdx]) return fillSlots(slotOrderIdx + 1);
+
     const slotDef = SLOT_CONFIG[slotIdx];
-    const remainingSlots = SLOT_CONFIG.length - chosenIds.size - 1;
+    let unfilledSlots = 0;
+    for (let i = 0; i < SLOT_CONFIG.length; i++) {
+      if (!chosenBySlot[i]) unfilledSlots++;
+    }
+    const remainingSlots = unfilledSlots - 1;
     const remainingSalary = config.salaryCap - salaryUsed;
     const maxCandidateSalary = remainingSalary - config.minSalary * remainingSlots;
 
@@ -159,9 +167,8 @@ export function greedyInit(
     }
 
     if (dedup.size === 0) {
-      throw new Error(
-        `greedyInit failed at slot ${slotDef.slot}: no valid candidate. remainingSalary=${remainingSalary}, remainingSlots=${remainingSlots}, maxCandidateSalary=${maxCandidateSalary}`,
-      );
+      lastFailure = `slot ${slotDef.slot}: no valid candidate (remainingSalary=${remainingSalary}, remainingSlots=${remainingSlots})`;
+      return false;
     }
 
     const candidates = Array.from(dedup.values()).filter((candidate) => {
@@ -194,9 +201,8 @@ export function greedyInit(
     });
 
     if (candidates.length === 0) {
-      throw new Error(
-        `greedyInit failed at slot ${slotDef.slot}: no feasible candidate after salary floor/cap reservation. remainingSalary=${remainingSalary}, remainingSlots=${remainingSlots}`,
-      );
+      lastFailure = `slot ${slotDef.slot}: no feasible candidate after salary floor/cap reservation`;
+      return false;
     }
 
     candidates.sort((a, b) => {
@@ -207,10 +213,26 @@ export function greedyInit(
       return a.salary - b.salary;
     });
 
-    const selected = candidates[0];
-    chosenBySlot[slotIdx] = selected;
-    chosenIds.add(selected.id);
-    salaryUsed += selected.salary;
+    const tryLimit = Math.min(candidates.length, 80);
+    for (let i = 0; i < tryLimit; i++) {
+      const selected = candidates[i];
+      chosenBySlot[slotIdx] = selected;
+      chosenIds.add(selected.id);
+      salaryUsed += selected.salary;
+
+      if (fillSlots(slotOrderIdx + 1)) return true;
+
+      salaryUsed -= selected.salary;
+      chosenIds.delete(selected.id);
+      chosenBySlot[slotIdx] = undefined;
+    }
+
+    lastFailure = `slot ${slotDef.slot}: candidate backtracking exhausted (${tryLimit} tried)`;
+    return false;
+  };
+
+  if (!fillSlots(0)) {
+    throw new Error(`greedyInit failed: ${lastFailure || 'unable to fill all slots with current constraints'}`);
   }
 
   if (salaryUsed > config.salaryCap || salaryUsed < config.salaryFloor) {
