@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /home/mendoza/projects/slatesim-app -type f \\\\\\(-name *optimizer* -o -name *gpp* \\\\\\))",
+      "Bash(grep -r \"generateLineups\\\\|GeneratorConfig\" /home/mendoza/projects/slatesim-app --include=*.ts --include=*.tsx --include=*.js)",
+      "Bash(grep -r \"gpp\\\\|GPP\" /home/mendoza/projects/slatesim-app --include=*.ts --include=*.tsx --include=*.json)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k:d[k] for k in [''''main'''',''''module'''',''''exports'''',''''browser'''',''''types''''] if k in d}, indent=2\\)\\)\")"
+    ]
+  }
+}
