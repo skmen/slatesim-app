@@ -22,7 +22,7 @@ import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
-import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260327-heuristic-fallback-fix8';
+import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260327-qiea-fix9';
 import { usePlayerEnrichment } from '../src/hooks/usePlayerEnrichment';
 import { useLineupScoring } from '../src/hooks/useLineupScoring';
 
@@ -67,6 +67,9 @@ interface OptimizerConfigState {
   numLineups: number;
   salaryCap: number;
   salaryFloor: number;
+  minUniquePlayers: number;
+  generations: number;
+  population: number;
   minSalary: number;
   minMinutes: number;
   minProjectedFpts: number;
@@ -103,6 +106,9 @@ const createDefaultOptimizerConfig = (): OptimizerConfigState => ({
   numLineups: 20,
   salaryCap: 50000,
   salaryFloor: 49500,
+  minUniquePlayers: 2,
+  generations: 80,
+  population: 80,
   minSalary: 3000,
   minMinutes: 0,
   minProjectedFpts: 15,
@@ -137,6 +143,9 @@ const sanitizeOptimizerConfig = (raw: any): OptimizerConfigState => {
     : {};
   const numLineups = Number(raw?.numLineups);
   const salaryFloor = Number(raw?.salaryFloor);
+  const minUniquePlayers = Number(raw?.minUniquePlayers);
+  const generations = Number(raw?.generations);
+  const population = Number(raw?.population);
   const minSalary = Number(raw?.minSalary);
   const minMinutes = Number(raw?.minMinutes);
   const minProjectedFpts = Number(raw?.minProjectedFpts);
@@ -156,6 +165,9 @@ const sanitizeOptimizerConfig = (raw: any): OptimizerConfigState => {
     numLineups: Number.isFinite(numLineups) ? Math.min(150, Math.max(1, Math.floor(numLineups))) : defaults.numLineups,
     salaryCap: nextSalaryCap,
     salaryFloor: nextSalaryFloor,
+    minUniquePlayers: Number.isFinite(minUniquePlayers) ? Math.max(1, Math.min(8, Math.floor(minUniquePlayers))) : defaults.minUniquePlayers,
+    generations: Number.isFinite(generations) ? Math.max(10, Math.min(1000, Math.floor(generations))) : defaults.generations,
+    population: Number.isFinite(population) ? Math.max(10, Math.min(500, Math.floor(population))) : defaults.population,
     minSalary: Number.isFinite(minSalary) ? Math.max(0, Math.min(nextSalaryCap, Math.floor(minSalary / 100) * 100)) : defaults.minSalary,
     minMinutes: Number.isFinite(minMinutes) ? Math.max(0, Math.min(48, Math.round(minMinutes))) : defaults.minMinutes,
     minProjectedFpts: Number.isFinite(minProjectedFpts) ? Math.max(0, Math.min(100, Math.round(minProjectedFpts * 2) / 2)) : defaults.minProjectedFpts,
@@ -1291,6 +1303,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             if (minExposureOverrideCount > 0) diagnostics.push(`${minExposureOverrideCount} min-exp caps`);
             if (maxExposureOverrideCount > 0) diagnostics.push(`${maxExposureOverrideCount} max-exp caps`);
             if (config.salaryFloor > 0) diagnostics.push(`salary floor $${config.salaryFloor}`);
+            if (config.minUniquePlayers > 1) diagnostics.push(`minimum unique players ${config.minUniquePlayers}`);
             if (config.minSalary > 0) diagnostics.push(`min salary $${config.minSalary}`);
             if (config.enableStatConstraints) diagnostics.push(`stat constraints ${config.statConstraintMode}`);
             if (config.deltaFromBestProjection > 0) diagnostics.push(`projection floor -${config.deltaFromBestProjection}`);
@@ -1367,6 +1380,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         players: enrichedPool,
         config: {
           ...config,
+          min_hamming_distance: config.minUniquePlayers,
+          qiea_generations: config.generations,
+          qiea_population: config.population,
           contest_type: config.statConstraintMode,
           randomization_base_pct: randomizationBase,
           randomization_ramp: false,
@@ -1860,6 +1876,84 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                     const idx = Number(e.target.value);
                     setConfig((prev) => ({ ...prev, numLineups: LINEUP_SLIDER_VALUES[idx] ?? prev.numLineups }));
                   }}
+                  className="w-full accent-drafting-orange"
+                />
+              </div>
+
+              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
+                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Minimum Unique Players</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={8}
+                  step={1}
+                  value={config.minUniquePlayers}
+                  onChange={(e) => {
+                    const parsed = Number(e.target.value);
+                    const nextVal = Number.isFinite(parsed) ? Math.max(1, Math.min(8, Math.round(parsed))) : 1;
+                    setConfig((prev) => ({ ...prev, minUniquePlayers: nextVal }));
+                  }}
+                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                />
+                <input
+                  type="range"
+                  min={1}
+                  max={8}
+                  step={1}
+                  value={config.minUniquePlayers}
+                  onChange={(e) => setConfig((prev) => ({ ...prev, minUniquePlayers: Number(e.target.value) }))}
+                  className="w-full accent-drafting-orange"
+                />
+              </div>
+
+              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
+                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Generations</label>
+                <input
+                  type="number"
+                  min={10}
+                  max={1000}
+                  step={10}
+                  value={config.generations}
+                  onChange={(e) => {
+                    const parsed = Number(e.target.value);
+                    const nextVal = Number.isFinite(parsed) ? Math.max(10, Math.min(1000, Math.floor(parsed))) : 10;
+                    setConfig((prev) => ({ ...prev, generations: nextVal }));
+                  }}
+                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                />
+                <input
+                  type="range"
+                  min={10}
+                  max={1000}
+                  step={10}
+                  value={config.generations}
+                  onChange={(e) => setConfig((prev) => ({ ...prev, generations: Number(e.target.value) }))}
+                  className="w-full accent-drafting-orange"
+                />
+              </div>
+
+              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
+                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Population</label>
+                <input
+                  type="number"
+                  min={10}
+                  max={500}
+                  step={10}
+                  value={config.population}
+                  onChange={(e) => {
+                    const parsed = Number(e.target.value);
+                    const nextVal = Number.isFinite(parsed) ? Math.max(10, Math.min(500, Math.floor(parsed))) : 10;
+                    setConfig((prev) => ({ ...prev, population: nextVal }));
+                  }}
+                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                />
+                <input
+                  type="range"
+                  min={10}
+                  max={500}
+                  step={10}
+                  value={config.population}
+                  onChange={(e) => setConfig((prev) => ({ ...prev, population: Number(e.target.value) }))}
                   className="w-full accent-drafting-orange"
                 />
               </div>

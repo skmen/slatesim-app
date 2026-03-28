@@ -1,6 +1,3 @@
-import highsLoader from 'highs';
-// @ts-ignore – Vite ?url query resolves the WASM asset URL for proper bundling
-import highsWasm from 'highs/runtime?url';
 import { Lineup, Player } from '../../types';
 
 const DK_SLOTS = ['PG', 'SG', 'SF', 'PF', 'C', 'G', 'F', 'UTIL'] as const;
@@ -27,6 +24,8 @@ interface GeneratorConfig {
   n_lineups: number;
   global_max_exposure_pct: number;
   min_hamming_distance: number;
+  qiea_generations: number;
+  qiea_population: number;
   chalk_threshold_own: number;
   chalk_threshold_proj: number;
   leverage_ceiling_gap_min: number;
@@ -80,6 +79,8 @@ const DEFAULT_CONFIG: GeneratorConfig = {
   n_lineups: 20,
   global_max_exposure_pct: 100,
   min_hamming_distance: 2,
+  qiea_generations: 80,
+  qiea_population: 80,
   chalk_threshold_own: 15,
   chalk_threshold_proj: 45,
   leverage_ceiling_gap_min: 10,
@@ -398,6 +399,24 @@ const resolveGeneratorConfig = (raw?: Record<string, unknown>): GeneratorConfig 
       ),
     ),
   );
+  const qieaGenerations = Math.max(
+    10,
+    Math.floor(
+      safeNumber(
+        raw?.qiea_generations ?? raw?.qieaGenerations ?? raw?.generations,
+        DEFAULT_CONFIG.qiea_generations,
+      ),
+    ),
+  );
+  const qieaPopulation = Math.max(
+    10,
+    Math.floor(
+      safeNumber(
+        raw?.qiea_population ?? raw?.qieaPopulation ?? raw?.population,
+        DEFAULT_CONFIG.qiea_population,
+      ),
+    ),
+  );
 
   const salaryCap = Math.max(
     1000,
@@ -438,6 +457,8 @@ const resolveGeneratorConfig = (raw?: Record<string, unknown>): GeneratorConfig 
       100,
     ),
     min_hamming_distance: minHamming,
+    qiea_generations: qieaGenerations,
+    qiea_population: qieaPopulation,
     salary_cap: salaryCap,
     salary_floor: salaryFloor,
     chalk_threshold_own: safeNumber(raw?.chalk_threshold_own, DEFAULT_CONFIG.chalk_threshold_own),
@@ -851,21 +872,6 @@ function buildLPModel(
   return lines.join('\n');
 }
 
-// ---- Solver Initialization ----
-
-type HighsSolver = Awaited<ReturnType<typeof highsLoader>>;
-let _solverPromise: ReturnType<typeof highsLoader> | null = null;
-
-/** Initializes HiGHS WASM solver once per worker lifetime. */
-async function initSolver(): Promise<HighsSolver> {
-  if (!_solverPromise) {
-    _solverPromise = highsLoader({
-      locateFile: (file: string) => (file.endsWith('.wasm') ? highsWasm as string : file),
-    });
-  }
-  return _solverPromise;
-}
-
 const sumSalary = (players: PlayerWithMetrics[]): number =>
   players.reduce((sum, p) => sum + safeNumber(p.salary, 0), 0);
 
@@ -921,6 +927,8 @@ const buildHeuristicLineup = (
   underExposureBonus: Map<string, number>,
   accepted: PlayerWithMetrics[][],
   randPct: number,
+  preferenceWeights?: Map<string, number>,
+  maxAttemptsOverride?: number,
 ): PlayerWithMetrics[] | null => {
   const lockedPlayers = activePool.filter((p) => lockIds.has(p.id));
   if (lockedPlayers.length > DK_SLOTS.length) return null;
@@ -930,7 +938,9 @@ const buildHeuristicLineup = (
 
   let best: PlayerWithMetrics[] | null = null;
   let bestScore = -Infinity;
-  const attempts = Math.max(600, Math.min(2000, activePool.length * 6));
+  const attempts = Number.isFinite(maxAttemptsOverride as number)
+    ? Math.max(1, Math.floor(maxAttemptsOverride as number))
+    : Math.max(600, Math.min(2000, activePool.length * 6));
 
   const isCandidateAvailable = (p: PlayerWithMetrics, selectedIds: Set<string>): boolean => {
     if (selectedIds.has(p.id)) return false;
@@ -989,7 +999,8 @@ const buildHeuristicLineup = (
 
       const scored = candidates
         .map((p) => {
-          const base = safeNumber(p.projection, 0) + (underExposureBonus.get(p.id) || 0);
+          const preference = Math.max(0.05, preferenceWeights?.get(p.id) ?? 1);
+          const base = (safeNumber(p.projection, 0) + (underExposureBonus.get(p.id) || 0)) * preference;
           const jitter = randPct > 0 ? base * boxMullerGaussian() * randPct : 0;
           return {
             item: p,
@@ -1027,7 +1038,135 @@ const buildHeuristicLineup = (
   return best;
 };
 
-// ---- Core Lineup Generator (ILP-based) ----
+const lineupKey = (lineup: PlayerWithMetrics[]): string =>
+  lineup
+    .map((p) => p.id)
+    .sort()
+    .join('|');
+
+const qieaGenerateLineup = (
+  activePool: PlayerWithMetrics[],
+  config: GeneratorConfig,
+  lockIds: Set<string>,
+  dynamicExcludes: Set<string>,
+  exposureBounds: Map<string, ExposureBound>,
+  appearances: Map<string, number>,
+  underExposureBonus: Map<string, number>,
+  accepted: PlayerWithMetrics[][],
+  randPct: number,
+): PlayerWithMetrics[] | null => {
+  if (activePool.length < DK_SLOTS.length) return null;
+
+  const baseScores = computeEffectiveProjections(activePool, config, 0).map((score, i) => {
+    return Math.max(0.001, score + (underExposureBonus.get(activePool[i].id) || 0));
+  });
+  const sumBase = baseScores.reduce((sum, x) => sum + x, 0) || 1;
+  const probs = activePool.map((p, i) => {
+    if (lockIds.has(p.id)) return 0.99;
+    if (dynamicExcludes.has(p.id)) return 0.001;
+    return clamp((baseScores[i] / sumBase) * DK_SLOTS.length, 0.01, 0.95);
+  });
+
+  const scoreById = new Map(activePool.map((p, i) => [p.id, baseScores[i]]));
+  const patience = 1000;
+  let stagnant = 0;
+  let globalBest: PlayerWithMetrics[] | null = null;
+  let globalBestScore = -Infinity;
+
+  const generations = Math.max(10, Math.floor(config.qiea_generations));
+  const population = Math.max(10, Math.floor(config.qiea_population));
+
+  for (let gen = 0; gen < generations; gen++) {
+    let generationBest: PlayerWithMetrics[] | null = null;
+    let generationBestScore = -Infinity;
+    const seen = new Set<string>();
+
+    for (let i = 0; i < population; i++) {
+      const preferenceWeights = new Map<string, number>();
+      for (let j = 0; j < activePool.length; j++) {
+        const noise = 1 + boxMullerGaussian() * Math.min(0.2, randPct + 0.05);
+        preferenceWeights.set(activePool[j].id, Math.max(0.05, probs[j] * Math.max(0.2, noise)));
+      }
+
+      const lineup = buildHeuristicLineup(
+        activePool,
+        config,
+        lockIds,
+        dynamicExcludes,
+        exposureBounds,
+        appearances,
+        underExposureBonus,
+        accepted,
+        randPct,
+        preferenceWeights,
+        4,
+      );
+
+      if (!lineup) continue;
+      const key = lineupKey(lineup);
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const score = lineup.reduce((sum, p) => sum + (scoreById.get(p.id) || 0), 0);
+      if (score > generationBestScore) {
+        generationBest = lineup;
+        generationBestScore = score;
+      }
+    }
+
+    if (!generationBest) {
+      stagnant++;
+      if (stagnant >= patience) break;
+      continue;
+    }
+
+    if (generationBestScore > globalBestScore + 1e-6) {
+      globalBest = generationBest;
+      globalBestScore = generationBestScore;
+      stagnant = 0;
+    } else {
+      stagnant++;
+    }
+
+    const eliteIds = new Set(generationBest.map((p) => p.id));
+    const phase = gen / Math.max(1, generations - 1);
+    const learningRate = 0.18 - phase * 0.10;
+
+    for (let j = 0; j < activePool.length; j++) {
+      const playerId = activePool[j].id;
+      if (lockIds.has(playerId)) {
+        probs[j] = 0.99;
+        continue;
+      }
+      if (dynamicExcludes.has(playerId)) {
+        probs[j] = 0.001;
+        continue;
+      }
+      const target = eliteIds.has(playerId) ? 1 : 0;
+      probs[j] = clamp(probs[j] + learningRate * (target - probs[j]), 0.01, 0.99);
+    }
+
+    const unlockedIdx = activePool
+      .map((p, idx) => ({ p, idx }))
+      .filter(({ p }) => !lockIds.has(p.id) && !dynamicExcludes.has(p.id))
+      .map(({ idx }) => idx);
+    if (unlockedIdx.length > 0) {
+      const unlockedSum = unlockedIdx.reduce((sum, idx) => sum + probs[idx], 0) || 1;
+      const lockedCount = activePool.reduce((sum, p) => sum + (lockIds.has(p.id) ? 1 : 0), 0);
+      const targetUnlockedMass = Math.max(0.2, DK_SLOTS.length - lockedCount);
+      const scale = targetUnlockedMass / unlockedSum;
+      unlockedIdx.forEach((idx) => {
+        probs[idx] = clamp(probs[idx] * scale, 0.01, 0.99);
+      });
+    }
+
+    if (stagnant >= patience) break;
+  }
+
+  return globalBest;
+};
+
+// ---- Core Lineup Generator (QIEA-based) ----
 
 const generateLineups = async (
   rawPlayers: Player[],
@@ -1049,8 +1188,9 @@ const generateLineups = async (
       throw new Error(`Player ${id} is both locked and excluded.`);
     }
   }
-
-  const solver = await initSolver();
+  warnings.push(
+    `Using QIEA optimizer (generations=${config.qiea_generations}, population=${config.qiea_population}, patience=1000).`,
+  );
 
   const enrichedAll = enrichPlayersWithMetrics(rawPlayers, confirmedLineups);
   const byId = new Map(enrichedAll.map((p) => [p.id, p]));
@@ -1080,30 +1220,17 @@ const generateLineups = async (
     throw new Error(`Optimizer pool too small (${activePool.length}) after exclusions.`);
   }
 
-  // Build player index map: player.id → variable index in LP (x0, x1, ...)
-  const playerIndex = new Map<string, number>();
-  activePool.forEach((p, i) => playerIndex.set(p.id, i));
-
   const accepted: PlayerWithMetrics[][] = [];
   const appearances = new Map<string, number>();
-  // Accumulated LP exclusion constraints shared across all iterations
-  const exclusionConstraints: string[] = [];
-
-  // Max lazy cuts (bipartite-infeasible combos) to try per lineup before giving up
-  const MAX_LAZY_CUTS = Math.max(20, Math.min(250, activePool.length));
 
   const missingSlot = DK_SLOTS.find((slot) => !activePool.some((p) => getEligibleSlots(p.position).includes(slot)));
   if (missingSlot) {
     throw new Error(`No eligible players for ${missingSlot} in active pool after parsing positions.`);
   }
 
-  let earlyStop = false;
-  let solverFailedHard = false;
-
-  for (let iter = 0; iter < config.n_lineups && !earlyStop; iter++) {
+  for (let iter = 0; iter < config.n_lineups; iter++) {
     const randPct = getRandomizationPct(iter, config);
 
-    // Players who have hit their max exposure become temporarily excluded
     const dynamicExcludes = new Set<string>(excludeIds);
     for (const [id, bound] of exposureBounds) {
       if ((appearances.get(id) || 0) >= bound.max) {
@@ -1111,194 +1238,30 @@ const generateLineups = async (
       }
     }
 
-    // Boost objective of players who are below their min-exposure target to encourage selection.
-    // This is a soft nudge: add a small bonus to their effective projection.
     const underExposureBonus = new Map<string, number>();
     const remainingIters = config.n_lineups - iter;
     for (const [id, bound] of exposureBounds) {
       const got = appearances.get(id) || 0;
       const needed = bound.min - got;
       if (needed > 0 && remainingIters > 0) {
-        // Bonus scales with urgency: more needed relative to remaining solves = larger boost
         underExposureBonus.set(id, Math.min((needed / remainingIters) * 5, 10));
       }
     }
 
-    let solved = false;
-    let lazyCuts = 0;
+    let lineup = qieaGenerateLineup(
+      activePool,
+      config,
+      lockIds,
+      dynamicExcludes,
+      exposureBounds,
+      appearances,
+      underExposureBonus,
+      accepted,
+      randPct,
+    );
 
-    while (lazyCuts <= MAX_LAZY_CUTS) {
-      // Recompute effective projections each inner attempt (fresh randomization + bonus)
-      const rawProjections = computeEffectiveProjections(activePool, config, randPct);
-      const effectiveProjections = rawProjections.map((proj, i) => {
-        const bonus = underExposureBonus.get(activePool[i].id) || 0;
-        return proj + bonus;
-      });
-
-      const lpString = buildLPModel(
-        activePool,
-        effectiveProjections,
-        config,
-        lockIds,
-        dynamicExcludes,
-        exclusionConstraints,
-      );
-
-      let result: ReturnType<HighsSolver['solve']> | null = null;
-      try {
-        // Default solve is the most stable path across slate sizes.
-        result = solver.solve(lpString);
-      } catch (e) {
-        const primaryError = e instanceof Error ? e.message : String(e);
-        if (/unable to parse solution|too few lines/i.test(primaryError)) {
-          try {
-            // Parse fallback: request explicit output stream.
-            result = solver.solve(lpString, { output_flag: true });
-            warnings.push(`Recovered from solver parse error at lineup ${iter + 1} using output-enabled fallback.`);
-          } catch (fallbackParseErr) {
-            const parseFallbackMsg = fallbackParseErr instanceof Error ? fallbackParseErr.message : String(fallbackParseErr);
-            try {
-              // Last-chance fallback for large/unstable models.
-              result = solver.solve(lpString, { presolve: 'off' } as any);
-              warnings.push(`Recovered from solver parse error at lineup ${iter + 1} with presolve-off fallback.`);
-            } catch (finalFallbackErr) {
-              const finalMsg = finalFallbackErr instanceof Error ? finalFallbackErr.message : String(finalFallbackErr);
-              warnings.push(`Solver error at lineup ${iter + 1}: ${primaryError} Parse fallback failed: ${parseFallbackMsg} Presolve-off failed: ${finalMsg}`);
-              if (iter === 0) warnings.push(`LP preview: ${lpString.slice(0, 500)}`);
-              solverFailedHard = true;
-              earlyStop = true;
-              break;
-            }
-          }
-        } else if (/unable to solve the problem|aborted/i.test(primaryError)) {
-          try {
-            result = solver.solve(lpString, { presolve: 'off' } as any);
-            warnings.push(`Recovered from solver runtime failure at lineup ${iter + 1} with presolve-off fallback.`);
-          } catch (fallbackErr) {
-            const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-            warnings.push(`Solver error at lineup ${iter + 1}: ${primaryError} Presolve-off fallback failed: ${fallbackMsg}`);
-            if (iter === 0) warnings.push(`LP preview: ${lpString.slice(0, 500)}`);
-            solverFailedHard = true;
-            earlyStop = true;
-            break;
-          }
-        } else {
-          warnings.push(`Solver error at lineup ${iter + 1}: ${primaryError}`);
-          if (iter === 0) warnings.push(`LP preview: ${lpString.slice(0, 500)}`);
-          solverFailedHard = true;
-          earlyStop = true;
-          break;
-        }
-      }
-      if (!result) {
-        earlyStop = true;
-        break;
-      }
-
-      if (result.Status !== 'Optimal') {
-        if (accepted.length === 0) {
-          warnings.push(
-            `Optimizer returned ${result.Status} on first solve. Pool: ${activePool.length} players, salary ${config.salary_floor}-${config.salary_cap}. Check player pool and position availability.`,
-          );
-          // Emit first 500 chars of LP for debugging
-          warnings.push(`LP preview: ${lpString.slice(0, 500)}`);
-        } else {
-          warnings.push(
-            `Solve ${iter + 1} returned ${result.Status}; stopping at ${accepted.length} lineups.`,
-          );
-        }
-        earlyStop = true;
-        break;
-      }
-
-      // Extract the 8 selected players from the solution
-      const selected = activePool.filter((_p, i) => {
-        const col = (result as any).Columns[`x${i}`];
-        return col !== undefined && Math.round(col.Primal) === 1;
-      });
-
-      if (selected.length !== DK_SLOTS.length) {
-        // ILP returned wrong roster size (shouldn't happen with correct formulation)
-        // Block and retry
-        if (selected.length > 0) {
-          exclusionConstraints.push(buildExclusionConstraint(selected, playerIndex, 1));
-        }
-        lazyCuts++;
-        continue;
-      }
-
-      // Verify bipartite position-slot assignment feasibility
-      if (!canAssignDraftKingsSlots(selected)) {
-        // This combination can't fill all DK slots; add a lazy cut and resolve
-        exclusionConstraints.push(buildExclusionConstraint(selected, playerIndex, 1));
-        lazyCuts++;
-        continue;
-      }
-
-      // Accept this lineup
-      accepted.push(selected);
-      for (const p of selected) {
-        appearances.set(p.id, (appearances.get(p.id) || 0) + 1);
-      }
-
-      // Add Hamming-distance exclusion constraint so subsequent solves differ
-      exclusionConstraints.push(
-        buildExclusionConstraint(selected, playerIndex, config.min_hamming_distance),
-      );
-
-      solved = true;
-      break;
-    }
-
-    if (!solved && !earlyStop) {
-      // Exhausted lazy cuts for this iteration
-      if (lazyCuts > MAX_LAZY_CUTS) {
-        warnings.push(`Reached lazy cut limit at lineup ${iter + 1}; stopping at ${accepted.length} lineups.`);
-      }
-      break;
-    }
-
-    if (solved) {
-      const progress = Math.min(99, Math.round((accepted.length / config.n_lineups) * 100));
-      onProgress(
-        progress,
-        toSerializableLineup(
-          accepted[accepted.length - 1],
-          `gpp_progress_${accepted.length}_${Math.random().toString(36).slice(2, 7)}`,
-        ),
-        accepted.length,
-      );
-    }
-  }
-
-  if (solverFailedHard && accepted.length < config.n_lineups) {
-    warnings.push('Primary solver unavailable; using heuristic lineup fallback.');
-  }
-
-  if (accepted.length < config.n_lineups) {
-    if (!solverFailedHard) {
-      warnings.push('Completing remaining lineups with heuristic fallback.');
-    }
-    for (let iter = accepted.length; iter < config.n_lineups; iter++) {
-      const randPct = getRandomizationPct(iter, config);
-      const dynamicExcludes = new Set<string>(excludeIds);
-      for (const [id, bound] of exposureBounds) {
-        if ((appearances.get(id) || 0) >= bound.max) {
-          dynamicExcludes.add(id);
-        }
-      }
-
-      const underExposureBonus = new Map<string, number>();
-      const remainingIters = config.n_lineups - iter;
-      for (const [id, bound] of exposureBounds) {
-        const got = appearances.get(id) || 0;
-        const needed = bound.min - got;
-        if (needed > 0 && remainingIters > 0) {
-          underExposureBonus.set(id, Math.min((needed / remainingIters) * 5, 10));
-        }
-      }
-
-      const lineup = buildHeuristicLineup(
+    if (!lineup) {
+      lineup = buildHeuristicLineup(
         activePool,
         config,
         lockIds,
@@ -1309,27 +1272,30 @@ const generateLineups = async (
         accepted,
         randPct,
       );
-
-      if (!lineup) {
-        warnings.push(`Heuristic fallback exhausted at lineup ${iter + 1}; stopping at ${accepted.length} lineups.`);
-        break;
+      if (lineup) {
+        warnings.push(`QIEA fallback used greedy repair at lineup ${iter + 1}.`);
       }
-
-      accepted.push(lineup);
-      lineup.forEach((p) => {
-        appearances.set(p.id, (appearances.get(p.id) || 0) + 1);
-      });
-
-      const progress = Math.min(99, Math.round((accepted.length / config.n_lineups) * 100));
-      onProgress(
-        progress,
-        toSerializableLineup(
-          accepted[accepted.length - 1],
-          `gpp_fallback_${accepted.length}_${Math.random().toString(36).slice(2, 7)}`,
-        ),
-        accepted.length,
-      );
     }
+
+    if (!lineup) {
+      warnings.push(`QIEA exhausted at lineup ${iter + 1}; stopping at ${accepted.length} lineups.`);
+      break;
+    }
+
+    accepted.push(lineup);
+    for (const p of lineup) {
+      appearances.set(p.id, (appearances.get(p.id) || 0) + 1);
+    }
+
+    const progress = Math.min(99, Math.round((accepted.length / config.n_lineups) * 100));
+    onProgress(
+      progress,
+      toSerializableLineup(
+        accepted[accepted.length - 1],
+        `qiea_progress_${accepted.length}_${Math.random().toString(36).slice(2, 7)}`,
+      ),
+      accepted.length,
+    );
   }
 
   // Warn on unmet minimum exposure targets
