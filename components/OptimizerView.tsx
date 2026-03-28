@@ -22,7 +22,7 @@ import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
-import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260327-highs-large-slate-fix2';
+import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260327-layout-fix3';
 import { usePlayerEnrichment } from '../src/hooks/usePlayerEnrichment';
 import { useLineupScoring } from '../src/hooks/useLineupScoring';
 
@@ -67,6 +67,7 @@ interface OptimizerConfigState {
   numLineups: number;
   salaryCap: number;
   salaryFloor: number;
+  minSalary: number;
   minMinutes: number;
   minProjectedFpts: number;
   minSlateSimValue: number;
@@ -102,9 +103,10 @@ const createDefaultOptimizerConfig = (): OptimizerConfigState => ({
   numLineups: 20,
   salaryCap: 50000,
   salaryFloor: 49500,
+  minSalary: 3000,
   minMinutes: 0,
-  minProjectedFpts: 0,
-  minSlateSimValue: 0,
+  minProjectedFpts: 15,
+  minSlateSimValue: 30,
   randomnessPct: 0,
   minExposure: 0,
   maxExposure: 100,
@@ -134,8 +136,8 @@ const sanitizeOptimizerConfig = (raw: any): OptimizerConfigState => {
     ? raw.upsideWeights
     : {};
   const numLineups = Number(raw?.numLineups);
-  const salaryCap = Number(raw?.salaryCap);
   const salaryFloor = Number(raw?.salaryFloor);
+  const minSalary = Number(raw?.minSalary);
   const minMinutes = Number(raw?.minMinutes);
   const minProjectedFpts = Number(raw?.minProjectedFpts);
   const minSlateSimValue = Number(raw?.minSlateSimValue);
@@ -145,15 +147,16 @@ const sanitizeOptimizerConfig = (raw: any): OptimizerConfigState => {
   const upsideDelta = Number(raw?.upsideDelta);
   const deltaFromBestProjection = Number(raw?.deltaFromBestProjection);
 
-  const nextSalaryCap = Number.isFinite(salaryCap) ? Math.max(1, Math.floor(salaryCap)) : defaults.salaryCap;
+  const nextSalaryCap = defaults.salaryCap;
   const nextSalaryFloor = Number.isFinite(salaryFloor)
     ? Math.max(0, Math.min(Math.floor(salaryFloor), nextSalaryCap))
     : defaults.salaryFloor;
 
   return {
-    numLineups: Number.isFinite(numLineups) ? Math.min(2000, Math.max(1, Math.floor(numLineups))) : defaults.numLineups,
+    numLineups: Number.isFinite(numLineups) ? Math.min(150, Math.max(1, Math.floor(numLineups))) : defaults.numLineups,
     salaryCap: nextSalaryCap,
     salaryFloor: nextSalaryFloor,
+    minSalary: Number.isFinite(minSalary) ? Math.max(0, Math.min(nextSalaryCap, Math.floor(minSalary / 100) * 100)) : defaults.minSalary,
     minMinutes: Number.isFinite(minMinutes) ? Math.max(0, Math.min(48, Math.round(minMinutes))) : defaults.minMinutes,
     minProjectedFpts: Number.isFinite(minProjectedFpts) ? Math.max(0, Math.min(100, Math.round(minProjectedFpts * 2) / 2)) : defaults.minProjectedFpts,
     minSlateSimValue: Number.isFinite(minSlateSimValue) ? Math.max(0, Math.min(100, Math.round(minSlateSimValue))) : defaults.minSlateSimValue,
@@ -223,6 +226,20 @@ const nextSort = (current: SortConfig, key: string, defaultDir: SortDir = 'desc'
 };
 
 const AST_KEYS = ['AST', 'assists', 'assist', 'A', 'ASTS', 'APG'];
+const LINEUP_SLIDER_VALUES = [1, 2, 3, 5, 10, ...Array.from({ length: 14 }, (_, i) => (i + 2) * 10)];
+
+const getClosestLineupSliderIndex = (value: number): number => {
+  let bestIdx = 0;
+  let bestDist = Number.POSITIVE_INFINITY;
+  LINEUP_SLIDER_VALUES.forEach((v, idx) => {
+    const dist = Math.abs(v - value);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIdx = idx;
+    }
+  });
+  return bestIdx;
+};
 
 const POOL_FILTER_COLUMNS = [
   { key: 'name', label: 'Player' },
@@ -1213,6 +1230,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         .filter((player) => {
           if (Boolean((player as any).optimizerExcluded)) return false;
 
+          const salary = Number(player.salary);
+          if (config.minSalary > 0 && (!Number.isFinite(salary) || salary < config.minSalary)) return false;
+
           const minutes = Number(player.minutesProjection);
           if (config.minMinutes > 0 && (!Number.isFinite(minutes) || minutes < config.minMinutes)) return false;
 
@@ -1271,6 +1291,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             if (minExposureOverrideCount > 0) diagnostics.push(`${minExposureOverrideCount} min-exp caps`);
             if (maxExposureOverrideCount > 0) diagnostics.push(`${maxExposureOverrideCount} max-exp caps`);
             if (config.salaryFloor > 0) diagnostics.push(`salary floor $${config.salaryFloor}`);
+            if (config.minSalary > 0) diagnostics.push(`min salary $${config.minSalary}`);
             if (config.enableStatConstraints) diagnostics.push(`stat constraints ${config.statConstraintMode}`);
             if (config.deltaFromBestProjection > 0) diagnostics.push(`projection floor -${config.deltaFromBestProjection}`);
             if (config.minMinutes > 0) diagnostics.push(`min minutes ${config.minMinutes}`);
@@ -1481,10 +1502,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       id: lineup.id || `loaded_${savedSet.id}_${idx + 1}`,
       lineupSource: 'optimizer',
     })));
-    if (Number.isFinite(Number(savedSet.salaryCap)) && Number(savedSet.salaryCap) > 0) {
-      const nextCap = Number(savedSet.salaryCap);
-      setConfig((prev) => ({ ...prev, salaryCap: nextCap, salaryFloor: Math.min(prev.salaryFloor, nextCap) }));
-    }
     setShowSavedLineupsModal(false);
     setError(null);
   }, []);
@@ -1774,6 +1791,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
     () => players.reduce((count, player) => count + (playerOverrides[player.id]?.exclude ? 0 : 1), 0),
     [players, playerOverrides],
   );
+  const lineupSliderIndex = getClosestLineupSliderIndex(config.numLineups);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
@@ -1812,98 +1830,97 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
                 Model: {enrichmentState.coveragePct.toFixed(0)}% coverage
               </span>
-            ) : (
-              <span className="flex items-center gap-1 text-[9px] font-bold text-ink/30 uppercase tracking-widest">
-                <span className="w-1.5 h-1.5 rounded-full bg-ink/20 inline-block" />
-                No model data
-              </span>
-            )}
+            ) : null}
           </div>
         </div>
 
         <div className="space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div className="space-y-1.5">
-              <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Lineups</label>
-              <input
-                type="number"
-                min={1}
-                max={2000}
-                value={config.numLineups}
-                onChange={(e) => {
-                  const val = Number.parseInt(e.target.value, 10);
-                  if (!Number.isNaN(val)) {
-                    setConfig({ ...config, numLineups: Math.min(2000, Math.max(1, val)) });
-                  }
-                }}
-                className="w-full bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Salary Cap</label>
-              <div className="relative">
-                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-drafting-orange font-mono font-bold text-[10px]">$</span>
-                <input 
-                  type="number" 
-                  value={config.salaryCap}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="md:col-span-2 space-y-3">
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Lineups</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={150}
+                  value={config.numLineups}
                   onChange={(e) => {
-                    const parsed = Number.parseInt(e.target.value, 10);
-                    const nextCap = Number.isFinite(parsed) && parsed > 0 ? parsed : 50000;
-                    setConfig((prev) => ({
-                      ...prev,
-                      salaryCap: nextCap,
-                      salaryFloor: Math.min(prev.salaryFloor, nextCap),
-                    }));
+                    const val = Number.parseInt(e.target.value, 10);
+                    if (!Number.isNaN(val)) setConfig((prev) => ({ ...prev, numLineups: Math.max(1, Math.min(150, val)) }));
                   }}
-                  className="w-full bg-white/60 border border-ink/20 rounded-sm pl-7 pr-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                  className="w-24 bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
                 />
+                <input
+                  type="range"
+                  min={0}
+                  max={LINEUP_SLIDER_VALUES.length - 1}
+                  step={1}
+                  value={lineupSliderIndex}
+                  onChange={(e) => {
+                    const idx = Number(e.target.value);
+                    setConfig((prev) => ({ ...prev, numLineups: LINEUP_SLIDER_VALUES[idx] ?? prev.numLineups }));
+                  }}
+                  className="w-full accent-drafting-orange"
+                />
+                <div className="text-[9px] font-mono text-ink/40">
+                  {LINEUP_SLIDER_VALUES.join(', ')}
+                </div>
               </div>
-            </div>
 
-            <div className="space-y-1.5">
-              <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Salary Floor</label>
-              <div className="relative">
-                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-drafting-orange font-mono font-bold text-[10px]">$</span>
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Salary Floor</label>
                 <input
                   type="number"
                   min={0}
-                  max={config.salaryCap}
+                  max={50000}
+                  step={100}
                   value={config.salaryFloor}
                   onChange={(e) => {
-                    const parsed = Number.parseInt(e.target.value, 10);
-                    const nextFloor = Number.isFinite(parsed) ? Math.max(0, Math.min(parsed, config.salaryCap)) : 0;
-                    setConfig((prev) => ({ ...prev, salaryFloor: nextFloor }));
+                    const parsed = Number(e.target.value);
+                    const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(50000, Math.floor(parsed / 100) * 100)) : 0;
+                    setConfig((prev) => ({ ...prev, salaryFloor: nextVal }));
                   }}
-                  className="w-full bg-white/60 border border-ink/20 rounded-sm pl-7 pr-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                  className="w-28 bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={50000}
+                  step={100}
+                  value={config.salaryFloor}
+                  onChange={(e) => setConfig((prev) => ({ ...prev, salaryFloor: Number(e.target.value) }))}
+                  className="w-full accent-drafting-orange"
                 />
               </div>
-            </div>
 
-            {config.optimizerMode === 'upside_max' && (
-              <div className="space-y-1.5 md:col-span-3">
-                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">
-                  Upside Delta (Projection Floor)
-                </label>
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Minimum Salary</label>
                 <input
                   type="number"
                   min={0}
-                  step={0.5}
-                  value={config.upsideDelta}
-                  onChange={(e) => setConfig({ ...config, upsideDelta: Number.parseFloat(e.target.value) || 0 })}
-                  className="w-full bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                  max={10000}
+                  step={100}
+                  value={config.minSalary}
+                  onChange={(e) => {
+                    const parsed = Number(e.target.value);
+                    const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(10000, Math.floor(parsed / 100) * 100)) : 0;
+                    setConfig((prev) => ({ ...prev, minSalary: nextVal }));
+                  }}
+                  className="w-28 bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
                 />
-                <p className="text-[9px] text-ink/50 font-mono">
-                  Stage 2 enforces total projection {'>='} best projection minus delta.
-                </p>
+                <input
+                  type="range"
+                  min={0}
+                  max={10000}
+                  step={100}
+                  value={config.minSalary}
+                  onChange={(e) => setConfig((prev) => ({ ...prev, minSalary: Number(e.target.value) }))}
+                  className="w-full accent-drafting-orange"
+                />
               </div>
-            )}
-          </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3 border-t border-ink/10">
-            <div className="space-y-1.5">
-              <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Minimum Minutes</label>
-              <div className="flex items-center gap-2">
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Minimum Minutes</label>
                 <input
                   type="number"
                   min={0}
@@ -1915,7 +1932,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                     const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(48, Math.round(parsed))) : 0;
                     setConfig((prev) => ({ ...prev, minMinutes: nextVal }));
                   }}
-                  className="w-20 bg-white/60 border border-ink/20 rounded-sm px-2 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                  className="w-24 bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
                 />
                 <input
                   type="range"
@@ -1924,14 +1941,12 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                   step={1}
                   value={config.minMinutes}
                   onChange={(e) => setConfig((prev) => ({ ...prev, minMinutes: Number(e.target.value) }))}
-                  className="flex-1 accent-drafting-orange"
+                  className="w-full accent-drafting-orange"
                 />
               </div>
-            </div>
 
-            <div className="space-y-1.5">
-              <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Minimum Projected FPTS</label>
-              <div className="flex items-center gap-2">
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Minimum Projected FPTS</label>
                 <input
                   type="number"
                   min={0}
@@ -1943,7 +1958,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                     const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed * 2) / 2)) : 0;
                     setConfig((prev) => ({ ...prev, minProjectedFpts: nextVal }));
                   }}
-                  className="w-20 bg-white/60 border border-ink/20 rounded-sm px-2 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                  className="w-24 bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
                 />
                 <input
                   type="range"
@@ -1952,14 +1967,12 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                   step={0.5}
                   value={config.minProjectedFpts}
                   onChange={(e) => setConfig((prev) => ({ ...prev, minProjectedFpts: Number(e.target.value) }))}
-                  className="flex-1 accent-drafting-orange"
+                  className="w-full accent-drafting-orange"
                 />
               </div>
-            </div>
 
-            <div className="space-y-1.5">
-              <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Minimum SlateSim Value</label>
-              <div className="flex items-center gap-2">
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Minimum SlateSim Value</label>
                 <input
                   type="number"
                   min={0}
@@ -1971,7 +1984,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                     const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed))) : 0;
                     setConfig((prev) => ({ ...prev, minSlateSimValue: nextVal }));
                   }}
-                  className="w-20 bg-white/60 border border-ink/20 rounded-sm px-2 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                  className="w-24 bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
                 />
                 <input
                   type="range"
@@ -1980,14 +1993,12 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                   step={1}
                   value={config.minSlateSimValue}
                   onChange={(e) => setConfig((prev) => ({ ...prev, minSlateSimValue: Number(e.target.value) }))}
-                  className="flex-1 accent-drafting-orange"
+                  className="w-full accent-drafting-orange"
                 />
               </div>
-            </div>
 
-            <div className="space-y-1.5">
-              <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Randomness (%)</label>
-              <div className="flex items-center gap-2">
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Randomness (%)</label>
                 <input
                   type="number"
                   min={0}
@@ -1999,7 +2010,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                     const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed / 5) * 5)) : 0;
                     setConfig((prev) => ({ ...prev, randomnessPct: nextVal }));
                   }}
-                  className="w-20 bg-white/60 border border-ink/20 rounded-sm px-2 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                  className="w-24 bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
                 />
                 <input
                   type="range"
@@ -2008,35 +2019,35 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                   step={5}
                   value={config.randomnessPct}
                   onChange={(e) => setConfig((prev) => ({ ...prev, randomnessPct: Number(e.target.value) }))}
-                  className="flex-1 accent-drafting-orange"
+                  className="w-full accent-drafting-orange"
                 />
               </div>
             </div>
-          </div>
 
-          <div className="pt-3 border-t border-ink/10 grid grid-cols-1 md:grid-cols-[1fr,1.4fr] gap-2.5">
-            <button
-              type="button"
-              onClick={() => setShowAdvanced(true)}
-              className="w-full border border-ink/20 text-ink/70 font-black py-2 rounded-sm text-[9px] uppercase tracking-widest hover:border-drafting-orange/40 hover:text-ink transition-all"
-            >
-              Advanced
-            </button>
-            {!isOptimizing ? (
-              <button 
-                onClick={startOptimization}
-                className="w-full bg-drafting-orange hover:opacity-90 text-white font-black py-2.5 rounded-sm shadow-lg shadow-drafting-orange/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-[11px]"
+            <div className="md:col-span-1 flex flex-col gap-3">
+              <button
+                type="button"
+                onClick={() => setShowAdvanced(true)}
+                className="w-full border border-ink/20 text-ink/70 font-black py-3 rounded-sm text-[10px] uppercase tracking-widest hover:border-drafting-orange/40 hover:text-ink transition-all"
               >
-                <Play className="w-3.5 h-3.5 fill-current" /> Run Optimizer
+                Player Pool
               </button>
-            ) : (
-              <button 
-                onClick={stopOptimization}
-                className="w-full bg-red-600 hover:opacity-90 text-white font-black py-2.5 rounded-sm shadow-lg shadow-red-600/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-[11px]"
-              >
-                <Square className="w-3.5 h-3.5 fill-current" /> Stop Process
-              </button>
-            )}
+              {!isOptimizing ? (
+                <button
+                  onClick={startOptimization}
+                  className="w-full h-full min-h-[120px] bg-drafting-orange hover:opacity-90 text-white font-black py-3 rounded-sm shadow-lg shadow-drafting-orange/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-[13px]"
+                >
+                  <Play className="w-4 h-4 fill-current" /> Run Optimizer
+                </button>
+              ) : (
+                <button
+                  onClick={stopOptimization}
+                  className="w-full h-full min-h-[120px] bg-red-600 hover:opacity-90 text-white font-black py-3 rounded-sm shadow-lg shadow-red-600/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-[13px]"
+                >
+                  <Square className="w-4 h-4 fill-current" /> Stop Process
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="p-2 rounded-sm border border-amber-200 bg-amber-50/80">

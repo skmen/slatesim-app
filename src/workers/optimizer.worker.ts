@@ -152,11 +152,31 @@ const getCeiling = (player: Player): number => {
 };
 
 const parsePositions = (position: string): string[] => {
-  return String(position || '')
-    .toUpperCase()
-    .split(/[\s,\/]+/)
+  const raw = String(position || '').toUpperCase();
+  const tokens = raw
+    .split(/[^A-Z]+/)
     .map((x) => x.trim())
     .filter(Boolean);
+  const normalized = new Set<string>();
+
+  tokens.forEach((tok) => {
+    if (['PG', 'SG', 'SF', 'PF', 'C', 'G', 'F'].includes(tok)) {
+      normalized.add(tok);
+    }
+  });
+
+  // Fallback for malformed combined strings (e.g. "PGSG", "PFG")
+  if (normalized.size === 0) {
+    if (raw.includes('PG')) normalized.add('PG');
+    if (raw.includes('SG')) normalized.add('SG');
+    if (raw.includes('SF')) normalized.add('SF');
+    if (raw.includes('PF')) normalized.add('PF');
+    if (raw.includes('C')) normalized.add('C');
+    if (raw === 'G') normalized.add('G');
+    if (raw === 'F') normalized.add('F');
+  }
+
+  return Array.from(normalized);
 };
 
 const getEligibleSlots = (position: string): DkSlot[] => {
@@ -871,7 +891,12 @@ const generateLineups = async (
   const exclusionConstraints: string[] = [];
 
   // Max lazy cuts (bipartite-infeasible combos) to try per lineup before giving up
-  const MAX_LAZY_CUTS = 20;
+  const MAX_LAZY_CUTS = Math.max(20, Math.min(250, activePool.length));
+
+  const missingSlot = DK_SLOTS.find((slot) => !activePool.some((p) => getEligibleSlots(p.position).includes(slot)));
+  if (missingSlot) {
+    throw new Error(`No eligible players for ${missingSlot} in active pool after parsing positions.`);
+  }
 
   let earlyStop = false;
 
