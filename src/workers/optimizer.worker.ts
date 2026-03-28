@@ -946,23 +946,43 @@ const generateLineups = async (
 
       let result: ReturnType<HighsSolver['solve']> | null = null;
       try {
-        // Keep solver output enabled; highs can throw parser errors when output is suppressed.
-        result = solver.solve(lpString, { output_flag: true });
+        // Default solve is the most stable path across slate sizes.
+        result = solver.solve(lpString);
       } catch (e) {
         const primaryError = e instanceof Error ? e.message : String(e);
         if (/unable to parse solution|too few lines/i.test(primaryError)) {
           try {
-            // Fallback for larger models where the first parse attempt can fail.
-            result = solver.solve(lpString);
-            warnings.push(`Recovered from solver parse error at lineup ${iter + 1}; fallback solve succeeded.`);
+            // Parse fallback: request explicit output stream.
+            result = solver.solve(lpString, { output_flag: true });
+            warnings.push(`Recovered from solver parse error at lineup ${iter + 1} using output-enabled fallback.`);
+          } catch (fallbackParseErr) {
+            const parseFallbackMsg = fallbackParseErr instanceof Error ? fallbackParseErr.message : String(fallbackParseErr);
+            try {
+              // Last-chance fallback for large/unstable models.
+              result = solver.solve(lpString, { presolve: 'off' } as any);
+              warnings.push(`Recovered from solver parse error at lineup ${iter + 1} with presolve-off fallback.`);
+            } catch (finalFallbackErr) {
+              const finalMsg = finalFallbackErr instanceof Error ? finalFallbackErr.message : String(finalFallbackErr);
+              warnings.push(`Solver error at lineup ${iter + 1}: ${primaryError} Parse fallback failed: ${parseFallbackMsg} Presolve-off failed: ${finalMsg}`);
+              if (iter === 0) warnings.push(`LP preview: ${lpString.slice(0, 500)}`);
+              earlyStop = true;
+              break;
+            }
+          }
+        } else if (/unable to solve the problem|aborted/i.test(primaryError)) {
+          try {
+            result = solver.solve(lpString, { presolve: 'off' } as any);
+            warnings.push(`Recovered from solver runtime failure at lineup ${iter + 1} with presolve-off fallback.`);
           } catch (fallbackErr) {
             const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-            warnings.push(`Solver error at lineup ${iter + 1}: ${primaryError} Fallback failed: ${fallbackMsg}`);
+            warnings.push(`Solver error at lineup ${iter + 1}: ${primaryError} Presolve-off fallback failed: ${fallbackMsg}`);
+            if (iter === 0) warnings.push(`LP preview: ${lpString.slice(0, 500)}`);
             earlyStop = true;
             break;
           }
         } else {
           warnings.push(`Solver error at lineup ${iter + 1}: ${primaryError}`);
+          if (iter === 0) warnings.push(`LP preview: ${lpString.slice(0, 500)}`);
           earlyStop = true;
           break;
         }

@@ -22,7 +22,7 @@ import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
-import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260327-layout-fix3';
+import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260327-solver-fallback-fix4';
 import { usePlayerEnrichment } from '../src/hooks/usePlayerEnrichment';
 import { useLineupScoring } from '../src/hooks/useLineupScoring';
 
@@ -1834,11 +1834,11 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           </div>
         </div>
 
-        <div className="space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="md:col-span-2 space-y-3">
-              <div className="space-y-1.5">
-                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Lineups</label>
+        <div className="space-y-2">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="md:col-span-2 space-y-2">
+              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
+                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Lineups</label>
                 <input
                   type="number"
                   min={1}
@@ -1848,7 +1848,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                     const val = Number.parseInt(e.target.value, 10);
                     if (!Number.isNaN(val)) setConfig((prev) => ({ ...prev, numLineups: Math.max(1, Math.min(150, val)) }));
                   }}
-                  className="w-24 bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
                 />
                 <input
                   type="range"
@@ -1862,13 +1862,10 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                   }}
                   className="w-full accent-drafting-orange"
                 />
-                <div className="text-[9px] font-mono text-ink/40">
-                  {LINEUP_SLIDER_VALUES.join(', ')}
-                </div>
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Salary Floor</label>
+              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
+                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Salary Floor</label>
                 <input
                   type="number"
                   min={0}
@@ -1880,7 +1877,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                     const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(50000, Math.floor(parsed / 100) * 100)) : 0;
                     setConfig((prev) => ({ ...prev, salaryFloor: nextVal }));
                   }}
-                  className="w-28 bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
                 />
                 <input
                   type="range"
@@ -1893,8 +1890,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Minimum Salary</label>
+              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
+                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Minimum Salary</label>
                 <input
                   type="number"
                   min={0}
@@ -1906,7 +1903,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                     const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(10000, Math.floor(parsed / 100) * 100)) : 0;
                     setConfig((prev) => ({ ...prev, minSalary: nextVal }));
                   }}
-                  className="w-28 bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
                 />
                 <input
                   type="range"
@@ -1919,8 +1916,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Minimum Minutes</label>
+              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
+                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Minimum Minutes</label>
                 <input
                   type="number"
                   min={0}
@@ -1932,7 +1929,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                     const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(48, Math.round(parsed))) : 0;
                     setConfig((prev) => ({ ...prev, minMinutes: nextVal }));
                   }}
-                  className="w-24 bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
                 />
                 <input
                   type="range"
@@ -1945,8 +1942,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Minimum Projected FPTS</label>
+              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
+                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Minimum Projected FPTS</label>
                 <input
                   type="number"
                   min={0}
@@ -1958,7 +1955,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                     const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed * 2) / 2)) : 0;
                     setConfig((prev) => ({ ...prev, minProjectedFpts: nextVal }));
                   }}
-                  className="w-24 bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
                 />
                 <input
                   type="range"
@@ -1971,8 +1968,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Minimum SlateSim Value</label>
+              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
+                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Minimum SlateSim Value</label>
                 <input
                   type="number"
                   min={0}
@@ -1984,7 +1981,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                     const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed))) : 0;
                     setConfig((prev) => ({ ...prev, minSlateSimValue: nextVal }));
                   }}
-                  className="w-24 bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
                 />
                 <input
                   type="range"
@@ -1997,8 +1994,8 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Randomness (%)</label>
+              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
+                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Randomness (%)</label>
                 <input
                   type="number"
                   min={0}
@@ -2010,7 +2007,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                     const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed / 5) * 5)) : 0;
                     setConfig((prev) => ({ ...prev, randomnessPct: nextVal }));
                   }}
-                  className="w-24 bg-white/60 border border-ink/20 rounded-sm px-2.5 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
                 />
                 <input
                   type="range"
@@ -2024,27 +2021,27 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
               </div>
             </div>
 
-            <div className="md:col-span-1 flex flex-col gap-3">
+            <div className="md:col-span-1 flex flex-col gap-2">
               <button
                 type="button"
                 onClick={() => setShowAdvanced(true)}
-                className="w-full border border-ink/20 text-ink/70 font-black py-3 rounded-sm text-[10px] uppercase tracking-widest hover:border-drafting-orange/40 hover:text-ink transition-all"
+                className="w-full border border-ink/20 text-ink/70 font-black py-2 rounded-sm text-[10px] uppercase tracking-widest hover:border-drafting-orange/40 hover:text-ink transition-all"
               >
                 Player Pool
               </button>
               {!isOptimizing ? (
                 <button
                   onClick={startOptimization}
-                  className="w-full h-full min-h-[120px] bg-drafting-orange hover:opacity-90 text-white font-black py-3 rounded-sm shadow-lg shadow-drafting-orange/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-[13px]"
+                  className="w-full bg-drafting-orange hover:opacity-90 text-white font-black py-2.5 rounded-sm shadow-lg shadow-drafting-orange/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-[11px]"
                 >
-                  <Play className="w-4 h-4 fill-current" /> Run Optimizer
+                  <Play className="w-3.5 h-3.5 fill-current" /> Run Optimizer
                 </button>
               ) : (
                 <button
                   onClick={stopOptimization}
-                  className="w-full h-full min-h-[120px] bg-red-600 hover:opacity-90 text-white font-black py-3 rounded-sm shadow-lg shadow-red-600/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-[13px]"
+                  className="w-full bg-red-600 hover:opacity-90 text-white font-black py-2.5 rounded-sm shadow-lg shadow-red-600/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-[11px]"
                 >
-                  <Square className="w-4 h-4 fill-current" /> Stop Process
+                  <Square className="w-3.5 h-3.5 fill-current" /> Stop Process
                 </button>
               )}
             </div>
