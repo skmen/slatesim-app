@@ -22,7 +22,7 @@ import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
-import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260327-qiea-fix9';
+import OptimizerWorker from '../src/workers/sa-optimizer/worker.ts?worker&v=20260328-sa-hookup-fix1';
 import { usePlayerEnrichment } from '../src/hooks/usePlayerEnrichment';
 import { useLineupScoring } from '../src/hooks/useLineupScoring';
 
@@ -1278,25 +1278,55 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       const worker = new OptimizerWorker();
       workerRef.current = worker;
 
+      const toAppLineup = (
+        slotRows: Array<{ slot: string; player: any }>,
+        index: number,
+      ): Lineup => {
+        const playerIds = slotRows.map((row) => String(row?.player?.id || '')).filter(Boolean);
+        const totalSalary = slotRows.reduce((sum, row) => sum + Number(row?.player?.salary || 0), 0);
+        const totalProjection = slotRows.reduce((sum, row) => sum + Number(row?.player?.projection || 0), 0);
+        const totalCeiling = slotRows.reduce((sum, row) => sum + Number(row?.player?.ceiling || row?.player?.projection || 0), 0);
+        const totalOwnership = slotRows.reduce((sum, row) => sum + Number(row?.player?.ownership || 0), 0);
+        return {
+          id: `sa_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 7)}`,
+          playerIds,
+          totalSalary,
+          totalProjection,
+          totalCeiling,
+          totalOwnership,
+          lineupSource: 'optimizer',
+        };
+      };
+
       worker.onmessage = (e: MessageEvent) => {
-        const msg = e.data;
+        const msg = e.data || {};
         switch (msg.type) {
-          case 'progress':
-            setProgress(msg.progress);
-            if (msg.currentBest) {
-              setGeneratedLineups((prev) => [msg.currentBest!, ...prev].slice(0, Math.max(1, config.numLineups)));
+          case 'progress': {
+            const payload = msg.payload || {};
+            const current = Number(payload.current) || 0;
+            const total = Number(payload.total) || Math.max(1, config.numLineups);
+            const lineupRows = Array.isArray(payload.lineup) ? payload.lineup : [];
+            setProgress(Math.max(0, Math.min(99, Math.round((current / Math.max(1, total)) * 100))));
+            if (lineupRows.length > 0) {
+              const nextLineup = toAppLineup(lineupRows, current);
+              if (nextLineup.totalSalary >= config.salaryFloor) {
+                setGeneratedLineups((prev) => [nextLineup, ...prev].slice(0, Math.max(1, config.numLineups)));
+              }
             }
             break;
+          }
           case 'result': {
-            const scored = scoreLineups(msg.lineups ?? [], enrichedPoolRef.current);
+            const payload = msg.payload || {};
+            const rawLineups = Array.isArray(payload.lineups) ? payload.lineups : [];
+            const converted = rawLineups
+              .map((rows: any, idx: number) => toAppLineup(Array.isArray(rows) ? rows : [], idx + 1))
+              .filter((lineup) => lineup.totalSalary >= config.salaryFloor);
+            const scored = scoreLineups(converted, enrichedPoolRef.current);
             setGeneratedLineups(scored);
             setIsOptimizing(false);
             setProgress(100);
-            const workerWarnings: string[] = Array.isArray(msg.warnings) ? msg.warnings : [];
+            const workerWarnings: string[] = [];
             setOptimizerNotices(workerWarnings);
-            if (workerWarnings.length > 0) {
-              console.warn('[optimizer] constraint warnings:', workerWarnings);
-            }
             const diagnostics: string[] = [];
             if (lockedIds.length > 0) diagnostics.push(`${lockedIds.length} locked`);
             if (excludedOverrideCount > 0) diagnostics.push(`${excludedOverrideCount} excluded`);
@@ -1315,7 +1345,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
 
             const hasUserConstraints = diagnostics.length > 0;
             const warningSuffix = workerWarnings.length > 0 ? ` ${workerWarnings.join(' ')}` : '';
-            if (!msg.lineups || msg.lineups.length === 0) {
+            if (converted.length === 0) {
               if (hasUserConstraints) {
                 setError(
                   `No valid lineups could be generated with the active constraints.` +
@@ -1329,7 +1359,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                   ` Try lowering the salary floor or expanding the player pool.${warningSuffix}`,
                 );
               }
-            } else if (msg.lineups.length < config.numLineups) {
+            } else if (converted.length < config.numLineups) {
               const detail = hasUserConstraints
                 ? ` Active constraints detected: ${diagnostics.join(', ')}.`
                 : ' No explicit advanced constraints detected; feasible unique lineups were exhausted by salary/position/uniqueness limits in the current pool.';
@@ -1337,19 +1367,21 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                 ? ' Try clearing advanced settings or relaxing pool filters, exposure caps, or salary constraints for more combinations.'
                 : ' Try expanding the player pool to increase valid unique combinations.';
               setError(
-                `Generated ${msg.lineups.length}/${config.numLineups} feasible unique lineups before exhaustion.` +
+                `Generated ${converted.length}/${config.numLineups} feasible unique lineups before exhaustion.` +
                 `${detail}${suggestion}${warningSuffix}`,
               );
             }
             worker.terminate();
             break;
           }
-          case 'error':
-            setError(msg.message);
+          case 'error': {
+            const payload = msg.payload || {};
+            setError(String(payload.message || 'Optimizer worker failed.'));
             setOptimizerNotices([]);
             setIsOptimizing(false);
             worker.terminate();
             break;
+          }
         }
       };
 
@@ -1375,17 +1407,47 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       const modelCount = enrichedPool.filter((p) => (p as any).modelProjection != null).length;
       console.log(`[Enrichment] ${modelCount}/${enrichedPool.length} players have modelProjection`);
 
-      const randomizationBase = Math.max(0, Math.min(100, Number(config.randomnessPct) || 0)) / 100;
+      const toSaPositions = (rawPos: string): string[] => {
+        const parsed = parsePositions(rawPos);
+        if (parsed.length > 0) return parsed;
+        const raw = String(rawPos || '').toUpperCase();
+        if (raw.includes('G')) return ['PG', 'SG'];
+        if (raw.includes('F')) return ['SF', 'PF'];
+        return ['PG', 'SG', 'SF', 'PF', 'C'];
+      };
+
+      const saPlayers = enrichedPool.map((p) => {
+        const team = String(p.team || 'UNK').toUpperCase();
+        const opp = String(p.opponent || 'UNK').toUpperCase();
+        return {
+          id: String(p.id),
+          name: String(p.name || p.id),
+          positions: toSaPositions(String(p.position || '')),
+          salary: Number(p.salary || 0),
+          projection: Number(p.projection || 0),
+          ceiling: Number((p as any).ceiling ?? p.projection ?? 0),
+          ownership: Number((p as any).ownership ?? 0),
+          teamId: team,
+          gameId: [team, opp].sort().join('_vs_'),
+        };
+      });
+
+      const iterations = Math.max(500, Math.min(20000, Math.floor(config.generations * config.population)));
+      const randomPct = Math.max(0, Math.min(100, Number(config.randomnessPct) || 0)) / 100;
+      const isCash = config.statConstraintMode === 'cash';
       const request = {
-        players: enrichedPool,
+        players: saPlayers,
         config: {
-          ...config,
-          min_hamming_distance: config.minUniquePlayers,
-          qiea_generations: config.generations,
-          qiea_population: config.population,
-          contest_type: config.statConstraintMode,
-          randomization_base_pct: randomizationBase,
-          randomization_ramp: false,
+          targetLineups: config.numLineups,
+          weightProjection: isCash ? 0.8 : 0.65,
+          weightCeiling: isCash ? 0.15 : 0.25,
+          weightLeverage: isCash ? 0.05 : 0.1,
+          exposurePenaltyLambda: Math.max(0.05, config.minUniquePlayers * 0.2),
+          saTempStart: 5 + randomPct * 5,
+          saTempEnd: 0.01,
+          saIterations: iterations,
+          salaryCap: 50000,
+          minSalary: Math.max(0, Number(config.minSalary) || 0),
         },
       };
 
