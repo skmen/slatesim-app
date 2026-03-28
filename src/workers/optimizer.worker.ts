@@ -919,13 +919,30 @@ const generateLineups = async (
         exclusionConstraints,
       );
 
-      let result: ReturnType<HighsSolver['solve']>;
+      let result: ReturnType<HighsSolver['solve']> | null = null;
       try {
-        // highs@1.8 can throw "Unable to parse solution. Too few lines."
-        // when output_flag is forced false; rely on default solver options.
-        result = solver.solve(lpString);
+        // Keep solver output enabled; highs can throw parser errors when output is suppressed.
+        result = solver.solve(lpString, { output_flag: true });
       } catch (e) {
-        warnings.push(`Solver error at lineup ${iter + 1}: ${e instanceof Error ? e.message : String(e)}`);
+        const primaryError = e instanceof Error ? e.message : String(e);
+        if (/unable to parse solution|too few lines/i.test(primaryError)) {
+          try {
+            // Fallback for larger models where the first parse attempt can fail.
+            result = solver.solve(lpString);
+            warnings.push(`Recovered from solver parse error at lineup ${iter + 1}; fallback solve succeeded.`);
+          } catch (fallbackErr) {
+            const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+            warnings.push(`Solver error at lineup ${iter + 1}: ${primaryError} Fallback failed: ${fallbackMsg}`);
+            earlyStop = true;
+            break;
+          }
+        } else {
+          warnings.push(`Solver error at lineup ${iter + 1}: ${primaryError}`);
+          earlyStop = true;
+          break;
+        }
+      }
+      if (!result) {
         earlyStop = true;
         break;
       }

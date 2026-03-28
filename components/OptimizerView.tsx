@@ -22,7 +22,7 @@ import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
-import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260327-highs-solve-fix1';
+import OptimizerWorker from '../src/workers/optimizer.worker.ts?worker&v=20260327-highs-large-slate-fix2';
 import { usePlayerEnrichment } from '../src/hooks/usePlayerEnrichment';
 import { useLineupScoring } from '../src/hooks/useLineupScoring';
 
@@ -67,6 +67,10 @@ interface OptimizerConfigState {
   numLineups: number;
   salaryCap: number;
   salaryFloor: number;
+  minMinutes: number;
+  minProjectedFpts: number;
+  minSlateSimValue: number;
+  randomnessPct: number;
   minExposure: number;
   maxExposure: number;
   site: 'DraftKings';
@@ -98,6 +102,10 @@ const createDefaultOptimizerConfig = (): OptimizerConfigState => ({
   numLineups: 20,
   salaryCap: 50000,
   salaryFloor: 49500,
+  minMinutes: 0,
+  minProjectedFpts: 0,
+  minSlateSimValue: 0,
+  randomnessPct: 0,
   minExposure: 0,
   maxExposure: 100,
   site: 'DraftKings',
@@ -128,6 +136,10 @@ const sanitizeOptimizerConfig = (raw: any): OptimizerConfigState => {
   const numLineups = Number(raw?.numLineups);
   const salaryCap = Number(raw?.salaryCap);
   const salaryFloor = Number(raw?.salaryFloor);
+  const minMinutes = Number(raw?.minMinutes);
+  const minProjectedFpts = Number(raw?.minProjectedFpts);
+  const minSlateSimValue = Number(raw?.minSlateSimValue);
+  const randomnessPct = Number(raw?.randomnessPct);
   const minExposure = Number(raw?.minExposure);
   const maxExposure = Number(raw?.maxExposure);
   const upsideDelta = Number(raw?.upsideDelta);
@@ -142,6 +154,10 @@ const sanitizeOptimizerConfig = (raw: any): OptimizerConfigState => {
     numLineups: Number.isFinite(numLineups) ? Math.min(2000, Math.max(1, Math.floor(numLineups))) : defaults.numLineups,
     salaryCap: nextSalaryCap,
     salaryFloor: nextSalaryFloor,
+    minMinutes: Number.isFinite(minMinutes) ? Math.max(0, Math.min(48, Math.round(minMinutes))) : defaults.minMinutes,
+    minProjectedFpts: Number.isFinite(minProjectedFpts) ? Math.max(0, Math.min(100, Math.round(minProjectedFpts * 2) / 2)) : defaults.minProjectedFpts,
+    minSlateSimValue: Number.isFinite(minSlateSimValue) ? Math.max(0, Math.min(100, Math.round(minSlateSimValue))) : defaults.minSlateSimValue,
+    randomnessPct: Number.isFinite(randomnessPct) ? Math.max(0, Math.min(100, Math.round(randomnessPct / 5) * 5)) : defaults.randomnessPct,
     minExposure: Number.isFinite(minExposure) ? Math.max(0, Math.min(100, minExposure)) : defaults.minExposure,
     maxExposure: Number.isFinite(maxExposure) ? Math.max(0, Math.min(100, maxExposure)) : defaults.maxExposure,
     site: 'DraftKings',
@@ -1194,17 +1210,32 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             optimizerMaxExposure: locked ? 100 : maxExposureVal,
           };
         })
-        .filter((player) => !Boolean((player as any).optimizerExcluded));
+        .filter((player) => {
+          if (Boolean((player as any).optimizerExcluded)) return false;
+
+          const minutes = Number(player.minutesProjection);
+          if (config.minMinutes > 0 && (!Number.isFinite(minutes) || minutes < config.minMinutes)) return false;
+
+          const projection = Number(player.projection);
+          if (config.minProjectedFpts > 0 && (!Number.isFinite(projection) || projection < config.minProjectedFpts)) return false;
+
+          if (config.minSlateSimValue > 0) {
+            const slateSimValue = valueScoreMap.get(player.id)?.composite;
+            if (!Number.isFinite(Number(slateSimValue)) || Number(slateSimValue) < config.minSlateSimValue) return false;
+          }
+
+          return true;
+        });
 
       if (pool.length < DK_SLOTS.length) {
-        setError(`Optimizer pool too small (${pool.length} players) after filters/exclusions.`);
+        setError(`Optimizer pool too small (${pool.length} players) after filters/exclusions/thresholds.`);
         setIsOptimizing(false);
         return;
       }
 
       const missingSlot = DK_SLOTS.find((slot) => !pool.some((player) => canFitDK(player, slot)));
       if (missingSlot) {
-        setError(`No eligible players for ${missingSlot} after filters.`);
+        setError(`No eligible players for ${missingSlot} after filters/thresholds.`);
         setIsOptimizing(false);
         return;
       }
@@ -1242,6 +1273,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             if (config.salaryFloor > 0) diagnostics.push(`salary floor $${config.salaryFloor}`);
             if (config.enableStatConstraints) diagnostics.push(`stat constraints ${config.statConstraintMode}`);
             if (config.deltaFromBestProjection > 0) diagnostics.push(`projection floor -${config.deltaFromBestProjection}`);
+            if (config.minMinutes > 0) diagnostics.push(`min minutes ${config.minMinutes}`);
+            if (config.minProjectedFpts > 0) diagnostics.push(`min fpts ${config.minProjectedFpts}`);
+            if (config.minSlateSimValue > 0) diagnostics.push(`min slatesim value ${config.minSlateSimValue}`);
             if (poolFilters.length > 0) diagnostics.push(`${poolFilters.length} pool filters`);
             if (poolSearch.trim()) diagnostics.push('pool search active');
 
@@ -1307,9 +1341,15 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
       const modelCount = enrichedPool.filter((p) => (p as any).modelProjection != null).length;
       console.log(`[Enrichment] ${modelCount}/${enrichedPool.length} players have modelProjection`);
 
+      const randomizationBase = Math.max(0, Math.min(100, Number(config.randomnessPct) || 0)) / 100;
       const request = {
         players: enrichedPool,
-        config,
+        config: {
+          ...config,
+          contest_type: config.statConstraintMode,
+          randomization_base_pct: randomizationBase,
+          randomization_ramp: false,
+        },
       };
 
       worker.postMessage(request);
@@ -1757,11 +1797,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         />
       )}
       <div className="bg-white/40 backdrop-blur-sm rounded-sm border border-ink/10 p-4 shadow-sm">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <Settings className="w-4 h-4 text-drafting-orange" />
-            <h3 className="text-[11px] font-black uppercase tracking-widest text-ink/60">Optimizer Settings</h3>
-          </div>
+        <div className="flex items-center justify-end mb-3">
           <div className="flex items-center gap-1.5">
             {enrichmentState.isLoading ? (
               <span className="flex items-center gap-1 text-[9px] font-bold text-ink/40 uppercase tracking-widest">
@@ -1862,6 +1898,120 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                 </p>
               </div>
             )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3 border-t border-ink/10">
+            <div className="space-y-1.5">
+              <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Minimum Minutes</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  max={48}
+                  step={1}
+                  value={config.minMinutes}
+                  onChange={(e) => {
+                    const parsed = Number(e.target.value);
+                    const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(48, Math.round(parsed))) : 0;
+                    setConfig((prev) => ({ ...prev, minMinutes: nextVal }));
+                  }}
+                  className="w-20 bg-white/60 border border-ink/20 rounded-sm px-2 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={48}
+                  step={1}
+                  value={config.minMinutes}
+                  onChange={(e) => setConfig((prev) => ({ ...prev, minMinutes: Number(e.target.value) }))}
+                  className="flex-1 accent-drafting-orange"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Minimum Projected FPTS</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.5}
+                  value={config.minProjectedFpts}
+                  onChange={(e) => {
+                    const parsed = Number(e.target.value);
+                    const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed * 2) / 2)) : 0;
+                    setConfig((prev) => ({ ...prev, minProjectedFpts: nextVal }));
+                  }}
+                  className="w-20 bg-white/60 border border-ink/20 rounded-sm px-2 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={0.5}
+                  value={config.minProjectedFpts}
+                  onChange={(e) => setConfig((prev) => ({ ...prev, minProjectedFpts: Number(e.target.value) }))}
+                  className="flex-1 accent-drafting-orange"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Minimum SlateSim Value</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={config.minSlateSimValue}
+                  onChange={(e) => {
+                    const parsed = Number(e.target.value);
+                    const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed))) : 0;
+                    setConfig((prev) => ({ ...prev, minSlateSimValue: nextVal }));
+                  }}
+                  className="w-20 bg-white/60 border border-ink/20 rounded-sm px-2 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={config.minSlateSimValue}
+                  onChange={(e) => setConfig((prev) => ({ ...prev, minSlateSimValue: Number(e.target.value) }))}
+                  className="flex-1 accent-drafting-orange"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[9px] font-black text-ink/40 uppercase tracking-widest block">Randomness (%)</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={config.randomnessPct}
+                  onChange={(e) => {
+                    const parsed = Number(e.target.value);
+                    const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed / 5) * 5)) : 0;
+                    setConfig((prev) => ({ ...prev, randomnessPct: nextVal }));
+                  }}
+                  className="w-20 bg-white/60 border border-ink/20 rounded-sm px-2 py-1.5 text-[11px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={config.randomnessPct}
+                  onChange={(e) => setConfig((prev) => ({ ...prev, randomnessPct: Number(e.target.value) }))}
+                  className="flex-1 accent-drafting-orange"
+                />
+              </div>
+            </div>
           </div>
 
           <div className="pt-3 border-t border-ink/10 grid grid-cols-1 md:grid-cols-[1fr,1.4fr] gap-2.5">
