@@ -921,7 +921,9 @@ const generateLineups = async (
 
       let result: ReturnType<HighsSolver['solve']>;
       try {
-        result = solver.solve(lpString, { output_flag: false });
+        // highs@1.8 can throw "Unable to parse solution. Too few lines."
+        // when output_flag is forced false; rely on default solver options.
+        result = solver.solve(lpString);
       } catch (e) {
         warnings.push(`Solver error at lineup ${iter + 1}: ${e instanceof Error ? e.message : String(e)}`);
         earlyStop = true;
