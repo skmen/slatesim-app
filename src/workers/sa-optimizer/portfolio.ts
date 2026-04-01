@@ -189,7 +189,7 @@ async function solveLpWithRecovery(lpText: string): Promise<any> {
 
 function isRecoverableHighsRuntimeError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error || '');
-  return /(indirect call to null|index out of bounds|indirect call signature mismatch)/i.test(message);
+  return /(indirect call to null|index out of bounds|indirect call signature mismatch|unable to read lp model|runtimeerror:\s*aborted\(\))/i.test(message);
 }
 
 function buildLineupLp(
@@ -254,6 +254,11 @@ function buildLineupLp(
   }
 
   const lines: string[] = [];
+  let constraintCounter = 0;
+  const pushConstraint = (body: string): void => {
+    constraintCounter += 1;
+    lines.push(` c${constraintCounter}: ${body}`);
+  };
   lines.push('Maximize');
   lines.push(
     ` obj: ${formatExpression(
@@ -267,42 +272,36 @@ function buildLineupLp(
   );
 
   lines.push('Subject To');
-  lines.push(` roster: ${formatExpression(assignmentVars.map((row) => ({ varName: row.name, coeff: 1 })))} = ${SLOT_CONFIG.length}`);
+  pushConstraint(`${formatExpression(assignmentVars.map((row) => ({ varName: row.name, coeff: 1 })))} = ${SLOT_CONFIG.length}`);
   const salaryTerms = assignmentVars.map((row) => ({
     varName: row.name,
     coeff: Number(pool.all[row.playerIndex].salary || 0),
   }));
-  lines.push(` salary_cap: ${formatExpression(salaryTerms)} <= ${formatCoeff(config.salaryCap)}`);
-  lines.push(` salary_floor: ${formatExpression(salaryTerms)} >= ${formatCoeff(config.salaryFloor)}`);
-  lines.push(` pos_pg: ${formatExpression(groupTerms.PG)} >= 1`);
-  lines.push(` pos_sg: ${formatExpression(groupTerms.SG)} >= 1`);
-  lines.push(` pos_sf: ${formatExpression(groupTerms.SF)} >= 1`);
-  lines.push(` pos_pf: ${formatExpression(groupTerms.PF)} >= 1`);
-  lines.push(` pos_c: ${formatExpression(groupTerms.C)} >= 1`);
-  lines.push(` pos_g: ${formatExpression(groupTerms.G)} >= 2`);
-  lines.push(` pos_f: ${formatExpression(groupTerms.F)} >= 2`);
+  pushConstraint(`${formatExpression(salaryTerms)} <= ${formatCoeff(config.salaryCap)}`);
+  pushConstraint(`${formatExpression(salaryTerms)} >= ${formatCoeff(config.salaryFloor)}`);
+  pushConstraint(`${formatExpression(groupTerms.PG)} >= 1`);
+  pushConstraint(`${formatExpression(groupTerms.SG)} >= 1`);
+  pushConstraint(`${formatExpression(groupTerms.SF)} >= 1`);
+  pushConstraint(`${formatExpression(groupTerms.PF)} >= 1`);
+  pushConstraint(`${formatExpression(groupTerms.C)} >= 1`);
+  pushConstraint(`${formatExpression(groupTerms.G)} >= 2`);
+  pushConstraint(`${formatExpression(groupTerms.F)} >= 2`);
 
-  idToPlayerIndices.forEach((indices, id) => {
+  idToPlayerIndices.forEach((indices) => {
     if (indices.length <= 1) return;
-    lines.push(
-      ` dedupe_${id.replace(/[^A-Z0-9]/gi, '_')}: ${formatExpression(indices.map((idx) => ({ varName: varNameByPlayerIndex[idx], coeff: 1 })))} <= 1`,
-    );
+    pushConstraint(`${formatExpression(indices.map((idx) => ({ varName: varNameByPlayerIndex[idx], coeff: 1 })))} <= 1`);
   });
 
   blockedIds.forEach((id) => {
     const indices = idToPlayerIndices.get(id) || [];
     if (indices.length === 0) return;
-    lines.push(
-      ` blocked_${id.replace(/[^A-Z0-9]/gi, '_')}: ${formatExpression(indices.map((idx) => ({ varName: varNameByPlayerIndex[idx], coeff: 1 })))} = 0`,
-    );
+    pushConstraint(`${formatExpression(indices.map((idx) => ({ varName: varNameByPlayerIndex[idx], coeff: 1 })))} = 0`);
   });
 
   forcedIds.forEach((id) => {
     const indices = idToPlayerIndices.get(id) || [];
     if (indices.length === 0) return;
-    lines.push(
-      ` forced_${id.replace(/[^A-Z0-9]/gi, '_')}: ${formatExpression(indices.map((idx) => ({ varName: varNameByPlayerIndex[idx], coeff: 1 })))} = 1`,
-    );
+    pushConstraint(`${formatExpression(indices.map((idx) => ({ varName: varNameByPlayerIndex[idx], coeff: 1 })))} = 1`);
   });
 
   // Enforce minimum uniqueness relative to each accepted lineup.
@@ -320,7 +319,7 @@ function buildLineupLp(
     }
 
     if (terms.length > 0) {
-      lines.push(` unique_${i}: ${formatExpression(terms)} <= ${formatCoeff(maxOverlap)}`);
+      pushConstraint(`${formatExpression(terms)} <= ${formatCoeff(maxOverlap)}`);
     }
   }
 
@@ -332,7 +331,7 @@ function buildLineupLp(
       varName: varNameByPlayerIndex[idx],
       coeff: 1,
     }));
-    lines.push(` invalid_sel_${i}: ${formatExpression(terms)} <= ${formatCoeff(SLOT_CONFIG.length - 1)}`);
+    pushConstraint(`${formatExpression(terms)} <= ${formatCoeff(SLOT_CONFIG.length - 1)}`);
   }
 
   const teamStackVars: TeamStackVar[] = [];
@@ -368,8 +367,8 @@ function buildLineupLp(
       });
     }
 
-    lines.push(
-      ` team_stack_any: ${formatExpression(
+    pushConstraint(
+      `${formatExpression(
         teamStackVars.map((row) => ({ varName: row.name, coeff: 1 })),
       )} >= 1`,
     );
@@ -382,7 +381,7 @@ function buildLineupLp(
         terms.push({ varName: varNameByPlayerIndex[playerIndex], coeff: 1 });
       }
       terms.push({ varName: row.name, coeff: -minTeamStackSize });
-      lines.push(` team_stack_${i}: ${formatExpression(terms)} >= 0`);
+      pushConstraint(`${formatExpression(terms)} >= 0`);
     }
   }
 
