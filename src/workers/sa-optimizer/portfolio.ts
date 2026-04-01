@@ -10,7 +10,6 @@ interface ExposureBound {
 interface AssignmentVar {
   name: string;
   playerIndex: number;
-  slotIndex: number;
 }
 
 interface TeamStackVar {
@@ -98,6 +97,38 @@ function canFitSlot(player: Player, slotIndex: number): boolean {
   return false;
 }
 
+function findSlotAssignment(players: Player[]): number[] | null {
+  if (players.length !== SLOT_CONFIG.length) return null;
+  const assignment = new Array<number>(players.length).fill(-1);
+  const usedSlots = new Array<boolean>(SLOT_CONFIG.length).fill(false);
+  const order = players
+    .map((player, playerIndex) => {
+      const eligibleSlots: number[] = [];
+      for (let slotIndex = 0; slotIndex < SLOT_CONFIG.length; slotIndex++) {
+        if (canFitSlot(player, slotIndex)) eligibleSlots.push(slotIndex);
+      }
+      return { playerIndex, eligibleSlots };
+    })
+    .sort((a, b) => a.eligibleSlots.length - b.eligibleSlots.length);
+
+  const dfs = (k: number): boolean => {
+    if (k >= order.length) return true;
+    const row = order[k];
+    for (let i = 0; i < row.eligibleSlots.length; i++) {
+      const slotIndex = row.eligibleSlots[i];
+      if (usedSlots[slotIndex]) continue;
+      usedSlots[slotIndex] = true;
+      assignment[row.playerIndex] = slotIndex;
+      if (dfs(k + 1)) return true;
+      assignment[row.playerIndex] = -1;
+      usedSlots[slotIndex] = false;
+    }
+    return false;
+  };
+
+  return dfs(0) ? assignment : null;
+}
+
 function formatCoeff(value: number): string {
   const rounded = Math.abs(value) < 1e-10 ? 0 : value;
   const txt = rounded.toFixed(8);
@@ -162,40 +193,56 @@ function buildLineupLp(
   blockedIds: Set<string>,
   priorLineupIds: string[][],
 ): { lpText: string; assignmentVars: AssignmentVar[] } {
-  const assignmentVars: AssignmentVar[] = [];
-  const varsByPlayer = new Map<string, AssignmentVar[]>();
-  const varsByPlayerIndex = new Map<number, AssignmentVar[]>();
-  const varsBySlot = new Map<number, AssignmentVar[]>();
-
-  for (let slotIndex = 0; slotIndex < SLOT_CONFIG.length; slotIndex++) {
-    varsBySlot.set(slotIndex, []);
-  }
+  const assignmentVars: AssignmentVar[] = new Array(pool.all.length);
+  const varNameByPlayerIndex: string[] = new Array(pool.all.length);
+  const idToPlayerIndices = new Map<string, number[]>();
 
   for (let playerIndex = 0; playerIndex < pool.all.length; playerIndex++) {
     const player = pool.all[playerIndex];
-    const perPlayer: AssignmentVar[] = [];
-
-    for (let slotIndex = 0; slotIndex < SLOT_CONFIG.length; slotIndex++) {
-      if (!canFitSlot(player, slotIndex)) continue;
-      const row: AssignmentVar = {
-        name: `x_p${playerIndex}_s${slotIndex}`,
-        playerIndex,
-        slotIndex,
-      };
-      assignmentVars.push(row);
-      perPlayer.push(row);
-      varsBySlot.get(slotIndex)!.push(row);
-      if (!varsByPlayerIndex.has(playerIndex)) varsByPlayerIndex.set(playerIndex, []);
-      varsByPlayerIndex.get(playerIndex)!.push(row);
-    }
-
-    varsByPlayer.set(player.id, perPlayer);
+    const varName = `x${playerIndex}`;
+    assignmentVars[playerIndex] = { name: varName, playerIndex };
+    varNameByPlayerIndex[playerIndex] = varName;
+    if (!idToPlayerIndices.has(player.id)) idToPlayerIndices.set(player.id, []);
+    idToPlayerIndices.get(player.id)!.push(playerIndex);
   }
 
-  for (let slotIndex = 0; slotIndex < SLOT_CONFIG.length; slotIndex++) {
-    if ((varsBySlot.get(slotIndex) || []).length === 0) {
-      throw new Error(`No eligible candidates for slot ${SLOT_CONFIG[slotIndex].slot}.`);
-    }
+  const groupTerms: Record<'PG' | 'SG' | 'SF' | 'PF' | 'C' | 'G' | 'F', Array<{ varName: string; coeff: number }>> = {
+    PG: [],
+    SG: [],
+    SF: [],
+    PF: [],
+    C: [],
+    G: [],
+    F: [],
+  };
+
+  for (let playerIndex = 0; playerIndex < pool.all.length; playerIndex++) {
+    const player = pool.all[playerIndex];
+    const varName = varNameByPlayerIndex[playerIndex];
+    const hasPG = player.positions.includes('PG');
+    const hasSG = player.positions.includes('SG');
+    const hasSF = player.positions.includes('SF');
+    const hasPF = player.positions.includes('PF');
+    const hasC = player.positions.includes('C');
+    if (hasPG) groupTerms.PG.push({ varName, coeff: 1 });
+    if (hasSG) groupTerms.SG.push({ varName, coeff: 1 });
+    if (hasSF) groupTerms.SF.push({ varName, coeff: 1 });
+    if (hasPF) groupTerms.PF.push({ varName, coeff: 1 });
+    if (hasC) groupTerms.C.push({ varName, coeff: 1 });
+    if (hasPG || hasSG) groupTerms.G.push({ varName, coeff: 1 });
+    if (hasSF || hasPF) groupTerms.F.push({ varName, coeff: 1 });
+  }
+
+  if (
+    groupTerms.PG.length === 0 ||
+    groupTerms.SG.length === 0 ||
+    groupTerms.SF.length === 0 ||
+    groupTerms.PF.length === 0 ||
+    groupTerms.C.length === 0 ||
+    groupTerms.G.length < 2 ||
+    groupTerms.F.length < 2
+  ) {
+    throw new Error('No valid positional coverage for DraftKings roster requirements.');
   }
 
   const lines: string[] = [];
@@ -212,42 +259,43 @@ function buildLineupLp(
   );
 
   lines.push('Subject To');
-
-  // Exactly one player in each DK slot.
-  for (let slotIndex = 0; slotIndex < SLOT_CONFIG.length; slotIndex++) {
-    const vars = varsBySlot.get(slotIndex) || [];
-    lines.push(` slot_${slotIndex}: ${formatExpression(vars.map((row) => ({ varName: row.name, coeff: 1 })))} = 1`);
-  }
-
-  // A player can occupy at most one slot.
-  for (let playerIndex = 0; playerIndex < pool.all.length; playerIndex++) {
-    const player = pool.all[playerIndex];
-    const vars = varsByPlayer.get(player.id) || [];
-    if (vars.length === 0) continue;
-    lines.push(` player_${playerIndex}: ${formatExpression(vars.map((row) => ({ varName: row.name, coeff: 1 })))} <= 1`);
-  }
-
+  lines.push(` roster: ${formatExpression(assignmentVars.map((row) => ({ varName: row.name, coeff: 1 })))} = ${SLOT_CONFIG.length}`);
   const salaryTerms = assignmentVars.map((row) => ({
     varName: row.name,
     coeff: Number(pool.all[row.playerIndex].salary || 0),
   }));
   lines.push(` salary_cap: ${formatExpression(salaryTerms)} <= ${formatCoeff(config.salaryCap)}`);
   lines.push(` salary_floor: ${formatExpression(salaryTerms)} >= ${formatCoeff(config.salaryFloor)}`);
+  lines.push(` pos_pg: ${formatExpression(groupTerms.PG)} >= 1`);
+  lines.push(` pos_sg: ${formatExpression(groupTerms.SG)} >= 1`);
+  lines.push(` pos_sf: ${formatExpression(groupTerms.SF)} >= 1`);
+  lines.push(` pos_pf: ${formatExpression(groupTerms.PF)} >= 1`);
+  lines.push(` pos_c: ${formatExpression(groupTerms.C)} >= 1`);
+  lines.push(` pos_g: ${formatExpression(groupTerms.G)} >= 2`);
+  lines.push(` pos_f: ${formatExpression(groupTerms.F)} >= 2`);
 
-  for (let playerIndex = 0; playerIndex < pool.all.length; playerIndex++) {
-    const player = pool.all[playerIndex];
-    const vars = varsByPlayer.get(player.id) || [];
-    if (vars.length === 0) continue;
+  idToPlayerIndices.forEach((indices, id) => {
+    if (indices.length <= 1) return;
+    lines.push(
+      ` dedupe_${id.replace(/[^A-Z0-9]/gi, '_')}: ${formatExpression(indices.map((idx) => ({ varName: varNameByPlayerIndex[idx], coeff: 1 })))} <= 1`,
+    );
+  });
 
-    if (blockedIds.has(player.id)) {
-      lines.push(` blocked_${playerIndex}: ${formatExpression(vars.map((row) => ({ varName: row.name, coeff: 1 })))} = 0`);
-      continue;
-    }
+  blockedIds.forEach((id) => {
+    const indices = idToPlayerIndices.get(id) || [];
+    if (indices.length === 0) return;
+    lines.push(
+      ` blocked_${id.replace(/[^A-Z0-9]/gi, '_')}: ${formatExpression(indices.map((idx) => ({ varName: varNameByPlayerIndex[idx], coeff: 1 })))} = 0`,
+    );
+  });
 
-    if (forcedIds.has(player.id)) {
-      lines.push(` forced_${playerIndex}: ${formatExpression(vars.map((row) => ({ varName: row.name, coeff: 1 })))} = 1`);
-    }
-  }
+  forcedIds.forEach((id) => {
+    const indices = idToPlayerIndices.get(id) || [];
+    if (indices.length === 0) return;
+    lines.push(
+      ` forced_${id.replace(/[^A-Z0-9]/gi, '_')}: ${formatExpression(indices.map((idx) => ({ varName: varNameByPlayerIndex[idx], coeff: 1 })))} = 1`,
+    );
+  });
 
   // Enforce minimum uniqueness relative to each accepted lineup.
   const minUnique = clamp(Math.floor(config.minUniquePlayers), 1, SLOT_CONFIG.length);
@@ -257,9 +305,9 @@ function buildLineupLp(
     const terms: Array<{ varName: string; coeff: number }> = [];
 
     for (let k = 0; k < priorIds.length; k++) {
-      const vars = varsByPlayer.get(priorIds[k]) || [];
-      for (let v = 0; v < vars.length; v++) {
-        terms.push({ varName: vars[v].name, coeff: 1 });
+      const indices = idToPlayerIndices.get(priorIds[k]) || [];
+      for (let v = 0; v < indices.length; v++) {
+        terms.push({ varName: varNameByPlayerIndex[indices[v]], coeff: 1 });
       }
     }
 
@@ -312,10 +360,7 @@ function buildLineupLp(
       const terms: Array<{ varName: string; coeff: number }> = [];
       for (let k = 0; k < row.playerIndices.length; k++) {
         const playerIndex = row.playerIndices[k];
-        const assignmentRows = varsByPlayerIndex.get(playerIndex) || [];
-        for (let j = 0; j < assignmentRows.length; j++) {
-          terms.push({ varName: assignmentRows[j].name, coeff: 1 });
-        }
+        terms.push({ varName: varNameByPlayerIndex[playerIndex], coeff: 1 });
       }
       terms.push({ varName: row.name, coeff: -minTeamStackSize });
       lines.push(` team_stack_${i}: ${formatExpression(terms)} >= 0`);
@@ -368,32 +413,34 @@ async function solveLineup(
   }
 
   const columns = solution?.Columns ?? {};
-  const selected = assignmentVars
+  const selectedPlayerIndices = assignmentVars
     .map((row) => ({
-      row,
+      playerIndex: row.playerIndex,
       value: Number(columns?.[row.name]?.Primal ?? 0),
     }))
-    .filter((entry) => entry.value > 0.5);
+    .filter((entry) => entry.value > 0.5)
+    .map((entry) => entry.playerIndex);
 
-  if (selected.length !== SLOT_CONFIG.length) return null;
+  if (selectedPlayerIndices.length !== SLOT_CONFIG.length) return null;
+
+  const selectedPlayers = selectedPlayerIndices.map((idx) => pool.all[idx]);
+  const slotAssignment = findSlotAssignment(selectedPlayers);
+  if (!slotAssignment) return null;
 
   const slotToPlayer = new Map<number, Player>();
-  for (let i = 0; i < selected.length; i++) {
-    const selectedRow = selected[i].row;
-    slotToPlayer.set(selectedRow.slotIndex, pool.all[selectedRow.playerIndex]);
+  for (let i = 0; i < selectedPlayers.length; i++) {
+    slotToPlayer.set(slotAssignment[i], selectedPlayers[i]);
   }
-
   if (slotToPlayer.size !== SLOT_CONFIG.length) return null;
 
-  const lineup: LineupSlot[] = [];
-  for (let slotIndex = 0; slotIndex < SLOT_CONFIG.length; slotIndex++) {
+  const lineup: LineupSlot[] = SLOT_CONFIG.map((slotDef, slotIndex) => {
     const player = slotToPlayer.get(slotIndex);
-    if (!player) return null;
-    lineup.push({
-      slot: SLOT_CONFIG[slotIndex].slot,
+    if (!player) throw new Error('Internal lineup assignment failure.');
+    return {
+      slot: slotDef.slot,
       player,
-    });
-  }
+    };
+  });
 
   return lineup;
 }
