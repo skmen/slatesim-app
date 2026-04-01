@@ -633,6 +633,27 @@ const getEffectiveMinutes = (player: Player): number | undefined => {
   return Number.isFinite(Number(avg)) ? Number(avg) : undefined;
 };
 
+const getOptimizerEv = (player: Player): number => {
+  const ev = readStatNumber(player, [
+    'simEV',
+    'sim_ev',
+    'simEv',
+    'ev',
+    'EV',
+    'expectedValue',
+    'expected_value',
+    'simExpectedValue',
+    'sim_expected_value',
+    'medianEV',
+    'median_ev',
+  ]);
+
+  if (Number.isFinite(Number(ev))) return Number(ev);
+
+  const projection = Number(player.projection);
+  return Number.isFinite(projection) ? projection : 0;
+};
+
 const sanitizeAdvancedMinimums = (raw: any): AdvancedMinimumSettings => {
   const minUsage = Number(raw?.minUsage);
   const minMinutes = Number(raw?.minMinutes);
@@ -1434,6 +1455,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           positions: toSaPositions(String(p.position || '')),
           salary: Number(p.salary || 0),
           projection: Number(p.projection || 0),
+          ev: getOptimizerEv(p),
           ceiling: Number((p as any).ceiling ?? p.projection ?? 0),
           ownership: Number((p as any).ownership ?? 0),
           teamId: team,
@@ -1445,20 +1467,10 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         };
       });
 
-      const iterations = Math.max(1200, Math.min(6000, 1200 + Math.floor(saPlayers.length * 8)));
-      const randomPct = Math.max(0, Math.min(100, Number(config.randomnessPct) || 0)) / 100;
-      const isCash = config.statConstraintMode === 'cash';
       const request = {
         players: saPlayers,
         config: {
           targetLineups: config.numLineups,
-          weightProjection: isCash ? 0.8 : 0.65,
-          weightCeiling: isCash ? 0.15 : 0.25,
-          weightLeverage: isCash ? 0.05 : 0.1,
-          exposurePenaltyLambda: Math.max(0.05, config.minUniquePlayers * 0.2),
-          saTempStart: 5 + randomPct * 5,
-          saTempEnd: 0.01,
-          saIterations: iterations,
           salaryCap: 50000,
           salaryFloor: Math.max(0, Math.min(50000, Math.floor(config.salaryFloor))),
           minSalary: Math.max(0, Number(config.minSalary) || 0),
@@ -2214,11 +2226,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             );
           })}
         </div>
-        {config.statConstraintMode === 'cash' && (
-          <span className="text-[9px] font-mono text-emerald-700 font-bold uppercase tracking-widest">
-            Optimizing for median EV
-          </span>
-        )}
+        <span className="text-[9px] font-mono text-emerald-700 font-bold uppercase tracking-widest">
+          Optimizing for EV
+        </span>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">

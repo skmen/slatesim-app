@@ -13,14 +13,7 @@ function normalizeConfig(input: OptimizerConfig): OptimizerConfig {
   const salaryFloor = Math.max(0, Math.min(salaryFloorRaw, salaryCap));
 
   return {
-    targetLineups: Math.max(0, Math.floor(input.targetLineups ?? 0)),
-    weightProjection: Number(input.weightProjection ?? 0),
-    weightCeiling: Number(input.weightCeiling ?? 0),
-    weightLeverage: Number(input.weightLeverage ?? 0),
-    exposurePenaltyLambda: Number(input.exposurePenaltyLambda ?? 0),
-    saTempStart: Number.isFinite(Number(input.saTempStart)) ? Number(input.saTempStart) : 5.0,
-    saTempEnd: Number.isFinite(Number(input.saTempEnd)) ? Number(input.saTempEnd) : 0.01,
-    saIterations: Math.max(1, Math.floor(input.saIterations ?? 2000)),
+    targetLineups: Math.max(0, Math.floor(input.targetLineups ?? 1)),
     salaryCap,
     salaryFloor,
     minSalary: Math.max(0, Math.floor(Number.isFinite(Number(input.minSalary)) ? Number(input.minSalary) : 3000)),
@@ -29,7 +22,7 @@ function normalizeConfig(input: OptimizerConfig): OptimizerConfig {
   };
 }
 
-workerScope.onmessage = (event: MessageEvent<WorkerInMessage>) => {
+workerScope.onmessage = async (event: MessageEvent<WorkerInMessage>) => {
   try {
     const payload = event.data;
     if (!payload || !Array.isArray(payload.players)) {
@@ -46,7 +39,7 @@ workerScope.onmessage = (event: MessageEvent<WorkerInMessage>) => {
     const timerLabel = `sa-optimizer-${Date.now()}`;
     console.time(timerLabel);
 
-    const lineups = generatePortfolio(pool, config, (current, lineup) => {
+    const lineups = await generatePortfolio(pool, config, (current, lineup) => {
       const message: WorkerOutMessage = {
         type: 'progress',
         payload: {

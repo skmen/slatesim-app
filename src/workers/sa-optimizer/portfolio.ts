@@ -1,16 +1,39 @@
-import { greedyInit } from './greedy-init';
-import { runSA } from './sa-core';
-import { LineupSlot, LineupState, OptimizerConfig, Player, PlayerPool, SLOT_CONFIG } from './types';
+import highsLoader from 'highs';
+import highsWasmUrl from 'highs/runtime?url';
+import { LineupSlot, OptimizerConfig, Player, PlayerPool, SLOT_CONFIG } from './types';
 
-function toLineupSlots(state: LineupState): LineupSlot[] {
-  const out: LineupSlot[] = new Array(SLOT_CONFIG.length);
-  for (let i = 0; i < SLOT_CONFIG.length; i++) {
-    out[i] = {
-      slot: SLOT_CONFIG[i].slot,
-      player: state.slots[i],
-    };
+interface ExposureBound {
+  min: number;
+  max: number;
+}
+
+interface AssignmentVar {
+  name: string;
+  playerIndex: number;
+  slotIndex: number;
+}
+
+let highsModulePromise: Promise<any> | null = null;
+
+function getHighsModule(): Promise<any> {
+  if (!highsModulePromise) {
+    highsModulePromise = Promise.resolve(
+      highsLoader({
+        locateFile: (file: string) => (file.endsWith('.wasm') ? highsWasmUrl : file),
+      }),
+    );
   }
-  return out;
+  return highsModulePromise;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function pctToCount(pct: number, total: number, mode: 'min' | 'max'): number {
+  const ratio = clamp(pct, 0, 100) / 100;
+  const raw = ratio * total;
+  return mode === 'min' ? Math.ceil(raw) : Math.floor(raw);
 }
 
 function overlapCount(a: string[], b: string[]): number {
@@ -27,20 +50,10 @@ function overlapCount(a: string[], b: string[]): number {
   return overlap;
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-function pctToCount(pct: number, total: number, mode: 'min' | 'max'): number {
-  const ratio = clamp(pct, 0, 100) / 100;
-  const raw = ratio * total;
-  return mode === 'min' ? Math.ceil(raw) : Math.floor(raw);
-}
-
-function lineupIds(lineup: LineupState): string[] {
+function lineupIds(lineup: LineupSlot[]): string[] {
   const ids: string[] = new Array(SLOT_CONFIG.length);
   for (let i = 0; i < SLOT_CONFIG.length; i++) {
-    ids[i] = lineup.slots[i].id;
+    ids[i] = lineup[i].player.id;
   }
   return ids;
 }
@@ -66,6 +79,253 @@ function meetsMinUnique(
     if (ov > maxOverlap) return false;
   }
   return true;
+}
+
+function canFitSlot(player: Player, slotIndex: number): boolean {
+  const eligible = SLOT_CONFIG[slotIndex].eligible;
+  for (let i = 0; i < player.positions.length; i++) {
+    const pos = player.positions[i];
+    for (let j = 0; j < eligible.length; j++) {
+      if (pos === eligible[j]) return true;
+    }
+  }
+  return false;
+}
+
+function formatCoeff(value: number): string {
+  const rounded = Math.abs(value) < 1e-10 ? 0 : value;
+  const txt = rounded.toFixed(8);
+  return txt.replace(/\.?0+$/, '');
+}
+
+function formatExpression(terms: Array<{ varName: string; coeff: number }>): string {
+  const compact = terms.filter((term) => Math.abs(term.coeff) > 1e-10);
+  if (compact.length === 0) return '0';
+
+  return compact
+    .map((term, idx) => {
+      const sign = term.coeff >= 0 ? (idx === 0 ? '' : ' + ') : (idx === 0 ? '- ' : ' - ');
+      const absCoeff = Math.abs(term.coeff);
+      const coeffText = Math.abs(absCoeff - 1) < 1e-10 ? '' : `${formatCoeff(absCoeff)} `;
+      return `${sign}${coeffText}${term.varName}`;
+    })
+    .join('');
+}
+
+function buildLineupLp(
+  pool: PlayerPool,
+  config: OptimizerConfig,
+  effectiveEvById: Map<string, number>,
+  forcedIds: Set<string>,
+  blockedIds: Set<string>,
+  priorLineupIds: string[][],
+): { lpText: string; assignmentVars: AssignmentVar[] } {
+  const assignmentVars: AssignmentVar[] = [];
+  const varsByPlayer = new Map<string, AssignmentVar[]>();
+  const varsBySlot = new Map<number, AssignmentVar[]>();
+
+  for (let slotIndex = 0; slotIndex < SLOT_CONFIG.length; slotIndex++) {
+    varsBySlot.set(slotIndex, []);
+  }
+
+  for (let playerIndex = 0; playerIndex < pool.all.length; playerIndex++) {
+    const player = pool.all[playerIndex];
+    const perPlayer: AssignmentVar[] = [];
+
+    for (let slotIndex = 0; slotIndex < SLOT_CONFIG.length; slotIndex++) {
+      if (!canFitSlot(player, slotIndex)) continue;
+      const row: AssignmentVar = {
+        name: `x_p${playerIndex}_s${slotIndex}`,
+        playerIndex,
+        slotIndex,
+      };
+      assignmentVars.push(row);
+      perPlayer.push(row);
+      varsBySlot.get(slotIndex)!.push(row);
+    }
+
+    varsByPlayer.set(player.id, perPlayer);
+  }
+
+  for (let slotIndex = 0; slotIndex < SLOT_CONFIG.length; slotIndex++) {
+    if ((varsBySlot.get(slotIndex) || []).length === 0) {
+      throw new Error(`No eligible candidates for slot ${SLOT_CONFIG[slotIndex].slot}.`);
+    }
+  }
+
+  const lines: string[] = [];
+  lines.push('Maximize');
+  lines.push(
+    ` obj: ${formatExpression(
+      assignmentVars.map((row) => ({
+        varName: row.name,
+        coeff: Number.isFinite(effectiveEvById.get(pool.all[row.playerIndex].id))
+          ? Number(effectiveEvById.get(pool.all[row.playerIndex].id))
+          : Number(pool.all[row.playerIndex].ev || 0),
+      })),
+    )}`,
+  );
+
+  lines.push('Subject To');
+
+  // Exactly one player in each DK slot.
+  for (let slotIndex = 0; slotIndex < SLOT_CONFIG.length; slotIndex++) {
+    const vars = varsBySlot.get(slotIndex) || [];
+    lines.push(` slot_${slotIndex}: ${formatExpression(vars.map((row) => ({ varName: row.name, coeff: 1 })))} = 1`);
+  }
+
+  // A player can occupy at most one slot.
+  for (let playerIndex = 0; playerIndex < pool.all.length; playerIndex++) {
+    const player = pool.all[playerIndex];
+    const vars = varsByPlayer.get(player.id) || [];
+    if (vars.length === 0) continue;
+    lines.push(` player_${playerIndex}: ${formatExpression(vars.map((row) => ({ varName: row.name, coeff: 1 })))} <= 1`);
+  }
+
+  const salaryTerms = assignmentVars.map((row) => ({
+    varName: row.name,
+    coeff: Number(pool.all[row.playerIndex].salary || 0),
+  }));
+  lines.push(` salary_cap: ${formatExpression(salaryTerms)} <= ${formatCoeff(config.salaryCap)}`);
+  lines.push(` salary_floor: ${formatExpression(salaryTerms)} >= ${formatCoeff(config.salaryFloor)}`);
+
+  for (let playerIndex = 0; playerIndex < pool.all.length; playerIndex++) {
+    const player = pool.all[playerIndex];
+    const vars = varsByPlayer.get(player.id) || [];
+    if (vars.length === 0) continue;
+
+    if (blockedIds.has(player.id)) {
+      lines.push(` blocked_${playerIndex}: ${formatExpression(vars.map((row) => ({ varName: row.name, coeff: 1 })))} = 0`);
+      continue;
+    }
+
+    if (forcedIds.has(player.id)) {
+      lines.push(` forced_${playerIndex}: ${formatExpression(vars.map((row) => ({ varName: row.name, coeff: 1 })))} = 1`);
+    }
+  }
+
+  // Enforce minimum uniqueness relative to each accepted lineup.
+  const minUnique = clamp(Math.floor(config.minUniquePlayers), 1, SLOT_CONFIG.length);
+  const maxOverlap = SLOT_CONFIG.length - minUnique;
+  for (let i = 0; i < priorLineupIds.length; i++) {
+    const priorIds = priorLineupIds[i];
+    const terms: Array<{ varName: string; coeff: number }> = [];
+
+    for (let k = 0; k < priorIds.length; k++) {
+      const vars = varsByPlayer.get(priorIds[k]) || [];
+      for (let v = 0; v < vars.length; v++) {
+        terms.push({ varName: vars[v].name, coeff: 1 });
+      }
+    }
+
+    if (terms.length > 0) {
+      lines.push(` unique_${i}: ${formatExpression(terms)} <= ${formatCoeff(maxOverlap)}`);
+    }
+  }
+
+  lines.push('Binary');
+  for (let i = 0; i < assignmentVars.length; i += 40) {
+    lines.push(` ${assignmentVars.slice(i, i + 40).map((row) => row.name).join(' ')}`);
+  }
+  lines.push('End');
+
+  return {
+    lpText: lines.join('\n'),
+    assignmentVars,
+  };
+}
+
+async function solveLineup(
+  pool: PlayerPool,
+  config: OptimizerConfig,
+  effectiveEvById: Map<string, number>,
+  forcedIds: Set<string>,
+  blockedIds: Set<string>,
+  priorLineupIds: string[][],
+): Promise<LineupSlot[] | null> {
+  const { lpText, assignmentVars } = buildLineupLp(
+    pool,
+    config,
+    effectiveEvById,
+    forcedIds,
+    blockedIds,
+    priorLineupIds,
+  );
+
+  const highs = await getHighsModule();
+  const solution = await highs.solve(lpText);
+  const status = String(solution?.Status ?? '').toLowerCase();
+  if (
+    status.includes('infeasible') ||
+    status.includes('error') ||
+    status.includes('unbounded') ||
+    status.includes('empty')
+  ) {
+    return null;
+  }
+
+  const columns = solution?.Columns ?? {};
+  const selected = assignmentVars
+    .map((row) => ({
+      row,
+      value: Number(columns?.[row.name]?.Primal ?? 0),
+    }))
+    .filter((entry) => entry.value > 0.5);
+
+  if (selected.length !== SLOT_CONFIG.length) return null;
+
+  const slotToPlayer = new Map<number, Player>();
+  for (let i = 0; i < selected.length; i++) {
+    const selectedRow = selected[i].row;
+    slotToPlayer.set(selectedRow.slotIndex, pool.all[selectedRow.playerIndex]);
+  }
+
+  if (slotToPlayer.size !== SLOT_CONFIG.length) return null;
+
+  const lineup: LineupSlot[] = [];
+  for (let slotIndex = 0; slotIndex < SLOT_CONFIG.length; slotIndex++) {
+    const player = slotToPlayer.get(slotIndex);
+    if (!player) return null;
+    lineup.push({
+      slot: SLOT_CONFIG[slotIndex].slot,
+      player,
+    });
+  }
+
+  return lineup;
+}
+
+function totalSalary(lineup: LineupSlot[]): number {
+  let salary = 0;
+  for (let i = 0; i < lineup.length; i++) {
+    salary += Number(lineup[i].player.salary || 0);
+  }
+  return salary;
+}
+
+function totalEv(lineup: LineupSlot[]): number {
+  let sum = 0;
+  for (let i = 0; i < lineup.length; i++) {
+    sum += Number(lineup[i].player.ev || 0);
+  }
+  return sum;
+}
+
+function effectiveEvMap(
+  players: Player[],
+  randomnessPct: number,
+): Map<string, number> {
+  const scale = clamp(Number(randomnessPct), 0, 100) / 100;
+  const out = new Map<string, number>();
+
+  for (let i = 0; i < players.length; i++) {
+    const player = players[i];
+    const base = Number.isFinite(Number(player.ev)) ? Number(player.ev) : Number(player.projection || 0);
+    const jitter = scale > 0 ? (Math.random() * 2 - 1) * scale * Math.max(1, Math.abs(base)) : 0;
+    out.set(player.id, base + jitter);
+  }
+
+  return out;
 }
 
 function diversityGreedyReorder(lineups: LineupSlot[][]): LineupSlot[][] {
@@ -128,17 +388,16 @@ function diversityGreedyReorder(lineups: LineupSlot[][]): LineupSlot[][] {
   return out;
 }
 
-export function generatePortfolio(
+export async function generatePortfolio(
   pool: PlayerPool,
   config: OptimizerConfig,
   onProgress: (current: number, lineup: LineupSlot[]) => void,
-): LineupSlot[][] {
+): Promise<LineupSlot[][]> {
   const target = Math.max(0, Math.floor(config.targetLineups));
   const results: LineupSlot[][] = [];
   const resultIds: string[][] = [];
   const exposureCounts = new Map<string, number>();
-  const exposureBounds = new Map<string, { min: number; max: number }>();
-  const randomScale = clamp(config.randomnessPct, 0, 100) / 100;
+  const exposureBounds = new Map<string, ExposureBound>();
 
   for (let p = 0; p < pool.all.length; p++) {
     const player = pool.all[p];
@@ -164,12 +423,17 @@ export function generatePortfolio(
     });
   }
 
+  const randomScale = clamp(config.randomnessPct, 0, 100) / 100;
+
   for (let i = 0; i < target; i++) {
     const remainingIncludingCurrent = target - i;
-    const maxAttempts = Math.max(30, Math.min(400, pool.all.length * 2));
+    const maxAttempts = randomScale > 0
+      ? Math.max(8, Math.min(40, 8 + Math.floor(pool.all.length / 20)))
+      : 1;
 
-    let acceptedLineup: LineupState | null = null;
+    let acceptedLineup: LineupSlot[] | null = null;
     let acceptedIds: string[] | null = null;
+    let acceptedEv = Number.NEGATIVE_INFINITY;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const forcedIds = new Set<string>();
@@ -215,25 +479,22 @@ export function generatePortfolio(
         );
       }
 
-      const effectiveProjections = new Map<string, number>();
-      for (let p = 0; p < pool.all.length; p++) {
-        const player: Player = pool.all[p];
-        const priorExposure = exposureCounts.get(player.id) ?? 0;
-        const base =
-          config.weightProjection * player.projection +
-          config.weightCeiling * player.ceiling +
-          config.weightLeverage * (100 - player.ownership);
-        const jitter = randomScale > 0 ? base * (Math.random() * 2 - 1) * randomScale : 0;
-        const effective = base + jitter - config.exposurePenaltyLambda * priorExposure;
-        effectiveProjections.set(player.id, effective);
-      }
+      const effectiveEvById = effectiveEvMap(pool.all, config.randomnessPct);
+      const lineup = await solveLineup(
+        pool,
+        config,
+        effectiveEvById,
+        forcedIds,
+        blockedIds,
+        resultIds,
+      );
+      if (!lineup) continue;
 
-      const initial = greedyInit(pool, config, effectiveProjections, forcedIds, blockedIds);
-      const optimized = runSA(initial, pool, config, effectiveProjections, forcedIds, blockedIds);
-      const ids = lineupIds(optimized);
-
+      const ids = lineupIds(lineup);
       if (hasDuplicates(ids)) continue;
-      if (optimized.salaryUsed > config.salaryCap || optimized.salaryUsed < config.salaryFloor) continue;
+
+      const salary = totalSalary(lineup);
+      if (salary > config.salaryCap || salary < config.salaryFloor) continue;
 
       let forcedMissing = false;
       forcedIds.forEach((id) => {
@@ -283,24 +544,28 @@ export function generatePortfolio(
       }
       if (futureExposureInfeasible) continue;
 
-      acceptedLineup = optimized;
-      acceptedIds = ids;
-      break;
+      const lineupEv = totalEv(lineup);
+      if (!acceptedLineup || lineupEv > acceptedEv) {
+        acceptedLineup = lineup;
+        acceptedIds = ids;
+        acceptedEv = lineupEv;
+      }
+
+      if (randomScale <= 0) break;
     }
 
     if (!acceptedLineup || !acceptedIds) {
       throw new Error(`Unable to generate lineup ${i + 1}/${target} with current constraints.`);
     }
 
-    for (let s = 0; s < acceptedLineup.slots.length; s++) {
-      const id = acceptedLineup.slots[s].id;
+    for (let s = 0; s < acceptedLineup.length; s++) {
+      const id = acceptedLineup[s].player.id;
       exposureCounts.set(id, (exposureCounts.get(id) ?? 0) + 1);
     }
 
-    const lineup = toLineupSlots(acceptedLineup);
-    results.push(lineup);
+    results.push(acceptedLineup);
     resultIds.push(acceptedIds);
-    onProgress(i + 1, lineup);
+    onProgress(i + 1, acceptedLineup);
   }
 
   return diversityGreedyReorder(results);

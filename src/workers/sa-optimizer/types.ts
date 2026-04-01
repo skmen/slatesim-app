@@ -20,6 +20,7 @@ export interface Player {
   positions: string[];
   salary: number;
   projection: number;
+  ev: number;
   ceiling: number;
   ownership: number;
   teamId: string;
@@ -44,18 +45,19 @@ export interface PlayerPool {
 
 export interface OptimizerConfig {
   targetLineups: number;
-  weightProjection: number;
-  weightCeiling: number;
-  weightLeverage: number;
-  exposurePenaltyLambda: number;
-  saTempStart: number;
-  saTempEnd: number;
-  saIterations: number;
   salaryCap: number;
   salaryFloor: number;
   minSalary: number;
   minUniquePlayers: number;
   randomnessPct: number;
+  // Legacy SA fields kept optional so older modules still type-check.
+  weightProjection?: number;
+  weightCeiling?: number;
+  weightLeverage?: number;
+  exposurePenaltyLambda?: number;
+  saTempStart?: number;
+  saTempEnd?: number;
+  saIterations?: number;
 }
 
 export interface WorkerInMessage {
