@@ -19,6 +19,12 @@ function normalizeConfig(input: OptimizerConfig): OptimizerConfig {
     minSalary: Math.max(0, Math.floor(Number.isFinite(Number(input.minSalary)) ? Number(input.minSalary) : 3000)),
     minUniquePlayers: Math.max(1, Math.min(8, Math.floor(Number.isFinite(Number(input.minUniquePlayers)) ? Number(input.minUniquePlayers) : 1))),
     randomnessPct: Math.max(0, Math.min(100, Number.isFinite(Number(input.randomnessPct)) ? Number(input.randomnessPct) : 0)),
+    weightEv: Number.isFinite(Number(input.weightEv)) ? Number(input.weightEv) : 1,
+    weightProjection: Number.isFinite(Number(input.weightProjection)) ? Number(input.weightProjection) : 0,
+    weightCeiling: Number.isFinite(Number(input.weightCeiling)) ? Number(input.weightCeiling) : 0,
+    weightLeverage: Number.isFinite(Number(input.weightLeverage)) ? Number(input.weightLeverage) : 0,
+    enforceTeamStack: input.enforceTeamStack === true,
+    minTeamStackSize: Math.max(2, Math.min(8, Math.floor(Number.isFinite(Number(input.minTeamStackSize)) ? Number(input.minTeamStackSize) : 2))),
   };
 }
 

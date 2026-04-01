@@ -13,6 +13,12 @@ interface AssignmentVar {
   slotIndex: number;
 }
 
+interface TeamStackVar {
+  name: string;
+  teamId: string;
+  playerIndices: number[];
+}
+
 let highsModulePromise: Promise<any> | null = null;
 
 function getHighsModule(): Promise<any> {
@@ -104,7 +110,7 @@ function formatExpression(terms: Array<{ varName: string; coeff: number }>): str
 
   return compact
     .map((term, idx) => {
-      const sign = term.coeff >= 0 ? (idx === 0 ? '' : ' + ') : (idx === 0 ? '- ' : ' - ');
+      const sign = term.coeff >= 0 ? (idx === 0 ? '' : ' + ') : (idx === 0 ? '-' : ' - ');
       const absCoeff = Math.abs(term.coeff);
       const coeffText = Math.abs(absCoeff - 1) < 1e-10 ? '' : `${formatCoeff(absCoeff)} `;
       return `${sign}${coeffText}${term.varName}`;
@@ -112,16 +118,34 @@ function formatExpression(terms: Array<{ varName: string; coeff: number }>): str
     .join('');
 }
 
+async function solveLpWithRecovery(lpText: string): Promise<any> {
+  try {
+    const highs = await getHighsModule();
+    return await highs.solve(lpText);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err || '');
+    if (!/indirect call to null/i.test(message)) {
+      throw err;
+    }
+
+    // Recover from sporadic HiGHS wasm table corruption by reloading module and retrying once.
+    highsModulePromise = null;
+    const highs = await getHighsModule();
+    return await highs.solve(lpText);
+  }
+}
+
 function buildLineupLp(
   pool: PlayerPool,
   config: OptimizerConfig,
-  effectiveEvById: Map<string, number>,
+  effectiveScoreById: Map<string, number>,
   forcedIds: Set<string>,
   blockedIds: Set<string>,
   priorLineupIds: string[][],
 ): { lpText: string; assignmentVars: AssignmentVar[] } {
   const assignmentVars: AssignmentVar[] = [];
   const varsByPlayer = new Map<string, AssignmentVar[]>();
+  const varsByPlayerIndex = new Map<number, AssignmentVar[]>();
   const varsBySlot = new Map<number, AssignmentVar[]>();
 
   for (let slotIndex = 0; slotIndex < SLOT_CONFIG.length; slotIndex++) {
@@ -142,6 +166,8 @@ function buildLineupLp(
       assignmentVars.push(row);
       perPlayer.push(row);
       varsBySlot.get(slotIndex)!.push(row);
+      if (!varsByPlayerIndex.has(playerIndex)) varsByPlayerIndex.set(playerIndex, []);
+      varsByPlayerIndex.get(playerIndex)!.push(row);
     }
 
     varsByPlayer.set(player.id, perPlayer);
@@ -159,8 +185,8 @@ function buildLineupLp(
     ` obj: ${formatExpression(
       assignmentVars.map((row) => ({
         varName: row.name,
-        coeff: Number.isFinite(effectiveEvById.get(pool.all[row.playerIndex].id))
-          ? Number(effectiveEvById.get(pool.all[row.playerIndex].id))
+        coeff: Number.isFinite(effectiveScoreById.get(pool.all[row.playerIndex].id))
+          ? Number(effectiveScoreById.get(pool.all[row.playerIndex].id))
           : Number(pool.all[row.playerIndex].ev || 0),
       })),
     )}`,
@@ -223,9 +249,68 @@ function buildLineupLp(
     }
   }
 
+  const teamStackVars: TeamStackVar[] = [];
+  if (config.enforceTeamStack) {
+    const minTeamStackSize = clamp(Math.floor(config.minTeamStackSize ?? 2), 2, SLOT_CONFIG.length);
+    const teamToPlayers = new Map<string, number[]>();
+    for (let playerIndex = 0; playerIndex < pool.all.length; playerIndex++) {
+      const player = pool.all[playerIndex];
+      if (blockedIds.has(player.id)) continue;
+      const teamId = String(player.teamId || '').trim().toUpperCase() || 'UNK';
+      if (!teamToPlayers.has(teamId)) teamToPlayers.set(teamId, []);
+      teamToPlayers.get(teamId)!.push(playerIndex);
+    }
+
+    const eligibleTeams = Array.from(teamToPlayers.entries()).filter(([, playerIndices]) => {
+      const unique = new Set(playerIndices);
+      return unique.size >= minTeamStackSize;
+    });
+
+    if (eligibleTeams.length === 0) {
+      throw new Error(
+        `Team stacking enabled, but no eligible team has at least ${minTeamStackSize} available players.`,
+      );
+    }
+
+    for (let i = 0; i < eligibleTeams.length; i++) {
+      const [teamId, playerIndices] = eligibleTeams[i];
+      const safeTeam = teamId.replace(/[^A-Z0-9]/gi, '_') || 'TEAM';
+      teamStackVars.push({
+        name: `y_team_${safeTeam}_${i}`,
+        teamId,
+        playerIndices: Array.from(new Set(playerIndices)),
+      });
+    }
+
+    lines.push(
+      ` team_stack_any: ${formatExpression(
+        teamStackVars.map((row) => ({ varName: row.name, coeff: 1 })),
+      )} >= 1`,
+    );
+
+    for (let i = 0; i < teamStackVars.length; i++) {
+      const row = teamStackVars[i];
+      const terms: Array<{ varName: string; coeff: number }> = [];
+      for (let k = 0; k < row.playerIndices.length; k++) {
+        const playerIndex = row.playerIndices[k];
+        const assignmentRows = varsByPlayerIndex.get(playerIndex) || [];
+        for (let j = 0; j < assignmentRows.length; j++) {
+          terms.push({ varName: assignmentRows[j].name, coeff: 1 });
+        }
+      }
+      terms.push({ varName: row.name, coeff: -minTeamStackSize });
+      lines.push(` team_stack_${i}: ${formatExpression(terms)} >= 0`);
+    }
+  }
+
   lines.push('Binary');
   for (let i = 0; i < assignmentVars.length; i += 40) {
     lines.push(` ${assignmentVars.slice(i, i + 40).map((row) => row.name).join(' ')}`);
+  }
+  if (teamStackVars.length > 0) {
+    for (let i = 0; i < teamStackVars.length; i += 40) {
+      lines.push(` ${teamStackVars.slice(i, i + 40).map((row) => row.name).join(' ')}`);
+    }
   }
   lines.push('End');
 
@@ -238,7 +323,7 @@ function buildLineupLp(
 async function solveLineup(
   pool: PlayerPool,
   config: OptimizerConfig,
-  effectiveEvById: Map<string, number>,
+  effectiveScoreById: Map<string, number>,
   forcedIds: Set<string>,
   blockedIds: Set<string>,
   priorLineupIds: string[][],
@@ -246,14 +331,13 @@ async function solveLineup(
   const { lpText, assignmentVars } = buildLineupLp(
     pool,
     config,
-    effectiveEvById,
+    effectiveScoreById,
     forcedIds,
     blockedIds,
     priorLineupIds,
   );
 
-  const highs = await getHighsModule();
-  const solution = await highs.solve(lpText);
+  const solution = await solveLpWithRecovery(lpText);
   const status = String(solution?.Status ?? '').toLowerCase();
   if (
     status.includes('infeasible') ||
@@ -303,24 +387,36 @@ function totalSalary(lineup: LineupSlot[]): number {
   return salary;
 }
 
-function totalEv(lineup: LineupSlot[]): number {
+function lineupScore(lineup: LineupSlot[], effectiveScoreById: Map<string, number>): number {
   let sum = 0;
   for (let i = 0; i < lineup.length; i++) {
-    sum += Number(lineup[i].player.ev || 0);
+    const player = lineup[i].player;
+    const score = effectiveScoreById.get(player.id);
+    sum += Number.isFinite(Number(score)) ? Number(score) : Number(player.ev || 0);
   }
   return sum;
 }
 
-function effectiveEvMap(
+function effectiveObjectiveMap(
   players: Player[],
+  config: OptimizerConfig,
   randomnessPct: number,
 ): Map<string, number> {
   const scale = clamp(Number(randomnessPct), 0, 100) / 100;
+  const wEv = Number.isFinite(Number(config.weightEv)) ? Number(config.weightEv) : 1;
+  const wProjection = Number.isFinite(Number(config.weightProjection)) ? Number(config.weightProjection) : 0;
+  const wCeiling = Number.isFinite(Number(config.weightCeiling)) ? Number(config.weightCeiling) : 0;
+  const wLeverage = Number.isFinite(Number(config.weightLeverage)) ? Number(config.weightLeverage) : 0;
   const out = new Map<string, number>();
 
   for (let i = 0; i < players.length; i++) {
     const player = players[i];
-    const base = Number.isFinite(Number(player.ev)) ? Number(player.ev) : Number(player.projection || 0);
+    const ev = Number.isFinite(Number(player.ev)) ? Number(player.ev) : Number(player.projection || 0);
+    const projection = Number(player.projection || 0);
+    const ceiling = Number.isFinite(Number(player.ceiling)) ? Number(player.ceiling) : projection;
+    const ownership = Number.isFinite(Number(player.ownership)) ? Number(player.ownership) : 0;
+    const leverage = 100 - clamp(ownership, 0, 100);
+    const base = wEv * ev + wProjection * projection + wCeiling * ceiling + wLeverage * leverage;
     const jitter = scale > 0 ? (Math.random() * 2 - 1) * scale * Math.max(1, Math.abs(base)) : 0;
     out.set(player.id, base + jitter);
   }
@@ -433,7 +529,7 @@ export async function generatePortfolio(
 
     let acceptedLineup: LineupSlot[] | null = null;
     let acceptedIds: string[] | null = null;
-    let acceptedEv = Number.NEGATIVE_INFINITY;
+    let acceptedScore = Number.NEGATIVE_INFINITY;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const forcedIds = new Set<string>();
@@ -479,11 +575,11 @@ export async function generatePortfolio(
         );
       }
 
-      const effectiveEvById = effectiveEvMap(pool.all, config.randomnessPct);
+      const effectiveScoreById = effectiveObjectiveMap(pool.all, config, config.randomnessPct);
       const lineup = await solveLineup(
         pool,
         config,
-        effectiveEvById,
+        effectiveScoreById,
         forcedIds,
         blockedIds,
         resultIds,
@@ -544,11 +640,11 @@ export async function generatePortfolio(
       }
       if (futureExposureInfeasible) continue;
 
-      const lineupEv = totalEv(lineup);
-      if (!acceptedLineup || lineupEv > acceptedEv) {
+      const nextScore = lineupScore(lineup, effectiveScoreById);
+      if (!acceptedLineup || nextScore > acceptedScore) {
         acceptedLineup = lineup;
         acceptedIds = ids;
-        acceptedEv = lineupEv;
+        acceptedScore = nextScore;
       }
 
       if (randomScale <= 0) break;

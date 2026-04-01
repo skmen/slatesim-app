@@ -73,6 +73,14 @@ interface OptimizerConfigState {
   minProjectedFpts: number;
   minSlateSimValue: number;
   randomnessPct: number;
+  enforceTeamStack: boolean;
+  minTeamStackSize: number;
+  objectiveWeights: {
+    ev: number;
+    projection: number;
+    ceiling: number;
+    leverage: number;
+  };
   minExposure: number;
   maxExposure: number;
   site: 'DraftKings';
@@ -110,6 +118,14 @@ const createDefaultOptimizerConfig = (): OptimizerConfigState => ({
   minProjectedFpts: 15,
   minSlateSimValue: 30,
   randomnessPct: 0,
+  enforceTeamStack: false,
+  minTeamStackSize: 3,
+  objectiveWeights: {
+    ev: 1,
+    projection: 0,
+    ceiling: 0,
+    leverage: 0,
+  },
   minExposure: 0,
   maxExposure: 100,
   site: 'DraftKings',
@@ -134,6 +150,9 @@ const getAdvancedSettingsStorageKey = (slateDate?: string): string =>
 
 const sanitizeOptimizerConfig = (raw: any): OptimizerConfigState => {
   const defaults = createDefaultOptimizerConfig();
+  const objectiveWeights = raw?.objectiveWeights && typeof raw.objectiveWeights === 'object' && !Array.isArray(raw.objectiveWeights)
+    ? raw.objectiveWeights
+    : {};
   const upsideWeights = raw?.upsideWeights && typeof raw.upsideWeights === 'object' && !Array.isArray(raw.upsideWeights)
     ? raw.upsideWeights
     : {};
@@ -145,6 +164,7 @@ const sanitizeOptimizerConfig = (raw: any): OptimizerConfigState => {
   const minProjectedFpts = Number(raw?.minProjectedFpts);
   const minSlateSimValue = Number(raw?.minSlateSimValue);
   const randomnessPct = Number(raw?.randomnessPct);
+  const minTeamStackSize = Number(raw?.minTeamStackSize);
   const minExposure = Number(raw?.minExposure);
   const maxExposure = Number(raw?.maxExposure);
   const upsideDelta = Number(raw?.upsideDelta);
@@ -165,6 +185,14 @@ const sanitizeOptimizerConfig = (raw: any): OptimizerConfigState => {
     minProjectedFpts: Number.isFinite(minProjectedFpts) ? Math.max(0, Math.min(100, Math.round(minProjectedFpts * 2) / 2)) : defaults.minProjectedFpts,
     minSlateSimValue: Number.isFinite(minSlateSimValue) ? Math.max(0, Math.min(100, Math.round(minSlateSimValue))) : defaults.minSlateSimValue,
     randomnessPct: Number.isFinite(randomnessPct) ? Math.max(0, Math.min(100, Math.round(randomnessPct / 5) * 5)) : defaults.randomnessPct,
+    enforceTeamStack: raw?.enforceTeamStack === true,
+    minTeamStackSize: Number.isFinite(minTeamStackSize) ? Math.max(2, Math.min(8, Math.round(minTeamStackSize))) : defaults.minTeamStackSize,
+    objectiveWeights: {
+      ev: Number.isFinite(Number(objectiveWeights.ev)) ? Number(objectiveWeights.ev) : defaults.objectiveWeights.ev,
+      projection: Number.isFinite(Number(objectiveWeights.projection)) ? Number(objectiveWeights.projection) : defaults.objectiveWeights.projection,
+      ceiling: Number.isFinite(Number(objectiveWeights.ceiling)) ? Number(objectiveWeights.ceiling) : defaults.objectiveWeights.ceiling,
+      leverage: Number.isFinite(Number(objectiveWeights.leverage)) ? Number(objectiveWeights.leverage) : defaults.objectiveWeights.leverage,
+    },
     minExposure: Number.isFinite(minExposure) ? Math.max(0, Math.min(100, minExposure)) : defaults.minExposure,
     maxExposure: Number.isFinite(maxExposure) ? Math.max(0, Math.min(100, maxExposure)) : defaults.maxExposure,
     site: 'DraftKings',
@@ -1368,6 +1396,12 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             if (config.minMinutes > 0) diagnostics.push(`min minutes ${config.minMinutes}`);
             if (config.minProjectedFpts > 0) diagnostics.push(`min fpts ${config.minProjectedFpts}`);
             if (config.minSlateSimValue > 0) diagnostics.push(`min slatesim value ${config.minSlateSimValue}`);
+            if (config.enforceTeamStack) diagnostics.push(`team stack ${config.minTeamStackSize}+`);
+            if (config.objectiveWeights.ev !== 1 || config.objectiveWeights.projection !== 0 || config.objectiveWeights.ceiling !== 0 || config.objectiveWeights.leverage !== 0) {
+              diagnostics.push(
+                `weights ev:${config.objectiveWeights.ev.toFixed(1)} proj:${config.objectiveWeights.projection.toFixed(1)} ceil:${config.objectiveWeights.ceiling.toFixed(1)} lev:${config.objectiveWeights.leverage.toFixed(1)}`,
+              );
+            }
             if (poolFilters.length > 0) diagnostics.push(`${poolFilters.length} pool filters`);
             if (poolSearch.trim()) diagnostics.push('pool search active');
 
@@ -1476,6 +1510,12 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
           minSalary: Math.max(0, Number(config.minSalary) || 0),
           minUniquePlayers: Math.max(1, Math.min(8, Math.floor(config.minUniquePlayers))),
           randomnessPct: Math.max(0, Math.min(100, Number(config.randomnessPct) || 0)),
+          weightEv: Number(config.objectiveWeights.ev) || 0,
+          weightProjection: Number(config.objectiveWeights.projection) || 0,
+          weightCeiling: Number(config.objectiveWeights.ceiling) || 0,
+          weightLeverage: Number(config.objectiveWeights.leverage) || 0,
+          enforceTeamStack: Boolean(config.enforceTeamStack),
+          minTeamStackSize: Math.max(2, Math.min(8, Math.round(Number(config.minTeamStackSize) || 2))),
         },
       };
 
@@ -1941,225 +1981,14 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         </div>
 
         <div className="space-y-2">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div className="md:col-span-2 space-y-2">
-              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
-                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Lineups</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={150}
-                  value={config.numLineups}
-                  onChange={(e) => {
-                    const val = Number.parseInt(e.target.value, 10);
-                    if (!Number.isNaN(val)) setConfig((prev) => ({ ...prev, numLineups: Math.max(1, Math.min(150, val)) }));
-                  }}
-                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
-                />
-                <input
-                  type="range"
-                  min={0}
-                  max={LINEUP_SLIDER_VALUES.length - 1}
-                  step={1}
-                  value={lineupSliderIndex}
-                  onChange={(e) => {
-                    const idx = Number(e.target.value);
-                    setConfig((prev) => ({ ...prev, numLineups: LINEUP_SLIDER_VALUES[idx] ?? prev.numLineups }));
-                  }}
-                  className="w-full accent-drafting-orange"
-                />
-              </div>
-
-              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
-                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Minimum Unique Players</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={8}
-                  step={1}
-                  value={config.minUniquePlayers}
-                  onChange={(e) => {
-                    const parsed = Number(e.target.value);
-                    const nextVal = Number.isFinite(parsed) ? Math.max(1, Math.min(8, Math.round(parsed))) : 1;
-                    setConfig((prev) => ({ ...prev, minUniquePlayers: nextVal }));
-                  }}
-                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
-                />
-                <input
-                  type="range"
-                  min={1}
-                  max={8}
-                  step={1}
-                  value={config.minUniquePlayers}
-                  onChange={(e) => setConfig((prev) => ({ ...prev, minUniquePlayers: Number(e.target.value) }))}
-                  className="w-full accent-drafting-orange"
-                />
-              </div>
-
-              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
-                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Salary Floor</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={50000}
-                  step={100}
-                  value={config.salaryFloor}
-                  onChange={(e) => {
-                    const parsed = Number(e.target.value);
-                    const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(50000, Math.floor(parsed / 100) * 100)) : 0;
-                    setConfig((prev) => ({ ...prev, salaryFloor: nextVal }));
-                  }}
-                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
-                />
-                <input
-                  type="range"
-                  min={0}
-                  max={50000}
-                  step={100}
-                  value={config.salaryFloor}
-                  onChange={(e) => setConfig((prev) => ({ ...prev, salaryFloor: Number(e.target.value) }))}
-                  className="w-full accent-drafting-orange"
-                />
-              </div>
-
-              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
-                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Minimum Salary</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={10000}
-                  step={100}
-                  value={config.minSalary}
-                  onChange={(e) => {
-                    const parsed = Number(e.target.value);
-                    const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(10000, Math.floor(parsed / 100) * 100)) : 0;
-                    setConfig((prev) => ({ ...prev, minSalary: nextVal }));
-                  }}
-                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
-                />
-                <input
-                  type="range"
-                  min={0}
-                  max={10000}
-                  step={100}
-                  value={config.minSalary}
-                  onChange={(e) => setConfig((prev) => ({ ...prev, minSalary: Number(e.target.value) }))}
-                  className="w-full accent-drafting-orange"
-                />
-              </div>
-
-              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
-                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Minimum Minutes</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={48}
-                  step={1}
-                  value={config.minMinutes}
-                  onChange={(e) => {
-                    const parsed = Number(e.target.value);
-                    const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(48, Math.round(parsed))) : 0;
-                    setConfig((prev) => ({ ...prev, minMinutes: nextVal }));
-                  }}
-                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
-                />
-                <input
-                  type="range"
-                  min={0}
-                  max={48}
-                  step={1}
-                  value={config.minMinutes}
-                  onChange={(e) => setConfig((prev) => ({ ...prev, minMinutes: Number(e.target.value) }))}
-                  className="w-full accent-drafting-orange"
-                />
-              </div>
-
-              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
-                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Minimum Projected FPTS</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={100}
-                  step={0.5}
-                  value={config.minProjectedFpts}
-                  onChange={(e) => {
-                    const parsed = Number(e.target.value);
-                    const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed * 2) / 2)) : 0;
-                    setConfig((prev) => ({ ...prev, minProjectedFpts: nextVal }));
-                  }}
-                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
-                />
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={0.5}
-                  value={config.minProjectedFpts}
-                  onChange={(e) => setConfig((prev) => ({ ...prev, minProjectedFpts: Number(e.target.value) }))}
-                  className="w-full accent-drafting-orange"
-                />
-              </div>
-
-              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
-                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Minimum SlateSim Value</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={100}
-                  step={1}
-                  value={config.minSlateSimValue}
-                  onChange={(e) => {
-                    const parsed = Number(e.target.value);
-                    const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed))) : 0;
-                    setConfig((prev) => ({ ...prev, minSlateSimValue: nextVal }));
-                  }}
-                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
-                />
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={1}
-                  value={config.minSlateSimValue}
-                  onChange={(e) => setConfig((prev) => ({ ...prev, minSlateSimValue: Number(e.target.value) }))}
-                  className="w-full accent-drafting-orange"
-                />
-              </div>
-
-              <div className="grid grid-cols-[150px_76px_1fr] items-center gap-2">
-                <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Randomness (%)</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={100}
-                  step={5}
-                  value={config.randomnessPct}
-                  onChange={(e) => {
-                    const parsed = Number(e.target.value);
-                    const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed / 5) * 5)) : 0;
-                    setConfig((prev) => ({ ...prev, randomnessPct: nextVal }));
-                  }}
-                  className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
-                />
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={5}
-                  value={config.randomnessPct}
-                  onChange={(e) => setConfig((prev) => ({ ...prev, randomnessPct: Number(e.target.value) }))}
-                  className="w-full accent-drafting-orange"
-                />
-              </div>
-            </div>
-
-            <div className="md:col-span-1 flex flex-col gap-2">
+          <div className="flex justify-end">
+            <div className="w-full md:w-[260px] flex flex-col gap-2">
               <button
                 type="button"
                 onClick={() => setShowAdvanced(true)}
                 className="w-full border border-ink/20 text-ink/70 font-black py-2 rounded-sm text-[10px] uppercase tracking-widest hover:border-drafting-orange/40 hover:text-ink transition-all"
               >
-                Player Pool
+                Optimizer Settings
               </button>
               {!isOptimizing ? (
                 <button
@@ -2201,34 +2030,6 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             </div>
           )}
         </div>
-      </div>
-
-      <div className="flex items-center gap-3">
-        <span className="text-[9px] font-black uppercase tracking-widest text-ink/40">Contest Type</span>
-        <div className="inline-flex rounded-sm border border-ink/20 overflow-hidden">
-          {(['gpp', 'cash'] as const).map((type) => {
-            const active = config.statConstraintMode === type;
-            return (
-              <button
-                key={type}
-                type="button"
-                onClick={() => setConfig((prev) => ({ ...prev, statConstraintMode: type }))}
-                className={`px-4 py-1.5 text-[10px] font-black uppercase tracking-widest transition-colors ${
-                  active
-                    ? type === 'cash'
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-drafting-orange text-white'
-                    : 'text-ink/50 hover:text-ink bg-white/60'
-                }`}
-              >
-                {type === 'gpp' ? 'GPP' : 'Cash'}
-              </button>
-            );
-          })}
-        </div>
-        <span className="text-[9px] font-mono text-emerald-700 font-bold uppercase tracking-widest">
-          Optimizing for EV
-        </span>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
@@ -2647,7 +2448,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <Settings className="w-4 h-4 text-drafting-orange" />
-                <h3 className="text-[11px] font-black uppercase tracking-widest text-ink/60">Advanced Settings</h3>
+                <h3 className="text-[11px] font-black uppercase tracking-widest text-ink/60">Optimizer Settings</h3>
               </div>
               <button
                 type="button"
@@ -2659,6 +2460,378 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
             </div>
 
             <div className="flex-1 min-h-0 flex flex-col gap-4 overflow-hidden">
+              <div className="border border-ink/10 rounded-sm p-3 bg-white/60">
+                <h4 className="text-[12px] font-black uppercase tracking-widest text-ink/50 mb-2">
+                  Optimizer Tuning
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-[160px_80px_1fr] items-center gap-2">
+                      <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Lineups</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={150}
+                        value={config.numLineups}
+                        onChange={(e) => {
+                          const val = Number.parseInt(e.target.value, 10);
+                          if (!Number.isNaN(val)) setConfig((prev) => ({ ...prev, numLineups: Math.max(1, Math.min(150, val)) }));
+                        }}
+                        className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                      />
+                      <input
+                        type="range"
+                        min={0}
+                        max={LINEUP_SLIDER_VALUES.length - 1}
+                        step={1}
+                        value={lineupSliderIndex}
+                        onChange={(e) => {
+                          const idx = Number(e.target.value);
+                          setConfig((prev) => ({ ...prev, numLineups: LINEUP_SLIDER_VALUES[idx] ?? prev.numLineups }));
+                        }}
+                        className="w-full accent-drafting-orange"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-[160px_80px_1fr] items-center gap-2">
+                      <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Min Unique Players</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={8}
+                        step={1}
+                        value={config.minUniquePlayers}
+                        onChange={(e) => {
+                          const parsed = Number(e.target.value);
+                          const nextVal = Number.isFinite(parsed) ? Math.max(1, Math.min(8, Math.round(parsed))) : 1;
+                          setConfig((prev) => ({ ...prev, minUniquePlayers: nextVal }));
+                        }}
+                        className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                      />
+                      <input
+                        type="range"
+                        min={1}
+                        max={8}
+                        step={1}
+                        value={config.minUniquePlayers}
+                        onChange={(e) => setConfig((prev) => ({ ...prev, minUniquePlayers: Number(e.target.value) }))}
+                        className="w-full accent-drafting-orange"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-[160px_80px_1fr] items-center gap-2">
+                      <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Salary Floor</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={50000}
+                        step={100}
+                        value={config.salaryFloor}
+                        onChange={(e) => {
+                          const parsed = Number(e.target.value);
+                          const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(50000, Math.floor(parsed / 100) * 100)) : 0;
+                          setConfig((prev) => ({ ...prev, salaryFloor: nextVal }));
+                        }}
+                        className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                      />
+                      <input
+                        type="range"
+                        min={0}
+                        max={50000}
+                        step={100}
+                        value={config.salaryFloor}
+                        onChange={(e) => setConfig((prev) => ({ ...prev, salaryFloor: Number(e.target.value) }))}
+                        className="w-full accent-drafting-orange"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-[160px_80px_1fr] items-center gap-2">
+                      <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Minimum Salary</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={10000}
+                        step={100}
+                        value={config.minSalary}
+                        onChange={(e) => {
+                          const parsed = Number(e.target.value);
+                          const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(10000, Math.floor(parsed / 100) * 100)) : 0;
+                          setConfig((prev) => ({ ...prev, minSalary: nextVal }));
+                        }}
+                        className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                      />
+                      <input
+                        type="range"
+                        min={0}
+                        max={10000}
+                        step={100}
+                        value={config.minSalary}
+                        onChange={(e) => setConfig((prev) => ({ ...prev, minSalary: Number(e.target.value) }))}
+                        className="w-full accent-drafting-orange"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-[160px_80px_1fr] items-center gap-2">
+                      <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Minimum Minutes</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={48}
+                        step={1}
+                        value={config.minMinutes}
+                        onChange={(e) => {
+                          const parsed = Number(e.target.value);
+                          const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(48, Math.round(parsed))) : 0;
+                          setConfig((prev) => ({ ...prev, minMinutes: nextVal }));
+                        }}
+                        className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                      />
+                      <input
+                        type="range"
+                        min={0}
+                        max={48}
+                        step={1}
+                        value={config.minMinutes}
+                        onChange={(e) => setConfig((prev) => ({ ...prev, minMinutes: Number(e.target.value) }))}
+                        className="w-full accent-drafting-orange"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-[160px_80px_1fr] items-center gap-2">
+                      <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Min Projected FPTS</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={0.5}
+                        value={config.minProjectedFpts}
+                        onChange={(e) => {
+                          const parsed = Number(e.target.value);
+                          const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed * 2) / 2)) : 0;
+                          setConfig((prev) => ({ ...prev, minProjectedFpts: nextVal }));
+                        }}
+                        className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                      />
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={0.5}
+                        value={config.minProjectedFpts}
+                        onChange={(e) => setConfig((prev) => ({ ...prev, minProjectedFpts: Number(e.target.value) }))}
+                        className="w-full accent-drafting-orange"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-[160px_80px_1fr] items-center gap-2">
+                      <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Min SlateSim Value</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={config.minSlateSimValue}
+                        onChange={(e) => {
+                          const parsed = Number(e.target.value);
+                          const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed))) : 0;
+                          setConfig((prev) => ({ ...prev, minSlateSimValue: nextVal }));
+                        }}
+                        className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                      />
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={config.minSlateSimValue}
+                        onChange={(e) => setConfig((prev) => ({ ...prev, minSlateSimValue: Number(e.target.value) }))}
+                        className="w-full accent-drafting-orange"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-[160px_80px_1fr] items-center gap-2">
+                      <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Randomness (%)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={5}
+                        value={config.randomnessPct}
+                        onChange={(e) => {
+                          const parsed = Number(e.target.value);
+                          const nextVal = Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed / 5) * 5)) : 0;
+                          setConfig((prev) => ({ ...prev, randomnessPct: nextVal }));
+                        }}
+                        className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                      />
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={5}
+                        value={config.randomnessPct}
+                        onChange={(e) => setConfig((prev) => ({ ...prev, randomnessPct: Number(e.target.value) }))}
+                        className="w-full accent-drafting-orange"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="border border-ink/10 rounded-sm p-2 bg-white/70">
+                      <label className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-ink/60">
+                        <input
+                          type="checkbox"
+                          checked={config.enforceTeamStack}
+                          onChange={(e) => setConfig((prev) => ({ ...prev, enforceTeamStack: e.target.checked }))}
+                          className="accent-drafting-orange"
+                        />
+                        Enforce Team Stack
+                      </label>
+                      <div className="mt-2 grid grid-cols-[160px_80px_1fr] items-center gap-2">
+                        <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Min Stack Size</label>
+                        <input
+                          type="number"
+                          min={2}
+                          max={8}
+                          step={1}
+                          value={config.minTeamStackSize}
+                          onChange={(e) => {
+                            const parsed = Number(e.target.value);
+                            const nextVal = Number.isFinite(parsed) ? Math.max(2, Math.min(8, Math.round(parsed))) : 2;
+                            setConfig((prev) => ({ ...prev, minTeamStackSize: nextVal }));
+                          }}
+                          className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                        />
+                        <input
+                          type="range"
+                          min={2}
+                          max={8}
+                          step={1}
+                          value={config.minTeamStackSize}
+                          onChange={(e) => setConfig((prev) => ({ ...prev, minTeamStackSize: Number(e.target.value) }))}
+                          className="w-full accent-drafting-orange"
+                          disabled={!config.enforceTeamStack}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="border border-ink/10 rounded-sm p-2 bg-white/70">
+                      <h5 className="text-[10px] font-black uppercase tracking-widest text-ink/60 mb-2">Objective Weights</h5>
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-[110px_70px_1fr] items-center gap-2">
+                          <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">EV</label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={5}
+                            step={0.1}
+                            value={config.objectiveWeights.ev}
+                            onChange={(e) => setConfig((prev) => ({
+                              ...prev,
+                              objectiveWeights: { ...prev.objectiveWeights, ev: Math.max(0, Math.min(5, Number(e.target.value) || 0)) },
+                            }))}
+                            className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                          />
+                          <input
+                            type="range"
+                            min={0}
+                            max={5}
+                            step={0.1}
+                            value={config.objectiveWeights.ev}
+                            onChange={(e) => setConfig((prev) => ({
+                              ...prev,
+                              objectiveWeights: { ...prev.objectiveWeights, ev: Number(e.target.value) },
+                            }))}
+                            className="w-full accent-drafting-orange"
+                          />
+                        </div>
+                        <div className="grid grid-cols-[110px_70px_1fr] items-center gap-2">
+                          <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Projection</label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={5}
+                            step={0.1}
+                            value={config.objectiveWeights.projection}
+                            onChange={(e) => setConfig((prev) => ({
+                              ...prev,
+                              objectiveWeights: { ...prev.objectiveWeights, projection: Math.max(0, Math.min(5, Number(e.target.value) || 0)) },
+                            }))}
+                            className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                          />
+                          <input
+                            type="range"
+                            min={0}
+                            max={5}
+                            step={0.1}
+                            value={config.objectiveWeights.projection}
+                            onChange={(e) => setConfig((prev) => ({
+                              ...prev,
+                              objectiveWeights: { ...prev.objectiveWeights, projection: Number(e.target.value) },
+                            }))}
+                            className="w-full accent-drafting-orange"
+                          />
+                        </div>
+                        <div className="grid grid-cols-[110px_70px_1fr] items-center gap-2">
+                          <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Ceiling</label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={5}
+                            step={0.1}
+                            value={config.objectiveWeights.ceiling}
+                            onChange={(e) => setConfig((prev) => ({
+                              ...prev,
+                              objectiveWeights: { ...prev.objectiveWeights, ceiling: Math.max(0, Math.min(5, Number(e.target.value) || 0)) },
+                            }))}
+                            className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                          />
+                          <input
+                            type="range"
+                            min={0}
+                            max={5}
+                            step={0.1}
+                            value={config.objectiveWeights.ceiling}
+                            onChange={(e) => setConfig((prev) => ({
+                              ...prev,
+                              objectiveWeights: { ...prev.objectiveWeights, ceiling: Number(e.target.value) },
+                            }))}
+                            className="w-full accent-drafting-orange"
+                          />
+                        </div>
+                        <div className="grid grid-cols-[110px_70px_1fr] items-center gap-2">
+                          <label className="text-[10px] font-black text-ink/50 uppercase tracking-widest">Leverage</label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={5}
+                            step={0.1}
+                            value={config.objectiveWeights.leverage}
+                            onChange={(e) => setConfig((prev) => ({
+                              ...prev,
+                              objectiveWeights: { ...prev.objectiveWeights, leverage: Math.max(0, Math.min(5, Number(e.target.value) || 0)) },
+                            }))}
+                            className="h-7 bg-white/60 border border-ink/20 rounded-sm px-2 text-[10px] font-bold font-mono focus:border-drafting-orange outline-none transition-all text-ink"
+                          />
+                          <input
+                            type="range"
+                            min={0}
+                            max={5}
+                            step={0.1}
+                            value={config.objectiveWeights.leverage}
+                            onChange={(e) => setConfig((prev) => ({
+                              ...prev,
+                              objectiveWeights: { ...prev.objectiveWeights, leverage: Number(e.target.value) },
+                            }))}
+                            className="w-full accent-drafting-orange"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div className="border border-ink/10 rounded-sm p-3 bg-white/60 overflow-hidden flex flex-col flex-1 min-h-0">
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-[12px] font-black uppercase tracking-widest text-ink/50">

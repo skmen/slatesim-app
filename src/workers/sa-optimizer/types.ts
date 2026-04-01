@@ -50,10 +50,13 @@ export interface OptimizerConfig {
   minSalary: number;
   minUniquePlayers: number;
   randomnessPct: number;
-  // Legacy SA fields kept optional so older modules still type-check.
+  weightEv?: number;
   weightProjection?: number;
   weightCeiling?: number;
   weightLeverage?: number;
+  enforceTeamStack?: boolean;
+  minTeamStackSize?: number;
+  // Legacy SA fields kept optional so older modules still type-check.
   exposurePenaltyLambda?: number;
   saTempStart?: number;
   saTempEnd?: number;
