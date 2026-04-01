@@ -152,7 +152,7 @@ function formatExpression(terms: Array<{ varName: string; coeff: number }>): str
 }
 
 async function solveLpWithRecovery(lpText: string): Promise<any> {
-  const recoverableRuntimePattern = /(indirect call to null|index out of bounds)/i;
+  const recoverableRuntimePattern = /(indirect call to null|index out of bounds|indirect call signature mismatch)/i;
   const solveWithCachedModule = async (): Promise<any> => {
     const highs = await getHighsModule();
     return await highs.solve(lpText);
@@ -199,6 +199,7 @@ function buildLineupLp(
   forcedIds: Set<string>,
   blockedIds: Set<string>,
   priorLineupIds: string[][],
+  invalidSelectionCuts: number[][],
 ): { lpText: string; assignmentVars: AssignmentVar[] } {
   const assignmentVars: AssignmentVar[] = new Array(pool.all.length);
   const varNameByPlayerIndex: string[] = new Array(pool.all.length);
@@ -323,6 +324,17 @@ function buildLineupLp(
     }
   }
 
+  // Exclude known invalid selections (e.g., sets that fail DK slot assignment).
+  for (let i = 0; i < invalidSelectionCuts.length; i++) {
+    const playerIndices = invalidSelectionCuts[i];
+    if (!Array.isArray(playerIndices) || playerIndices.length === 0) continue;
+    const terms = playerIndices.map((idx) => ({
+      varName: varNameByPlayerIndex[idx],
+      coeff: 1,
+    }));
+    lines.push(` invalid_sel_${i}: ${formatExpression(terms)} <= ${formatCoeff(SLOT_CONFIG.length - 1)}`);
+  }
+
   const teamStackVars: TeamStackVar[] = [];
   if (config.enforceTeamStack) {
     const minTeamStackSize = clamp(Math.floor(config.minTeamStackSize ?? 2), 2, SLOT_CONFIG.length);
@@ -399,57 +411,70 @@ async function solveLineup(
   blockedIds: Set<string>,
   priorLineupIds: string[][],
 ): Promise<LineupSlot[] | null> {
-  const { lpText, assignmentVars } = buildLineupLp(
-    pool,
-    config,
-    effectiveScoreById,
-    forcedIds,
-    blockedIds,
-    priorLineupIds,
-  );
+  const invalidSelectionCuts: number[][] = [];
 
-  const solution = await solveLpWithRecovery(lpText);
-  const status = String(solution?.Status ?? '').toLowerCase();
-  if (
-    status.includes('infeasible') ||
-    status.includes('error') ||
-    status.includes('unbounded') ||
-    status.includes('empty')
-  ) {
-    return null;
+  for (let retry = 0; retry < 40; retry++) {
+    const { lpText, assignmentVars } = buildLineupLp(
+      pool,
+      config,
+      effectiveScoreById,
+      forcedIds,
+      blockedIds,
+      priorLineupIds,
+      invalidSelectionCuts,
+    );
+
+    const solution = await solveLpWithRecovery(lpText);
+    const status = String(solution?.Status ?? '').toLowerCase();
+    if (
+      status.includes('infeasible') ||
+      status.includes('error') ||
+      status.includes('unbounded') ||
+      status.includes('empty')
+    ) {
+      return null;
+    }
+
+    const columns = solution?.Columns ?? {};
+    const selectedPlayerIndices = assignmentVars
+      .map((row) => ({
+        playerIndex: row.playerIndex,
+        value: Number(columns?.[row.name]?.Primal ?? 0),
+      }))
+      .filter((entry) => entry.value > 0.5)
+      .map((entry) => entry.playerIndex);
+
+    if (selectedPlayerIndices.length !== SLOT_CONFIG.length) return null;
+
+    const selectedPlayers = selectedPlayerIndices.map((idx) => pool.all[idx]);
+    const slotAssignment = findSlotAssignment(selectedPlayers);
+    if (!slotAssignment) {
+      invalidSelectionCuts.push([...selectedPlayerIndices].sort((a, b) => a - b));
+      continue;
+    }
+
+    const slotToPlayer = new Map<number, Player>();
+    for (let i = 0; i < selectedPlayers.length; i++) {
+      slotToPlayer.set(slotAssignment[i], selectedPlayers[i]);
+    }
+    if (slotToPlayer.size !== SLOT_CONFIG.length) {
+      invalidSelectionCuts.push([...selectedPlayerIndices].sort((a, b) => a - b));
+      continue;
+    }
+
+    const lineup: LineupSlot[] = SLOT_CONFIG.map((slotDef, slotIndex) => {
+      const player = slotToPlayer.get(slotIndex);
+      if (!player) throw new Error('Internal lineup assignment failure.');
+      return {
+        slot: slotDef.slot,
+        player,
+      };
+    });
+
+    return lineup;
   }
 
-  const columns = solution?.Columns ?? {};
-  const selectedPlayerIndices = assignmentVars
-    .map((row) => ({
-      playerIndex: row.playerIndex,
-      value: Number(columns?.[row.name]?.Primal ?? 0),
-    }))
-    .filter((entry) => entry.value > 0.5)
-    .map((entry) => entry.playerIndex);
-
-  if (selectedPlayerIndices.length !== SLOT_CONFIG.length) return null;
-
-  const selectedPlayers = selectedPlayerIndices.map((idx) => pool.all[idx]);
-  const slotAssignment = findSlotAssignment(selectedPlayers);
-  if (!slotAssignment) return null;
-
-  const slotToPlayer = new Map<number, Player>();
-  for (let i = 0; i < selectedPlayers.length; i++) {
-    slotToPlayer.set(slotAssignment[i], selectedPlayers[i]);
-  }
-  if (slotToPlayer.size !== SLOT_CONFIG.length) return null;
-
-  const lineup: LineupSlot[] = SLOT_CONFIG.map((slotDef, slotIndex) => {
-    const player = slotToPlayer.get(slotIndex);
-    if (!player) throw new Error('Internal lineup assignment failure.');
-    return {
-      slot: slotDef.slot,
-      player,
-    };
-  });
-
-  return lineup;
+  return null;
 }
 
 function meetsTeamStack(lineup: LineupSlot[], minTeamStackSize: number): boolean {
@@ -629,7 +654,6 @@ export async function generatePortfolio(
   const resultIds: string[][] = [];
   const exposureCounts = new Map<string, number>();
   const exposureBounds = new Map<string, ExposureBound>();
-  let highsDisabledForRun = false;
 
   for (let p = 0; p < pool.all.length; p++) {
     const player = pool.all[p];
@@ -654,14 +678,15 @@ export async function generatePortfolio(
       max: clamp(maxCount, 0, target),
     });
   }
+  const hasMandatoryExposureMinimums = Array.from(exposureBounds.values()).some((bounds) => bounds.min > 0);
 
   const randomScale = clamp(config.randomnessPct, 0, 100) / 100;
 
   for (let i = 0; i < target; i++) {
     const remainingIncludingCurrent = target - i;
     const maxAttempts = randomScale > 0
-      ? Math.max(8, Math.min(40, 8 + Math.floor(pool.all.length / 20)))
-      : 1;
+      ? Math.max(12, Math.min(60, 12 + Math.floor(pool.all.length / 15)))
+      : Math.max(8, Math.min(30, 8 + Math.floor(pool.all.length / 25)));
 
     let acceptedLineup: LineupSlot[] | null = null;
     let acceptedIds: string[] | null = null;
@@ -711,26 +736,27 @@ export async function generatePortfolio(
         );
       }
 
-      const effectiveScoreById = effectiveObjectiveMap(pool.all, config, config.randomnessPct);
+      const attemptRandomnessPct = config.randomnessPct > 0
+        ? config.randomnessPct
+        : (attempt === 0 ? 0 : 2);
+      const effectiveScoreById = effectiveObjectiveMap(pool.all, config, attemptRandomnessPct);
       let lineup: LineupSlot[] | null = null;
-      if (!highsDisabledForRun) {
-        try {
-          lineup = await solveLineup(
-            pool,
-            config,
-            effectiveScoreById,
-            forcedIds,
-            blockedIds,
-            resultIds,
-          );
-        } catch (solveErr) {
-          if (!isRecoverableHighsRuntimeError(solveErr)) {
-            throw solveErr;
-          }
-          highsDisabledForRun = true;
-          // eslint-disable-next-line no-console
-          console.warn('[optimizer] HiGHS runtime became unstable; switching to SA fallback for this run.');
+      try {
+        lineup = await solveLineup(
+          pool,
+          config,
+          effectiveScoreById,
+          forcedIds,
+          blockedIds,
+          resultIds,
+        );
+      } catch (solveErr) {
+        if (!isRecoverableHighsRuntimeError(solveErr)) {
+          throw solveErr;
         }
+        highsModulePromise = null;
+        // eslint-disable-next-line no-console
+        console.warn('[optimizer] HiGHS runtime error encountered; retrying via SA fallback for this attempt.');
       }
       if (!lineup) {
         lineup = solveLineupFallback(
@@ -809,6 +835,9 @@ export async function generatePortfolio(
     }
 
     if (!acceptedLineup || !acceptedIds) {
+      if (i > 0 && !hasMandatoryExposureMinimums) {
+        break;
+      }
       throw new Error(`Unable to generate lineup ${i + 1}/${target} with current constraints.`);
     }
 
