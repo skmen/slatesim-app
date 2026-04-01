@@ -1961,75 +1961,91 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         />
       )}
       <div className="bg-white/40 backdrop-blur-sm rounded-sm border border-ink/10 p-4 shadow-sm">
-        <div className="flex items-center justify-end mb-3">
-          <div className="flex items-center gap-1.5">
-            {enrichmentState.isLoading ? (
-              <span className="flex items-center gap-1 text-[9px] font-bold text-ink/40 uppercase tracking-widest">
-                <span className="w-1.5 h-1.5 rounded-full bg-ink/30 inline-block" />
-                Loading model data...
+        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <Zap className="w-4 h-4 text-drafting-orange" />
+              <h2 className="text-[12px] font-black uppercase tracking-widest text-ink/70">Optimizer</h2>
+            </div>
+            <p className="text-[10px] font-bold text-ink/50 uppercase tracking-widest leading-tight">
+              Optimize lineups for EV while respecting salary, exposure, uniqueness, and optional team-stack constraints.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="px-2 py-1 rounded-sm border border-ink/15 bg-white/70 text-[9px] font-black uppercase tracking-widest text-ink/60">
+                {config.numLineups} lineups
               </span>
-            ) : enrichmentState.enrichment && enrichmentState.coveragePct > 0 ? (
-              <span
-                className="flex items-center gap-1 text-[9px] font-bold text-emerald-700 uppercase tracking-widest cursor-default"
-                title={`Trained ${enrichmentState.lspTrainedAt ?? 'N/A'}, model v${enrichmentState.modelVersion ?? 'N/A'}`}
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
-                Model: {enrichmentState.coveragePct.toFixed(0)}% coverage
+              <span className="px-2 py-1 rounded-sm border border-ink/15 bg-white/70 text-[9px] font-black uppercase tracking-widest text-ink/60">
+                EV weight {config.objectiveWeights.ev.toFixed(1)}
               </span>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <div className="flex justify-end">
-            <div className="w-full md:w-[260px] flex flex-col gap-2">
-              <button
-                type="button"
-                onClick={() => setShowAdvanced(true)}
-                className="w-full border border-ink/20 text-ink/70 font-black py-2 rounded-sm text-[10px] uppercase tracking-widest hover:border-drafting-orange/40 hover:text-ink transition-all"
-              >
-                Optimizer Settings
-              </button>
-              {!isOptimizing ? (
-                <button
-                  onClick={startOptimization}
-                  className="w-full bg-drafting-orange hover:opacity-90 text-white font-black py-2.5 rounded-sm shadow-lg shadow-drafting-orange/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-[11px]"
-                >
-                  <Play className="w-3.5 h-3.5 fill-current" /> Run Optimizer
-                </button>
-              ) : (
-                <button
-                  onClick={stopOptimization}
-                  className="w-full bg-red-600 hover:opacity-90 text-white font-black py-2.5 rounded-sm shadow-lg shadow-red-600/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-[11px]"
-                >
-                  <Square className="w-3.5 h-3.5 fill-current" /> Stop Process
-                </button>
+              {config.enforceTeamStack && (
+                <span className="px-2 py-1 rounded-sm border border-drafting-orange/30 bg-drafting-orange/10 text-[9px] font-black uppercase tracking-widest text-drafting-orange">
+                  Team stack {config.minTeamStackSize}+
+                </span>
               )}
+              {enrichmentState.isLoading ? (
+                <span className="flex items-center gap-1 text-[9px] font-bold text-ink/40 uppercase tracking-widest">
+                  <span className="w-1.5 h-1.5 rounded-full bg-ink/30 inline-block" />
+                  Loading model data...
+                </span>
+              ) : enrichmentState.enrichment && enrichmentState.coveragePct > 0 ? (
+                <span
+                  className="flex items-center gap-1 text-[9px] font-bold text-emerald-700 uppercase tracking-widest cursor-default"
+                  title={`Trained ${enrichmentState.lspTrainedAt ?? 'N/A'}, model v${enrichmentState.modelVersion ?? 'N/A'}`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+                  Model {enrichmentState.coveragePct.toFixed(0)}% coverage
+                </span>
+              ) : null}
             </div>
           </div>
 
-          <div className="p-2 rounded-sm border border-amber-200 bg-amber-50/80">
-            <p className="text-[9px] font-bold text-amber-800 uppercase tracking-widest leading-tight">
-              Min/Max exposure, lock/exclude, and salary floor are enforced as hard constraints. If constraints are too tight, lineup generation can fail before reaching the requested count.
+          <div className="w-full md:w-[280px] flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(true)}
+              className="w-full border border-ink/20 text-ink/70 font-black py-2 rounded-sm text-[10px] uppercase tracking-widest hover:border-drafting-orange/40 hover:text-ink transition-all"
+            >
+              Optimizer Settings
+            </button>
+            {!isOptimizing ? (
+              <button
+                onClick={startOptimization}
+                className="w-full bg-drafting-orange hover:opacity-90 text-white font-black py-2.5 rounded-sm shadow-lg shadow-drafting-orange/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-[11px]"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" /> Run Optimizer
+              </button>
+            ) : (
+              <button
+                onClick={stopOptimization}
+                className="w-full bg-red-600 hover:opacity-90 text-white font-black py-2.5 rounded-sm shadow-lg shadow-red-600/20 transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-[11px]"
+              >
+                <Square className="w-3.5 h-3.5 fill-current" /> Stop Process
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-3 p-2 rounded-sm border border-amber-200 bg-amber-50/80">
+          <p className="text-[9px] font-bold text-amber-800 uppercase tracking-widest leading-tight">
+            Min/Max exposure, lock/exclude, and salary floor are enforced as hard constraints. If constraints are too tight, lineup generation can fail before reaching the requested count.
+          </p>
+        </div>
+
+        {error && (
+          <div className="mt-2 p-3 bg-red-600/10 border border-red-600/20 rounded-sm flex items-start gap-2 animate-in slide-in-from-top-2">
+            <AlertCircle className="w-3.5 h-3.5 text-red-600 shrink-0 mt-0.5" />
+            <p className="text-[9px] font-bold text-red-600 uppercase leading-tight">{error}</p>
+          </div>
+        )}
+
+        {optimizerNotices.length > 0 && (
+          <div className="mt-2 p-3 bg-amber-500/10 border border-amber-500/30 rounded-sm flex items-start gap-2 animate-in slide-in-from-top-2">
+            <AlertCircle className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />
+            <p className="text-[9px] font-bold text-amber-800 uppercase leading-tight">
+              {optimizerNotices.join(' ')}
             </p>
           </div>
-
-          {error && (
-            <div className="p-3 bg-red-600/10 border border-red-600/20 rounded-sm flex items-start gap-2 animate-in slide-in-from-top-2">
-              <AlertCircle className="w-3.5 h-3.5 text-red-600 shrink-0 mt-0.5" />
-              <p className="text-[9px] font-bold text-red-600 uppercase leading-tight">{error}</p>
-            </div>
-          )}
-
-          {optimizerNotices.length > 0 && (
-            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-sm flex items-start gap-2 animate-in slide-in-from-top-2">
-              <AlertCircle className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />
-              <p className="text-[9px] font-bold text-amber-800 uppercase leading-tight">
-                {optimizerNotices.join(' ')}
-              </p>
-            </div>
-          )}
-        </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">

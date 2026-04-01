@@ -119,19 +119,38 @@ function formatExpression(terms: Array<{ varName: string; coeff: number }>): str
 }
 
 async function solveLpWithRecovery(lpText: string): Promise<any> {
-  try {
+  const recoverableRuntimePattern = /(indirect call to null|index out of bounds)/i;
+  const solveWithCachedModule = async (): Promise<any> => {
     const highs = await getHighsModule();
     return await highs.solve(lpText);
+  };
+
+  try {
+    return await solveWithCachedModule();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err || '');
-    if (!/indirect call to null/i.test(message)) {
+    if (!recoverableRuntimePattern.test(message)) {
       throw err;
     }
 
-    // Recover from sporadic HiGHS wasm table corruption by reloading module and retrying once.
+    // Recover from sporadic HiGHS wasm runtime corruption by reloading module and retrying.
     highsModulePromise = null;
-    const highs = await getHighsModule();
-    return await highs.solve(lpText);
+    try {
+      return await solveWithCachedModule();
+    } catch (retryErr) {
+      const retryMessage = retryErr instanceof Error ? retryErr.message : String(retryErr || '');
+      if (!recoverableRuntimePattern.test(retryMessage)) {
+        throw retryErr;
+      }
+
+      // Last resort: bypass cache entirely and force a one-off fresh wasm instance.
+      const freshHighs = await Promise.resolve(
+        highsLoader({
+          locateFile: (file: string) => (file.endsWith('.wasm') ? highsWasmUrl : file),
+        }),
+      );
+      return await freshHighs.solve(lpText);
+    }
   }
 }
 
@@ -489,6 +508,8 @@ export async function generatePortfolio(
   config: OptimizerConfig,
   onProgress: (current: number, lineup: LineupSlot[]) => void,
 ): Promise<LineupSlot[][]> {
+  // Start each run with a fresh module to prevent wasm state bleed across runs.
+  highsModulePromise = null;
   const target = Math.max(0, Math.floor(config.targetLineups));
   const results: LineupSlot[][] = [];
   const resultIds: string[][] = [];
