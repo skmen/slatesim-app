@@ -1,5 +1,7 @@
 import highsLoader from 'highs';
 import highsWasmUrl from 'highs/runtime?url';
+import { greedyInit } from './greedy-init';
+import { runSA } from './sa-core';
 import { LineupSlot, OptimizerConfig, Player, PlayerPool, SLOT_CONFIG } from './types';
 
 interface ExposureBound {
@@ -183,6 +185,11 @@ async function solveLpWithRecovery(lpText: string): Promise<any> {
       return await freshHighs.solve(lpText);
     }
   }
+}
+
+function isRecoverableHighsRuntimeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /(indirect call to null|index out of bounds|indirect call signature mismatch)/i.test(message);
 }
 
 function buildLineupLp(
@@ -445,6 +452,66 @@ async function solveLineup(
   return lineup;
 }
 
+function meetsTeamStack(lineup: LineupSlot[], minTeamStackSize: number): boolean {
+  const minSize = clamp(Math.floor(minTeamStackSize), 2, SLOT_CONFIG.length);
+  const counts = new Map<string, number>();
+  for (let i = 0; i < lineup.length; i++) {
+    const team = String(lineup[i].player.teamId || 'UNK').toUpperCase();
+    counts.set(team, (counts.get(team) ?? 0) + 1);
+  }
+  let maxTeam = 0;
+  counts.forEach((count) => {
+    if (count > maxTeam) maxTeam = count;
+  });
+  return maxTeam >= minSize;
+}
+
+function solveLineupFallback(
+  pool: PlayerPool,
+  config: OptimizerConfig,
+  effectiveScoreById: Map<string, number>,
+  forcedIds: Set<string>,
+  blockedIds: Set<string>,
+  attempt: number,
+): LineupSlot[] | null {
+  try {
+    const jitterScale = Math.max(0.03, clamp(config.randomnessPct, 0, 100) / 100);
+    const noisyScores = new Map<string, number>();
+    for (let i = 0; i < pool.all.length; i++) {
+      const player = pool.all[i];
+      const base = Number.isFinite(Number(effectiveScoreById.get(player.id)))
+        ? Number(effectiveScoreById.get(player.id))
+        : Number(player.ev || 0);
+      const jitter = (Math.random() * 2 - 1) * jitterScale * Math.max(1, Math.abs(base));
+      noisyScores.set(player.id, base + jitter);
+    }
+
+    const initial = greedyInit(pool, config, noisyScores, forcedIds, blockedIds);
+    const fallbackConfig: OptimizerConfig = {
+      ...config,
+      saTempStart: 3 + Math.min(2, attempt * 0.1),
+      saTempEnd: 0.01,
+      saIterations: 1600,
+    };
+    const optimized = runSA(initial, pool, fallbackConfig, noisyScores, forcedIds, blockedIds);
+    const lineup: LineupSlot[] = new Array(SLOT_CONFIG.length);
+    for (let i = 0; i < SLOT_CONFIG.length; i++) {
+      lineup[i] = {
+        slot: SLOT_CONFIG[i].slot,
+        player: optimized.slots[i],
+      };
+    }
+
+    if (config.enforceTeamStack && !meetsTeamStack(lineup, config.minTeamStackSize ?? 2)) {
+      return null;
+    }
+
+    return lineup;
+  } catch {
+    return null;
+  }
+}
+
 function totalSalary(lineup: LineupSlot[]): number {
   let salary = 0;
   for (let i = 0; i < lineup.length; i++) {
@@ -562,6 +629,7 @@ export async function generatePortfolio(
   const resultIds: string[][] = [];
   const exposureCounts = new Map<string, number>();
   const exposureBounds = new Map<string, ExposureBound>();
+  let highsDisabledForRun = false;
 
   for (let p = 0; p < pool.all.length; p++) {
     const player = pool.all[p];
@@ -644,14 +712,36 @@ export async function generatePortfolio(
       }
 
       const effectiveScoreById = effectiveObjectiveMap(pool.all, config, config.randomnessPct);
-      const lineup = await solveLineup(
-        pool,
-        config,
-        effectiveScoreById,
-        forcedIds,
-        blockedIds,
-        resultIds,
-      );
+      let lineup: LineupSlot[] | null = null;
+      if (!highsDisabledForRun) {
+        try {
+          lineup = await solveLineup(
+            pool,
+            config,
+            effectiveScoreById,
+            forcedIds,
+            blockedIds,
+            resultIds,
+          );
+        } catch (solveErr) {
+          if (!isRecoverableHighsRuntimeError(solveErr)) {
+            throw solveErr;
+          }
+          highsDisabledForRun = true;
+          // eslint-disable-next-line no-console
+          console.warn('[optimizer] HiGHS runtime became unstable; switching to SA fallback for this run.');
+        }
+      }
+      if (!lineup) {
+        lineup = solveLineupFallback(
+          pool,
+          config,
+          effectiveScoreById,
+          forcedIds,
+          blockedIds,
+          attempt,
+        );
+      }
       if (!lineup) continue;
 
       const ids = lineupIds(lineup);
