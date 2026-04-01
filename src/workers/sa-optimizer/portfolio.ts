@@ -43,6 +43,13 @@ function pctToCount(pct: number, total: number, mode: 'min' | 'max'): number {
   return mode === 'min' ? Math.ceil(raw) : Math.floor(raw);
 }
 
+function normalizeExposurePct(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  const numeric = Number(value);
+  // Support fractional exposure encoding (0.15 => 15%).
+  return numeric > 0 && numeric < 1 ? numeric * 100 : numeric;
+}
+
 function overlapCount(a: string[], b: string[]): number {
   let overlap = 0;
   for (let i = 0; i < a.length; i++) {
@@ -660,13 +667,26 @@ export async function generatePortfolio(
       throw new Error(`Player ${player.name} (${player.id}) cannot be both locked and excluded.`);
     }
 
-    const minPct = player.locked ? 100 : Number.isFinite(player.minExposure) ? Number(player.minExposure) : 0;
-    const maxPct = player.locked ? 100 : Number.isFinite(player.maxExposure) ? Number(player.maxExposure) : 100;
+    const minPct = player.locked
+      ? 100
+      : Number.isFinite(player.minExposure)
+        ? normalizeExposurePct(Number(player.minExposure))
+        : 0;
+    const maxPct = player.locked
+      ? 100
+      : Number.isFinite(player.maxExposure)
+        ? normalizeExposurePct(Number(player.maxExposure))
+        : 100;
 
     const minCount = pctToCount(minPct, target, 'min');
     const maxCount = pctToCount(maxPct, target, 'max');
 
     if (maxCount < minCount) {
+      if (minPct <= maxPct) {
+        throw new Error(
+          `Exposure bounds infeasible for ${player.name} (${player.id}) at ${target} lineups: min ${minPct}% requires at least ${minCount} lineup(s), but max ${maxPct}% allows at most ${maxCount}.`,
+        );
+      }
       throw new Error(
         `Exposure bounds invalid for ${player.name} (${player.id}): min ${minPct}% exceeds max ${maxPct}%.`,
       );

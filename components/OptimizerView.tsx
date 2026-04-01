@@ -22,7 +22,7 @@ import { getPlayerInjuryInfo, InjuryLookup } from '../utils/injuries';
 import { getPlayerStartingLineupInfo, StartingLineupLookup } from '../utils/startingLineups';
 import { PlayerDeepDive } from './PlayerDeepDive';
 import { SavedLineupSet, loadSavedLineupSets, saveSavedLineupSets } from '../utils/savedLineups';
-import OptimizerWorker from '../src/workers/sa-optimizer/worker.ts?worker&v=20260401-highs-stable5';
+import OptimizerWorker from '../src/workers/sa-optimizer/worker.ts?worker&v=20260401-highs-stable6';
 import { usePlayerEnrichment } from '../src/hooks/usePlayerEnrichment';
 import { useLineupScoring } from '../src/hooks/useLineupScoring';
 
@@ -217,9 +217,13 @@ const sanitizeOptimizerConfig = (raw: any): OptimizerConfigState => {
 
 const parseExposurePercentMaybe = (value: unknown): number | undefined => {
   if (value === '' || value === null || value === undefined) return undefined;
-  const numeric = Number(value);
+  const raw = typeof value === 'string' ? value.replace('%', '').trim() : value;
+  const numeric = Number(raw);
   if (!Number.isFinite(numeric)) return undefined;
-  return Math.max(0, Math.min(100, numeric));
+  // Accept both percent-style inputs (15 => 15%) and fractional inputs (0.15 => 15%).
+  // Fractional support is primarily for imported exposure files that encode percentages as 0-1.
+  const pct = numeric > 0 && numeric < 1 ? numeric * 100 : numeric;
+  return Math.max(0, Math.min(100, pct));
 };
 
 const LEVERAGE_TIER_RANK_OPTIONS = [
