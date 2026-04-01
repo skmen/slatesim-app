@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Player } from '../types';
-import { isDoubtfulInjuryStatus, isOutInjuryStatus } from '../utils/injuries';
+import { buildInjuryLookup, getPlayerInjuryInfo, isDoubtfulInjuryStatus, isOutInjuryStatus } from '../utils/injuries';
 
 type ReviewTab = 'overview' | 'injuries' | 'tier_breakdown';
 
@@ -618,20 +618,19 @@ const parseInjuryRowsFromPayload = (payload: any): InjuryEntryRow[] => {
     ]);
     const reason = pickFirstString(record, ['reason', 'injury', 'note', 'notes', 'description', 'comment']) || undefined;
 
-    const childList =
-      readByNormalizedKey(record, ['players']) ||
-      readByNormalizedKey(record, ['injuries']) ||
-      readByNormalizedKey(record, ['athletes']) ||
-      readByNormalizedKey(record, ['roster']) ||
-      readByNormalizedKey(record, ['members']) ||
-      readByNormalizedKey(record, ['entries']) ||
-      readByNormalizedKey(record, ['items']) ||
-      readByNormalizedKey(record, ['data']);
-
-    if (Array.isArray(childList) && childList.length > 0 && !name) {
-      childList.forEach((entry) => visit(entry, team, keyHint));
-      return;
-    }
+    const childSources: unknown[] = [
+      readByNormalizedKey(record, ['players']),
+      readByNormalizedKey(record, ['injuries']),
+      readByNormalizedKey(record, ['athletes']),
+      readByNormalizedKey(record, ['roster']),
+      readByNormalizedKey(record, ['members']),
+      readByNormalizedKey(record, ['entries']),
+      readByNormalizedKey(record, ['items']),
+      readByNormalizedKey(record, ['data']),
+      readByNormalizedKey(record, ['report']),
+      readByNormalizedKey(record, ['results']),
+      readByNormalizedKey(record, ['teams']),
+    ].filter((entry) => entry !== undefined && entry !== null);
 
     if (name && (status || reason)) {
       const dedupeKey = `${team}::${norm(name)}::${norm(status)}::${norm(reason || '')}`;
@@ -647,11 +646,22 @@ const parseInjuryRowsFromPayload = (payload: any): InjuryEntryRow[] => {
       }
     }
 
-    Object.entries(record).forEach(([key, value]) => {
-      if (value && (Array.isArray(value) || typeof value === 'object')) {
-        visit(value, team, key);
-      }
-    });
+    if (childSources.length > 0 && !name) {
+      childSources.forEach((entry) => visit(entry, team, keyHint));
+      return;
+    }
+
+    // Team-keyed maps like { WAS: [...], BOS: [...] }.
+    if (!name && !status && !reason) {
+      Object.entries(record).forEach(([key, value]) => {
+        if (!value || (!Array.isArray(value) && typeof value !== 'object')) return;
+        const hintTeam = teamFromKeyHint(key);
+        const nextTeam = hintTeam || inheritedTeam;
+        if (hintTeam || ['data', 'report', 'results', 'injuries', 'teams'].includes(norm(key))) {
+          visit(value, nextTeam, key);
+        }
+      });
+    }
   };
 
   visit(payload);
@@ -845,27 +855,66 @@ export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, 
 
   const injuryTeamRows = useMemo((): InjuryTeamRow[] => {
     if (!injuriesData) return [];
-    const injuryRows = parseInjuryRowsFromPayload(injuriesData);
-    if (injuryRows.length === 0) return [];
-
     const byTeam = new Map<string, InjuryTeamRow>();
-    injuryRows.forEach((injury) => {
-      const team = String(injury.team || 'UNK').toUpperCase();
-      const status = String(injury.status || 'Questionable').trim() || 'Questionable';
-      const reason = injury.reason ? String(injury.reason).trim() : undefined;
-
-      const current = byTeam.get(team) || { team, totalInjuries: 0, players: [] };
-      if (!current.players.some((row) => row.playerId === String(injury.playerId))) {
-        current.players.push({
-          playerId: String(injury.playerId),
-          playerName: String(injury.playerName || injury.playerId),
-          status,
-          reason,
-        });
+    const pushTeamInjury = (team: string, playerId: string, playerName: string, status: string, reason?: string) => {
+      const safeTeam = String(team || 'UNK').toUpperCase();
+      const safeStatus = String(status || 'Questionable').trim() || 'Questionable';
+      const safeReason = reason ? String(reason).trim() : undefined;
+      const current = byTeam.get(safeTeam) || { team: safeTeam, totalInjuries: 0, players: [] };
+      if (!current.players.some((row) => row.playerId === playerId)) {
+        current.players.push({ playerId, playerName, status: safeStatus, reason: safeReason });
       }
       current.totalInjuries = current.players.length;
-      byTeam.set(team, current);
+      byTeam.set(safeTeam, current);
+    };
+
+    // Primary path: authoritative team mapping from current slate players.
+    const lookup = buildInjuryLookup(injuriesData);
+    players.forEach((player) => {
+      const info = getPlayerInjuryInfo(player, lookup);
+      if (!info) return;
+      const team = normalizeTeamToken((player as any).team) || normalizeTeamToken(info.team) || 'UNK';
+      pushTeamInjury(team, String(player.id), String(player.name || player.id), String(info.status || 'Questionable'), info.reason);
     });
+
+    // Fallback path: parse raw payload and map by id/name back to current slate players.
+    if (byTeam.size === 0) {
+      const byId = new Map(players.map((player) => [String(player.id), player]));
+      const byName = new Map<string, Player[]>();
+      players.forEach((player) => {
+        const key = norm(player.name);
+        if (!key) return;
+        const list = byName.get(key) ?? [];
+        list.push(player);
+        byName.set(key, list);
+      });
+      const slateTeams = new Set(players.map((player) => normalizeTeamToken((player as any).team)).filter(Boolean));
+
+      parseInjuryRowsFromPayload(injuriesData).forEach((injury) => {
+        const byIdMatch = byId.get(String(injury.playerId));
+        const byNameCandidates = byName.get(norm(injury.playerName)) ?? [];
+        const byNameMatch = byNameCandidates.length === 1
+          ? byNameCandidates[0]
+          : byNameCandidates.find((candidate) => normalizeTeamToken((candidate as any).team) === normalizeTeamToken(injury.team));
+        const matchedPlayer = byIdMatch || byNameMatch;
+
+        const team = matchedPlayer
+          ? normalizeTeamToken((matchedPlayer as any).team)
+          : normalizeTeamToken(injury.team);
+        if (!team) return;
+        if (slateTeams.size > 0 && !slateTeams.has(team)) return;
+
+        pushTeamInjury(
+          team,
+          matchedPlayer ? String(matchedPlayer.id) : `${team}_${norm(injury.playerName)}`,
+          matchedPlayer ? String(matchedPlayer.name || matchedPlayer.id) : String(injury.playerName || injury.playerId),
+          injury.status,
+          injury.reason,
+        );
+      });
+    }
+
+    if (byTeam.size === 0) return [];
 
     const severityRank = (status: string): number => {
       if (isOutInjuryStatus(status)) return 3;
@@ -886,7 +935,7 @@ export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, 
         if (b.totalInjuries !== a.totalInjuries) return b.totalInjuries - a.totalInjuries;
         return a.team.localeCompare(b.team);
       });
-  }, [injuriesData]);
+  }, [injuriesData, players]);
 
   const applyExposures = useCallback(() => {
     if (!selectedDate) {
