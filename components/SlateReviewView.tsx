@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Player } from '../types';
-import { buildInjuryLookup, getPlayerInjuryInfo, isDoubtfulInjuryStatus, isOutInjuryStatus } from '../utils/injuries';
+import { isDoubtfulInjuryStatus, isOutInjuryStatus } from '../utils/injuries';
 
 type ReviewTab = 'overview' | 'injuries' | 'tier_breakdown';
 
@@ -44,6 +44,14 @@ interface OverviewData {
   summary?: string;
 }
 
+interface InjuryEntryRow {
+  playerId: string;
+  playerName: string;
+  team: string;
+  status: string;
+  reason?: string;
+}
+
 const getOptimizerSettingsStorageKey = (slateDate?: string): string =>
   `optimizerAdvancedSettings:${slateDate || 'unspecified'}`;
 
@@ -53,6 +61,7 @@ const norm = (value: unknown): string =>
     .replace(/[^a-z0-9]/g, '');
 
 const clampPct = (value: number): number => Math.max(0, Math.min(100, value));
+const normalizeTeamToken = (value: unknown): string => String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').trim();
 
 const toNumberMaybe = (value: unknown): number | undefined => {
   if (value === null || value === undefined || value === '') return undefined;
@@ -507,6 +516,148 @@ const parseTierBreakdownRows = (
   return { rows: normalizedRows, tiers, unmatchedCount };
 };
 
+const readByNormalizedKey = (obj: any, keys: string[]): any => {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const keyMap = new Map<string, string>();
+  Object.keys(obj).forEach((key) => keyMap.set(norm(key), key));
+  for (const key of keys) {
+    const matched = keyMap.get(norm(key));
+    if (matched) return obj[matched];
+  }
+  return undefined;
+};
+
+const valueToString = (value: any): string => {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value).trim();
+  }
+  if (typeof value === 'object') {
+    const nested = readByNormalizedKey(value, [
+      'label',
+      'name',
+      'status',
+      'code',
+      'abbr',
+      'abbreviation',
+      'short',
+      'description',
+      'text',
+      'value',
+    ]);
+    if (nested !== undefined) return valueToString(nested);
+  }
+  return '';
+};
+
+const pickFirstString = (record: Record<string, any>, keys: string[]): string => {
+  const found = readByNormalizedKey(record, keys);
+  return valueToString(found);
+};
+
+const teamFromKeyHint = (key: string): string => {
+  const token = normalizeTeamToken(key);
+  return /^[A-Z0-9]{2,4}$/.test(token) ? token : '';
+};
+
+const isLikelyEncryptedPayload = (payload: any): boolean => {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const iv = valueToString((payload as any).iv);
+  const encrypted = valueToString((payload as any).payload);
+  return Boolean(iv && encrypted && Object.keys(payload).length <= 4);
+};
+
+const parseInjuryRowsFromPayload = (payload: any): InjuryEntryRow[] => {
+  if (!payload || isLikelyEncryptedPayload(payload)) return [];
+
+  const rows: InjuryEntryRow[] = [];
+  const seen = new Set<string>();
+
+  const visit = (node: any, inheritedTeam = '', keyHint = '') => {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      node.forEach((entry) => visit(entry, inheritedTeam, keyHint));
+      return;
+    }
+    if (typeof node !== 'object') return;
+
+    const record = node as Record<string, any>;
+    const hintedTeam = teamFromKeyHint(keyHint);
+    const directTeam = normalizeTeamToken(
+      pickFirstString(record, [
+        'team',
+        'teamId',
+        'team_id',
+        'teamAbbrev',
+        'team_abbrev',
+        'teamAbbreviation',
+        'abbr',
+      ]),
+    );
+    const team = directTeam || inheritedTeam || hintedTeam || 'UNK';
+
+    const name = pickFirstString(record, [
+      'player',
+      'playerName',
+      'player_name',
+      'name',
+      'full_name',
+      'displayName',
+      'athlete',
+      'playerFullName',
+    ]);
+    const playerId = pickFirstString(record, ['playerId', 'player_id', 'id', 'dkId', 'dk_id']) || name || `${team}_${rows.length}`;
+    const status = pickFirstString(record, [
+      'status',
+      'injuryStatus',
+      'injury_status',
+      'designation',
+      'injuryDesignation',
+      'availability',
+      'game_status',
+    ]);
+    const reason = pickFirstString(record, ['reason', 'injury', 'note', 'notes', 'description', 'comment']) || undefined;
+
+    const childList =
+      readByNormalizedKey(record, ['players']) ||
+      readByNormalizedKey(record, ['injuries']) ||
+      readByNormalizedKey(record, ['athletes']) ||
+      readByNormalizedKey(record, ['roster']) ||
+      readByNormalizedKey(record, ['members']) ||
+      readByNormalizedKey(record, ['entries']) ||
+      readByNormalizedKey(record, ['items']) ||
+      readByNormalizedKey(record, ['data']);
+
+    if (Array.isArray(childList) && childList.length > 0 && !name) {
+      childList.forEach((entry) => visit(entry, team, keyHint));
+      return;
+    }
+
+    if (name && (status || reason)) {
+      const dedupeKey = `${team}::${norm(name)}::${norm(status)}::${norm(reason || '')}`;
+      if (!seen.has(dedupeKey)) {
+        seen.add(dedupeKey);
+        rows.push({
+          playerId: String(playerId),
+          playerName: String(name),
+          team,
+          status: status || 'Questionable',
+          reason,
+        });
+      }
+    }
+
+    Object.entries(record).forEach(([key, value]) => {
+      if (value && (Array.isArray(value) || typeof value === 'object')) {
+        visit(value, team, key);
+      }
+    });
+  };
+
+  visit(payload);
+  return rows;
+};
+
 export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, players }) => {
   const [activeTab, setActiveTab] = useState<ReviewTab>('overview');
   const [analysisData, setAnalysisData] = useState<any | null>(null);
@@ -560,6 +711,8 @@ export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, 
     if (!baseUrl || !selectedDate || !selectedSlate) return [] as string[];
     const safeSlate = encodeURIComponent(selectedSlate);
     return [
+      `/api/decrypt?file=injuries&date=${selectedDate}&slate=${safeSlate}`,
+      `/api/decrypt?file=injuries&date=${selectedDate}`,
       `${baseUrl}/${selectedDate}/${safeSlate}/injuries.json`,
       `${baseUrl}/${selectedDate}/${safeSlate}/injury.json`,
       `${baseUrl}/${selectedDate}/injuries.json`,
@@ -601,11 +754,19 @@ export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, 
 
       const fetchFirstJson = async (
         urls: string[],
+        options?: { isUsable?: (data: any) => boolean },
       ): Promise<{ ok: boolean; data?: any; error?: string; url?: string }> => {
         const errors: string[] = [];
         for (const url of urls) {
           const result = await fetchJson(url);
-          if (result.ok) return { ok: true, data: result.data, url };
+          if (result.ok) {
+            const usable = options?.isUsable ? options.isUsable(result.data) : true;
+            if (usable) {
+              return { ok: true, data: result.data, url };
+            }
+            errors.push(`${url} -> usable check failed`);
+            continue;
+          }
           errors.push(`${url} -> ${result.error || 'error'}`);
           if (!String(result.error || '').startsWith('HTTP 404')) break;
         }
@@ -618,7 +779,9 @@ export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, 
       const [analysisResult, exposureResult, injuriesResult] = await Promise.all([
         fetchJson(analysisUrl),
         fetchFirstJson(exposureUrlCandidates),
-        fetchFirstJson(injuriesUrlCandidates),
+        fetchFirstJson(injuriesUrlCandidates, {
+          isUsable: (data) => parseInjuryRowsFromPayload(data).length > 0,
+        }),
       ]);
       if (cancelled) return;
 
@@ -682,23 +845,20 @@ export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, 
 
   const injuryTeamRows = useMemo((): InjuryTeamRow[] => {
     if (!injuriesData) return [];
-    const lookup = buildInjuryLookup(injuriesData);
-    if (!lookup || lookup.size === 0) return [];
+    const injuryRows = parseInjuryRowsFromPayload(injuriesData);
+    if (injuryRows.length === 0) return [];
 
     const byTeam = new Map<string, InjuryTeamRow>();
-    players.forEach((player) => {
-      const info = getPlayerInjuryInfo(player, lookup);
-      if (!info) return;
-
-      const team = String(info.team || (player as any).team || 'UNK').toUpperCase();
-      const status = String(info.status || 'Questionable').trim() || 'Questionable';
-      const reason = info.reason ? String(info.reason).trim() : undefined;
+    injuryRows.forEach((injury) => {
+      const team = String(injury.team || 'UNK').toUpperCase();
+      const status = String(injury.status || 'Questionable').trim() || 'Questionable';
+      const reason = injury.reason ? String(injury.reason).trim() : undefined;
 
       const current = byTeam.get(team) || { team, totalInjuries: 0, players: [] };
-      if (!current.players.some((row) => row.playerId === String(player.id))) {
+      if (!current.players.some((row) => row.playerId === String(injury.playerId))) {
         current.players.push({
-          playerId: String(player.id),
-          playerName: String(player.name || player.id),
+          playerId: String(injury.playerId),
+          playerName: String(injury.playerName || injury.playerId),
           status,
           reason,
         });
@@ -726,7 +886,7 @@ export const SlateReviewView: React.FC<Props> = ({ selectedDate, selectedSlate, 
         if (b.totalInjuries !== a.totalInjuries) return b.totalInjuries - a.totalInjuries;
         return a.team.localeCompare(b.team);
       });
-  }, [injuriesData, players]);
+  }, [injuriesData]);
 
   const applyExposures = useCallback(() => {
     if (!selectedDate) {
