@@ -10,6 +10,39 @@ export interface Player {
   opponent: string;
   salary: number;
   projection: number;
+  projectedPoints?: number;
+  projectedRebounds?: number;
+  projectedAssists?: number;
+  projectedPointsHitProbability?: number;
+  projectedReboundsHitProbability?: number;
+  projectedAssistsHitProbability?: number;
+  projectedPRAHitProbability?: number;
+  projectedStatsSource?: string;
+  projectedStatsProbabilities?: {
+    pointsHitProbability?: number;
+    reboundsHitProbability?: number;
+    assistsHitProbability?: number;
+    praHitProbability?: number;
+    sampleSize?: {
+      points?: number;
+      rebounds?: number;
+      assists?: number;
+      pra?: number;
+    };
+    hits?: {
+      points?: number;
+      rebounds?: number;
+      assists?: number;
+      pra?: number;
+    };
+    method?: string;
+    smoothing?: {
+      alpha?: number;
+      beta?: number;
+    };
+    confidence?: number;
+    [key: string]: any;
+  };
   actual?: number;
   minutesProjection?: number;
   ceiling?: number;

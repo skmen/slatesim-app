@@ -1309,6 +1309,7 @@ const AppContent: React.FC<{ previewMode?: boolean }> = ({ previewMode = false }
                 games={state.slate.games || []}
                 isHistorical={isHistorical}
                 showActuals={effectiveShowActuals}
+                isAdmin={isAdmin}
                 injuryLookup={injuryLookup}
                 injuriesAsOf={injuriesAsOf}
                 depthCharts={depthCharts}

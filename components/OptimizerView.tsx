@@ -287,6 +287,9 @@ const POOL_FILTER_COLUMNS = [
   { key: 'ownership', label: 'Own%' },
   { key: 'minutes', label: 'Min' },
   { key: 'projection', label: 'FPTS' },
+  { key: 'projectedPoints', label: 'PTS' },
+  { key: 'projectedRebounds', label: 'REB' },
+  { key: 'projectedAssists', label: 'AST' },
   { key: 'ceilingGap', label: 'Ceiling Gap' },
   { key: 'leverageScore', label: 'Lev Score' },
   { key: 'minExposure', label: 'Min Exp' },
@@ -580,6 +583,24 @@ const getOwnershipPercent = (player: Player): number | undefined => {
     'OWNERSHIP_PCT',
   ]);
   return normalizePercentValue(raw);
+};
+
+const getProjectedPoints = (player: Player): number | undefined => {
+  const direct = Number(player.projectedPoints);
+  if (Number.isFinite(direct)) return direct;
+  return readStatNumber(player, ['projectedPoints', 'projected_points', 'projPoints', 'pointsProjection']);
+};
+
+const getProjectedRebounds = (player: Player): number | undefined => {
+  const direct = Number(player.projectedRebounds);
+  if (Number.isFinite(direct)) return direct;
+  return readStatNumber(player, ['projectedRebounds', 'projected_rebounds', 'projRebounds', 'reboundsProjection']);
+};
+
+const getProjectedAssists = (player: Player): number | undefined => {
+  const direct = Number(player.projectedAssists);
+  if (Number.isFinite(direct)) return direct;
+  return readStatNumber(player, ['projectedAssists', 'projected_assists', 'projAssists', 'assistsProjection']);
 };
 
 const getCeilingGapForProjection = (player: Player, projection: number | undefined): number | undefined => {
@@ -1776,6 +1797,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
         case 'ownership': return getOwnershipPercent(player);
         case 'minutes': return displayMinutes;
         case 'projection': return displayProjection;
+        case 'projectedPoints': return getProjectedPoints(player);
+        case 'projectedRebounds': return getProjectedRebounds(player);
+        case 'projectedAssists': return getProjectedAssists(player);
         case 'ceilingGap': return ceilingGap;
         case 'leverageScore': return getLeverageScore(player) ?? '';
         case 'minExposure': return overrides.minExposure ?? '';
@@ -2970,6 +2994,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                           { key: 'leverageScore', label: 'Lev Score', align: 'right' },
                           { key: 'minutes', label: 'Min', align: 'right' },
                           { key: 'projection', label: 'FPTS', align: 'right' },
+                          { key: 'projectedPoints', label: 'PTS', align: 'right' },
+                          { key: 'projectedRebounds', label: 'REB', align: 'right' },
+                          { key: 'projectedAssists', label: 'AST', align: 'right' },
                           { key: 'ceilingGap', label: 'Ceiling Gap', align: 'right' },
                           { key: 'minExposure', label: 'Min Exp', align: 'right' },
                           { key: 'maxExposure', label: 'Max Exp', align: 'right' },
@@ -3004,6 +3031,9 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                         const displayValue = valueScoreMap.get(player.id)?.composite;
                         const usagePct = getUsagePercent(player);
                         const ownershipPct = getOwnershipPercent(player);
+                        const projectedPoints = getProjectedPoints(player);
+                        const projectedRebounds = getProjectedRebounds(player);
+                        const projectedAssists = getProjectedAssists(player);
                         const ceilingGap = getCeilingGapForProjection(player, displayProjection);
                         const isLocked = lockedIds.includes(player.id);
                         return (
@@ -3127,6 +3157,15 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                               />
                             </td>
                             <td className="px-2 py-1.5 text-right text-ink/60">
+                              {Number.isFinite(Number(projectedPoints)) ? Number(projectedPoints).toFixed(2) : '--'}
+                            </td>
+                            <td className="px-2 py-1.5 text-right text-ink/60">
+                              {Number.isFinite(Number(projectedRebounds)) ? Number(projectedRebounds).toFixed(2) : '--'}
+                            </td>
+                            <td className="px-2 py-1.5 text-right text-ink/60">
+                              {Number.isFinite(Number(projectedAssists)) ? Number(projectedAssists).toFixed(2) : '--'}
+                            </td>
+                            <td className="px-2 py-1.5 text-right text-ink/60">
                               {Number.isFinite(Number(ceilingGap)) ? Number(ceilingGap).toFixed(2) : '--'}
                             </td>
                             <td className="px-2 py-1.5 text-right">
@@ -3166,7 +3205,7 @@ export const OptimizerView: React.FC<Props> = ({ players, games, slateDate, show
                       })}
                       {filteredPoolPlayers.length === 0 && (
                         <tr>
-                          <td colSpan={15} className="px-2 py-6 text-center text-[12px] text-ink/40 font-black uppercase tracking-widest">
+                          <td colSpan={18} className="px-2 py-6 text-center text-[12px] text-ink/40 font-black uppercase tracking-widest">
                             No players found
                           </td>
                         </tr>

@@ -410,7 +410,7 @@ export const parsePipelineJson = (
   let referenceLineups: Lineup[] = [];
   let contestState: ContestState | undefined = undefined;
 
-  const playersData = json.players ?? json.data?.projections ?? json.projections;
+  const playersData = json.players ?? json.playersSample ?? json.data?.projections ?? json.projections;
   const rawTeams = Array.isArray(json.teams ?? json.data?.teams) ? (json.teams ?? json.data?.teams) : [];
   const rawGames = Array.isArray(json.games ?? json.data?.games) ? (json.games ?? json.data?.games) : [];
 
@@ -678,6 +678,60 @@ export const parsePipelineJson = (
         readByNormalizedKey(p, ['projection', 'projfpts', 'dkfptsproj']),
         0
       );
+      const projectedPoints = toOptionalNumber(
+        slateData?.projectedPoints ??
+        p?.projectedPoints ??
+        readByNormalizedKey(p, ['projectedPoints', 'projected_points', 'projPoints', 'pointsProjection'])
+      );
+      const projectedRebounds = toOptionalNumber(
+        slateData?.projectedRebounds ??
+        p?.projectedRebounds ??
+        readByNormalizedKey(p, ['projectedRebounds', 'projected_rebounds', 'projRebounds', 'reboundsProjection'])
+      );
+      const projectedAssists = toOptionalNumber(
+        slateData?.projectedAssists ??
+        p?.projectedAssists ??
+        readByNormalizedKey(p, ['projectedAssists', 'projected_assists', 'projAssists', 'assistsProjection'])
+      );
+      const projectedStatsSourceRaw =
+        slateData?.projectedStatsSource ??
+        p?.projectedStatsSource ??
+        readByNormalizedKey(p, ['projectedStatsSource', 'projected_stats_source']);
+      const projectedStatsSource = projectedStatsSourceRaw === undefined || projectedStatsSourceRaw === null
+        ? undefined
+        : String(projectedStatsSourceRaw);
+      const projectedStatsProbabilitiesRaw =
+        slateData?.projectedStatsProbabilities ??
+        p?.projectedStatsProbabilities ??
+        readByNormalizedKey(p, ['projectedStatsProbabilities', 'projected_stats_probabilities']);
+      const projectedStatsProbabilities =
+        projectedStatsProbabilitiesRaw && typeof projectedStatsProbabilitiesRaw === 'object'
+          ? projectedStatsProbabilitiesRaw
+          : undefined;
+      const projectedPointsHitProbability = toOptionalNumber(
+        slateData?.projectedPointsHitProbability ??
+        p?.projectedPointsHitProbability ??
+        readByNormalizedKey(p, ['projectedPointsHitProbability', 'projected_points_hit_probability']) ??
+        readByNormalizedKey(projectedStatsProbabilities, ['pointsHitProbability', 'points_hit_probability'])
+      );
+      const projectedReboundsHitProbability = toOptionalNumber(
+        slateData?.projectedReboundsHitProbability ??
+        p?.projectedReboundsHitProbability ??
+        readByNormalizedKey(p, ['projectedReboundsHitProbability', 'projected_rebounds_hit_probability']) ??
+        readByNormalizedKey(projectedStatsProbabilities, ['reboundsHitProbability', 'rebounds_hit_probability'])
+      );
+      const projectedAssistsHitProbability = toOptionalNumber(
+        slateData?.projectedAssistsHitProbability ??
+        p?.projectedAssistsHitProbability ??
+        readByNormalizedKey(p, ['projectedAssistsHitProbability', 'projected_assists_hit_probability']) ??
+        readByNormalizedKey(projectedStatsProbabilities, ['assistsHitProbability', 'assists_hit_probability'])
+      );
+      const projectedPRAHitProbability = toOptionalNumber(
+        slateData?.projectedPRAHitProbability ??
+        p?.projectedPRAHitProbability ??
+        readByNormalizedKey(p, ['projectedPRAHitProbability', 'projected_pra_hit_probability']) ??
+        readByNormalizedKey(projectedStatsProbabilities, ['praHitProbability', 'pra_hit_probability'])
+      );
 
       const player: Player = {
         ...p,
@@ -690,6 +744,15 @@ export const parsePipelineJson = (
         opponent: inferredOpponent,
         salary: toNumber(slateData?.salary ?? p?.salary ?? p?.Salary, 0),
         projection,
+        projectedPoints,
+        projectedRebounds,
+        projectedAssists,
+        projectedPointsHitProbability,
+        projectedReboundsHitProbability,
+        projectedAssistsHitProbability,
+        projectedPRAHitProbability,
+        projectedStatsSource,
+        projectedStatsProbabilities,
         ceiling: toOptionalNumber(slateData?.ceiling ?? p?.ceiling ?? p?.CEILING),
         floor: toOptionalNumber(slateData?.floor ?? p?.floor ?? p?.FLOOR),
         ownership: toOptionalNumber(slateData?.ownership ?? p?.ownership ?? p?.OWN_MEAN),

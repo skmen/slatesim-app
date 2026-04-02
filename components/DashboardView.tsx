@@ -12,6 +12,7 @@ interface Props {
   games: GameInfo[];
   isHistorical: boolean;
   showActuals: boolean;
+  isAdmin?: boolean;
   injuryLookup?: InjuryLookup | null;
   injuriesAsOf?: string | null;
   depthCharts?: any | null;
@@ -67,6 +68,12 @@ const FILTER_COLUMNS = [
   { key: 'usageRate', label: 'Usage' },
   { key: 'minutesProjection', label: 'Min' },
   { key: 'projection', label: 'Proj' },
+  { key: 'projectedPoints', label: 'PTS' },
+  { key: 'projectedPointsHitProbability', label: 'PTS Prob' },
+  { key: 'projectedRebounds', label: 'REB' },
+  { key: 'projectedReboundsHitProbability', label: 'REB Prob' },
+  { key: 'projectedAssists', label: 'AST' },
+  { key: 'projectedAssistsHitProbability', label: 'AST Prob' },
   { key: 'ceiling', label: 'Ceiling' },
   { key: 'ceilingGap', label: 'Ceiling Gap' },
   { key: 'floor', label: 'Floor' },
@@ -247,6 +254,69 @@ const getBustPct = (player: Player): number | undefined => {
     'bustProb',
     'bust_prob',
   ]));
+};
+
+const getProjectedPoints = (player: Player): number | undefined => {
+  const direct = Number(player.projectedPoints);
+  if (Number.isFinite(direct)) return direct;
+  return readStatNumber(player, ['projectedPoints', 'projected_points', 'projPoints', 'pointsProjection']);
+};
+
+const getProjectedRebounds = (player: Player): number | undefined => {
+  const direct = Number(player.projectedRebounds);
+  if (Number.isFinite(direct)) return direct;
+  return readStatNumber(player, ['projectedRebounds', 'projected_rebounds', 'projRebounds', 'reboundsProjection']);
+};
+
+const getProjectedAssists = (player: Player): number | undefined => {
+  const direct = Number(player.projectedAssists);
+  if (Number.isFinite(direct)) return direct;
+  return readStatNumber(player, ['projectedAssists', 'projected_assists', 'projAssists', 'assistsProjection']);
+};
+
+const getProjectedStatsProbabilities = (player: Player): Record<string, any> | undefined => {
+  const direct = (player as any)?.projectedStatsProbabilities;
+  if (direct && typeof direct === 'object') return direct as Record<string, any>;
+  const fromSlate = (player as any)?.slateData?.projectedStatsProbabilities;
+  if (fromSlate && typeof fromSlate === 'object') return fromSlate as Record<string, any>;
+  return undefined;
+};
+
+const getProjectedProbabilityPercent = (
+  player: Player,
+  directKeys: string[],
+  nestedKeys: string[],
+): number | undefined => {
+  const direct = readStatNumber(player, directKeys);
+  if (Number.isFinite(Number(direct))) return normalizePctMaybe(Number(direct));
+  const nestedRaw = readByKeys(getProjectedStatsProbabilities(player), nestedKeys);
+  const nested = Number(nestedRaw);
+  if (Number.isFinite(nested)) return normalizePctMaybe(nested);
+  return undefined;
+};
+
+const getProjectedPointsHitProbability = (player: Player): number | undefined => {
+  return getProjectedProbabilityPercent(
+    player,
+    ['projectedPointsHitProbability', 'projected_points_hit_probability', 'pointsHitProbability', 'points_hit_probability'],
+    ['pointsHitProbability', 'points_hit_probability'],
+  );
+};
+
+const getProjectedReboundsHitProbability = (player: Player): number | undefined => {
+  return getProjectedProbabilityPercent(
+    player,
+    ['projectedReboundsHitProbability', 'projected_rebounds_hit_probability', 'reboundsHitProbability', 'rebounds_hit_probability'],
+    ['reboundsHitProbability', 'rebounds_hit_probability'],
+  );
+};
+
+const getProjectedAssistsHitProbability = (player: Player): number | undefined => {
+  return getProjectedProbabilityPercent(
+    player,
+    ['projectedAssistsHitProbability', 'projected_assists_hit_probability', 'assistsHitProbability', 'assists_hit_probability'],
+    ['assistsHitProbability', 'assists_hit_probability'],
+  );
 };
 
 const getCeilingGap = (player: Player): number | undefined => {
@@ -570,6 +640,7 @@ export const DashboardView: React.FC<Props> = ({
   games,
   isHistorical,
   showActuals,
+  isAdmin = false,
   injuryLookup,
   injuriesAsOf,
   depthCharts,
@@ -592,6 +663,7 @@ export const DashboardView: React.FC<Props> = ({
   const [showFilterBuilder, setShowFilterBuilder] = useState(false);
   const [filters, setFilters] = useState<FilterRule[]>([]);
   const [salaryTab, setSalaryTab] = useState<'ALL' | 'ELITE' | 'MID' | 'VALUE' | 'PUNT'>('ALL');
+  const [tableView, setTableView] = useState<'projections' | 'stats'>('projections');
   const [isSlateListOpen, setIsSlateListOpen] = useState(false);
   const slateCardRef = useRef<HTMLDivElement | null>(null);
 
@@ -646,6 +718,12 @@ export const DashboardView: React.FC<Props> = ({
       setSelectedPlayer(null);
     }
   }, [canUseResearchTools, selectedPlayer]);
+
+  useEffect(() => {
+    if (!isAdmin && tableView !== 'projections') {
+      setTableView('projections');
+    }
+  }, [isAdmin, tableView]);
 
   const effectiveGames = useMemo<GameInfo[]>(() => {
     const matchupKeyFromTeams = (teamA: string, teamB: string) => {
@@ -818,6 +896,12 @@ export const DashboardView: React.FC<Props> = ({
         case 'usageRate': return player.usageRate ?? -Infinity;
         case 'minutesProjection': return player.minutesProjection ?? -Infinity;
         case 'projection': return player.projection;
+        case 'projectedPoints': return getProjectedPoints(player) ?? -Infinity;
+        case 'projectedPointsHitProbability': return getProjectedPointsHitProbability(player) ?? -Infinity;
+        case 'projectedRebounds': return getProjectedRebounds(player) ?? -Infinity;
+        case 'projectedReboundsHitProbability': return getProjectedReboundsHitProbability(player) ?? -Infinity;
+        case 'projectedAssists': return getProjectedAssists(player) ?? -Infinity;
+        case 'projectedAssistsHitProbability': return getProjectedAssistsHitProbability(player) ?? -Infinity;
         case 'ceiling': return player.ceiling ?? -Infinity;
         case 'ceilingGap': return getCeilingGap(player) ?? -Infinity;
         case 'floor': return player.floor ?? -Infinity;
@@ -841,6 +925,12 @@ export const DashboardView: React.FC<Props> = ({
         case 'usageRate': return player.usageRate;
         case 'minutesProjection': return player.minutesProjection;
         case 'projection': return player.projection;
+        case 'projectedPoints': return getProjectedPoints(player);
+        case 'projectedPointsHitProbability': return getProjectedPointsHitProbability(player);
+        case 'projectedRebounds': return getProjectedRebounds(player);
+        case 'projectedReboundsHitProbability': return getProjectedReboundsHitProbability(player);
+        case 'projectedAssists': return getProjectedAssists(player);
+        case 'projectedAssistsHitProbability': return getProjectedAssistsHitProbability(player);
         case 'ceiling': return player.ceiling;
         case 'ceilingGap': return getCeilingGap(player);
         case 'floor': return player.floor;
@@ -933,8 +1023,8 @@ export const DashboardView: React.FC<Props> = ({
         ? `"${str.replace(/"/g, '""')}"`
         : str;
     };
-    const headers = ['Player', 'Team', 'OPP', 'Pos', 'Salary', 'Value', 'Own', 'Usage', 'Min', 'Proj', 'Ceiling', 'Ceiling Gap', 'Floor', 'Lev Score', 'Boom', 'Bust'];
-    if (showActuals) headers.splice(10, 0, 'Actual');
+    const headers = ['Player', 'Team', 'OPP', 'Pos', 'Salary', 'Value', 'Own', 'Usage', 'Min', 'Proj', 'Proj PTS', 'Proj PTS Prob', 'Proj REB', 'Proj REB Prob', 'Proj AST', 'Proj AST Prob', 'Ceiling', 'Ceiling Gap', 'Floor', 'Lev Score', 'Boom', 'Bust'];
+    if (showActuals) headers.splice(16, 0, 'Actual');
     const rows = players.map((p) => {
       const row = [
         p.name,
@@ -947,6 +1037,12 @@ export const DashboardView: React.FC<Props> = ({
         p.usageRate,
         p.minutesProjection,
         p.projection,
+        getProjectedPoints(p),
+        getProjectedPointsHitProbability(p),
+        getProjectedRebounds(p),
+        getProjectedReboundsHitProbability(p),
+        getProjectedAssists(p),
+        getProjectedAssistsHitProbability(p),
         p.ceiling,
         getCeilingGap(p),
         p.floor,
@@ -954,7 +1050,7 @@ export const DashboardView: React.FC<Props> = ({
         p.boom,
         p.bust,
       ];
-      if (showActuals) row.splice(10, 0, (p as any).actual ?? '');
+      if (showActuals) row.splice(16, 0, (p as any).actual ?? '');
       return row.map(csvEscape).join(',');
     });
     const csv = [headers.map(csvEscape).join(','), ...rows].join('\n');
@@ -1131,9 +1227,45 @@ export const DashboardView: React.FC<Props> = ({
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <BarChart3 className="w-4 h-4 text-drafting-orange" />
-              <h3 className="text-xs font-black uppercase tracking-widest text-ink/60">Player Projections</h3>
+              <h3 className="text-xs font-black uppercase tracking-widest text-ink/60">
+                {tableView === 'stats' ? 'Player Stats' : 'Player Projections'}
+              </h3>
             </div>
             <div className="flex items-center gap-2">
+              {isAdmin && (
+                <div className="inline-flex rounded-sm border border-ink/20 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTableView('projections');
+                      setSortKey('projection');
+                      setSortDir('desc');
+                    }}
+                    className={`px-3 py-2 text-[10px] font-black uppercase tracking-widest transition-colors ${
+                      tableView === 'projections'
+                        ? 'bg-drafting-orange text-white'
+                        : 'bg-white text-ink/60 hover:text-ink'
+                    }`}
+                  >
+                    Projections
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTableView('stats');
+                      setSortKey('projectedPoints');
+                      setSortDir('desc');
+                    }}
+                    className={`px-3 py-2 text-[10px] font-black uppercase tracking-widest transition-colors border-l border-ink/20 ${
+                      tableView === 'stats'
+                        ? 'bg-drafting-orange text-white'
+                        : 'bg-white text-ink/60 hover:text-ink'
+                    }`}
+                  >
+                    Stats
+                  </button>
+                </div>
+              )}
               {canUseResearchTools && (
                 <>
                   <button
@@ -1193,7 +1325,7 @@ export const DashboardView: React.FC<Props> = ({
             ))}
           </div>
 
-          <div className="overflow-x-auto border border-ink/10 rounded-sm bg-white/30">
+          <div className={tableView === 'projections' ? 'overflow-x-auto border border-ink/10 rounded-sm bg-white/30' : 'hidden'}>
               <table className="w-full border-collapse">
                 <thead>
                   <tr className="text-[9px] font-black text-ink/40 uppercase tracking-widest border-b border-ink/10 bg-white/40">
@@ -1361,6 +1493,107 @@ export const DashboardView: React.FC<Props> = ({
                   <tr>
                     <td
                       colSpan={showActuals ? 17 : 16}
+                      className="py-8 text-center text-[10px] font-black text-ink/40 uppercase tracking-widest"
+                    >
+                      No players matched the active search/filter criteria
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className={tableView === 'stats' ? 'overflow-x-auto border border-ink/10 rounded-sm bg-white/30' : 'hidden'}>
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="text-[9px] font-black text-ink/40 uppercase tracking-widest border-b border-ink/10 bg-white/40">
+                  <th className="px-3 py-2 text-left cursor-pointer select-none" onClick={() => handleSort('name')}>
+                    Player{sortIndicator('name')}
+                  </th>
+                  <th className="px-3 py-2 text-left cursor-pointer select-none" onClick={() => handleSort('team')}>
+                    Team{sortIndicator('team')}
+                  </th>
+                  <th className="px-3 py-2 text-left cursor-pointer select-none" onClick={() => handleSort('opponent')}>
+                    Opp{sortIndicator('opponent')}
+                  </th>
+                  <th className="px-3 py-2 text-left cursor-pointer select-none" onClick={() => handleSort('position')}>
+                    Pos{sortIndicator('position')}
+                  </th>
+                  <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('minutesProjection')}>
+                    Min{sortIndicator('minutesProjection')}
+                  </th>
+                  <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('projectedPoints')}>
+                    Projected Points{sortIndicator('projectedPoints')}
+                  </th>
+                  <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('projectedPointsHitProbability')}>
+                    Proj PTS Prob{sortIndicator('projectedPointsHitProbability')}
+                  </th>
+                  <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('projectedRebounds')}>
+                    Projected REB{sortIndicator('projectedRebounds')}
+                  </th>
+                  <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('projectedReboundsHitProbability')}>
+                    Proj REB Prob{sortIndicator('projectedReboundsHitProbability')}
+                  </th>
+                  <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('projectedAssists')}>
+                    Projected AST{sortIndicator('projectedAssists')}
+                  </th>
+                  <th className="px-3 py-2 text-right cursor-pointer select-none" onClick={() => handleSort('projectedAssistsHitProbability')}>
+                    Proj AST Prob{sortIndicator('projectedAssistsHitProbability')}
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="text-[13px] font-mono">
+                {filteredPlayers.length > 0 ? (
+                  filteredPlayers.map((player) => {
+                    const projectedPoints = getProjectedPoints(player);
+                    const projectedRebounds = getProjectedRebounds(player);
+                    const projectedAssists = getProjectedAssists(player);
+                    const projectedPointsProb = getProjectedPointsHitProbability(player);
+                    const projectedReboundsProb = getProjectedReboundsHitProbability(player);
+                    const projectedAssistsProb = getProjectedAssistsHitProbability(player);
+                    return (
+                      <tr
+                        key={player.id}
+                        onClick={() => {
+                          if (canUseResearchTools) setSelectedPlayer(player);
+                        }}
+                        className={`border-b border-ink/5 transition-colors ${
+                          canUseResearchTools ? 'cursor-pointer hover:bg-white/70' : 'cursor-default'
+                        }`}
+                      >
+                        <td className="px-3 py-2 font-black uppercase tracking-tight text-ink">{player.name}</td>
+                        <td className="px-3 py-2 text-ink/60">{player.team}</td>
+                        <td className="px-3 py-2 text-ink/60">
+                          {(teamAbbrevMap.get(player.opponent) || player.opponent || '--').toString().toUpperCase()}
+                        </td>
+                        <td className="px-3 py-2 text-ink/60">{player.position}</td>
+                        <td className="px-3 py-2 text-right text-ink/60">
+                          {player.minutesProjection !== undefined ? player.minutesProjection.toFixed(1) : '--'}
+                        </td>
+                        <td className="px-3 py-2 text-right text-drafting-orange font-black">
+                          {projectedPoints !== undefined ? projectedPoints.toFixed(2) : '--'}
+                        </td>
+                        <td className="px-3 py-2 text-right text-ink/60">
+                          {projectedPointsProb !== undefined ? `${projectedPointsProb.toFixed(1)}%` : '--'}
+                        </td>
+                        <td className="px-3 py-2 text-right text-ink/60">
+                          {projectedRebounds !== undefined ? projectedRebounds.toFixed(2) : '--'}
+                        </td>
+                        <td className="px-3 py-2 text-right text-ink/60">
+                          {projectedReboundsProb !== undefined ? `${projectedReboundsProb.toFixed(1)}%` : '--'}
+                        </td>
+                        <td className="px-3 py-2 text-right text-ink/60">
+                          {projectedAssists !== undefined ? projectedAssists.toFixed(2) : '--'}
+                        </td>
+                        <td className="px-3 py-2 text-right text-ink/60">
+                          {projectedAssistsProb !== undefined ? `${projectedAssistsProb.toFixed(1)}%` : '--'}
+                        </td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td
+                      colSpan={11}
                       className="py-8 text-center text-[10px] font-black text-ink/40 uppercase tracking-widest"
                     >
                       No players matched the active search/filter criteria
